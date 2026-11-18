@@ -43,6 +43,14 @@ RUN cargo build --release --locked -p capsulebin-server \
     && install -D -m 0755 target/release/capsulebin /out/capsulebin \
     && install -d -m 0700 /out/data
 
+# --- binary only -------------------------------------------------------------
+# The release binary on its own, for the release tarballs:
+#   docker buildx build --target binary --output type=local,dest=out .
+# It is the same build the image ships. Built against glibc 2.36, it runs on
+# Debian 12, Ubuntu 24.04, RHEL 10 and newer.
+FROM scratch AS binary
+COPY --from=server /out/capsulebin /capsulebin
+
 # --- runtime -----------------------------------------------------------------
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 

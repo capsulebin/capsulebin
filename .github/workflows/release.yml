@@ -1,0 +1,327 @@
+# CapsuleBin release
+#
+# A signed tag vX.Y.Z on main publishes:
+#
+#   - Linux binaries for x86_64 and aarch64 as tarballs. They come out of the
+#     Dockerfile's build stage, so they are the same build the image ships
+#     (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 and newer), and each one
+#     passes smoke.sh before it is packaged;
+#   - the bundled command line client;
+#   - a multi-arch image on ghcr.io with SBOM and provenance attestations;
+#   - an SPDX SBOM of the source dependencies and SHA256SUMS over all files;
+#   - keyless cosign signatures (GitHub OIDC) on SHA256SUMS and on the image;
+#   - release notes taken from the version's section in CHANGELOG.md.
+#
+# Started by hand (workflow_dispatch), or on a pull request that changes the
+# release path, it builds and tests everything for the version in Cargo.toml
+# without publishing: nothing is pushed, signed or released.
+#
+# Third-party actions are pinned to a full commit SHA, like in ci.yml.
+
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Dockerfile
+      - scripts/release-notes.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/capsulebin/capsulebin
+  PUBLISH: ${{ github.event_name == 'push' }}
+
+jobs:
+  prepare:
+    name: Version, notes, CLI and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The server, core, CLI and web client share one version (CHANGELOG.md),
+      # and a tag has to name exactly that version.
+      - name: Version
+        id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          for manifest in src/core/package.json src/cli/package.json src/server/web/package.json; do
+            found="$(node -p "require('./${manifest}').version")"
+            if [ "${found}" != "${version}" ]; then
+              echo "::error::${manifest} has version ${found}, Cargo.toml has ${version}"
+              exit 1
+            fi
+          done
+          if [ "${PUBLISH}" = true ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p notes files
+          if [ "${PUBLISH}" = true ]; then
+            ./scripts/release-notes.sh "${VERSION}" --require-date > notes/release-notes.md
+          else
+            ./scripts/release-notes.sh "${VERSION}" > notes/release-notes.md
+          fi
+          cat notes/release-notes.md
+
+      # Before npm ci, so the SBOM lists the locked dependencies (Cargo.lock,
+      # package-lock.json) and not a second copy from node_modules.
+      - name: Source SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: files/capsulebin-${{ steps.version.outputs.version }}-source.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: CLI bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm ci
+          npm run build -w @capsulebin/cli
+          # .mjs: the bundle is an ES module and has to run outside the package.
+          install -m 0755 src/cli/dist/cli.js "files/capsulebin-cli-${VERSION}.mjs"
+
+      - name: Upload notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: notes
+          if-no-files-found: error
+
+      - name: Upload files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: files-common
+          path: files
+          if-no-files-found: error
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      # build-push-action uploads a .dockerbuild record per build as an
+      # artifact; the release files are the only artifacts this job needs.
+      DOCKER_BUILD_RECORD_UPLOAD: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Timestamps in the image layers and the tarball come from the commit,
+      # not from the clock.
+      - name: Source date
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The image build below reuses this build stage from the cache, so its
+      # summary is the one that counts; this one would only repeat it.
+      - name: Binary
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          DOCKER_BUILD_SUMMARY: false
+        with:
+          context: .
+          target: binary
+          platforms: ${{ matrix.platform }}
+          outputs: type=local,dest=out
+          build-args: SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,scope=release-${{ matrix.arch }},mode=max
+
+      - name: Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The file that ships, not a fresh build, goes through the acceptance
+      # check - with the bundled CLI against it.
+      - name: Acceptance check
+        env:
+          CAPSULEBIN_CLI: src/cli/dist/cli.js
+        run: |
+          npm ci
+          npm run build -w @capsulebin/cli
+          ./scripts/smoke.sh out/capsulebin
+
+      - name: Package
+        run: |
+          name="capsulebin-${VERSION}-linux-${ARCH}"
+          mkdir -p "dist/${name}" files
+          install -m 0755 out/capsulebin "dist/${name}/capsulebin"
+          install -m 0644 LICENSE README.md CHANGELOG.md capsulebin.example.toml "dist/${name}/"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${SOURCE_DATE_EPOCH}" \
+            -C dist -cf - "${name}" | gzip -9n > "files/${name}.tar.gz"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: files-${{ matrix.arch }}
+          path: files
+          if-no-files-found: error
+
+      - name: Registry login
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest only; the publish job joins both architectures under
+      # the version tags. The build stage comes from the cache filled above.
+      - name: Image
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          provenance: ${{ env.PUBLISH == 'true' && 'mode=max' || 'false' }}
+          sbom: ${{ env.PUBLISH == 'true' }}
+          outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true', env.IMAGE) || 'type=cacheonly' }}
+
+      - name: Record digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p digests
+          echo "${DIGEST}" > "digests/${ARCH}"
+
+      - name: Upload digest
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [prepare, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+      # Keyless cosign: the signing certificate names this workflow and tag.
+      id-token: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Fetch files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: files-*
+          path: release
+          merge-multiple: true
+
+      - name: Fetch digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Fetch notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: notes
+
+      - name: cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Registry login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # X.Y.Z, X.Y, X and latest. A patch release for an older line would move
+      # `latest` back; that case does not exist yet.
+      - name: Image tags and signature
+        run: |
+          sources=()
+          for file in digests/*; do
+            sources+=("${IMAGE}@$(cat "${file}")")
+          done
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${VERSION%.*}" -t "${IMAGE}:${VERSION%%.*}" -t "${IMAGE}:latest" \
+            "${sources[@]}"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          cosign sign --yes --recursive "${IMAGE}@${digest}"
+          echo "Image: ${IMAGE}:${VERSION} (${digest})" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checksums and signature
+        working-directory: release
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "CapsuleBin ${VERSION}" --notes-file notes/release-notes.md release/*

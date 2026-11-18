@@ -33,6 +33,38 @@ What 1.0 contains:
 - **Abuse handling:** a report form and an operator CLI for the report queue and moderation, without
   the operator ever decrypting a capsule.
 
+## Installation
+
+Every release on the [releases page](https://github.com/capsulebin/capsulebin/releases) carries:
+
+| File | Contents |
+| --- | --- |
+| `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, changelog and example configuration |
+| `capsulebin-cli-<version>.mjs` | The command line client as one file for Node.js 22 |
+| `capsulebin-<version>-source.spdx.json` | SBOM of the locked Rust and npm dependencies |
+| `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Checksums of all files and their cosign signature |
+
+The container image is `ghcr.io/capsulebin/capsulebin:<version>` (`linux/amd64`, `linux/arm64`),
+with SBOM and provenance attestations; see [operations](docs/operations.md#container) for running
+it.
+
+Signatures are keyless: the certificate names the release workflow and the tag it ran for, so
+verifying them needs no key, only [cosign](https://docs.sigstore.dev/cosign/system_config/installation/):
+
+```sh
+VERSION=1.0.0
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/capsulebin/capsulebin/.github/workflows/release.yml@refs/tags/v${VERSION}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing SHA256SUMS
+
+cosign verify "ghcr.io/capsulebin/capsulebin:${VERSION}" \
+  --certificate-identity "https://github.com/capsulebin/capsulebin/.github/workflows/release.yml@refs/tags/v${VERSION}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To build from source instead, see [Development](#development).
+
 ## Layout
 
 | Path | Contents |

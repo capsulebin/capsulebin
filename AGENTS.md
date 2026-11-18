@@ -35,8 +35,8 @@ capsulebin/
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
-├── scripts/            smoke.sh — acceptance test for a release binary
-├── .github/            CI workflow (GitHub Actions) and Dependabot configuration
+├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh
+├── .github/            CI and release workflows (GitHub Actions), Dependabot configuration
 ├── Dockerfile          Container image: web build → release binary → distroless, non-root, /data
 ├── Cargo.toml          Workspace root (members: src/server)
 ├── package.json        npm workspace root (workspaces: src/core, src/cli, src/server/web)
@@ -363,6 +363,22 @@ including the acceptance run against a release binary. Dependency advisories are
 `Rust`, `TypeScript`, `Acceptance (release binary)`, `Container image` (builds the `Dockerfile`
 and waits for the container to report healthy) and `Dependency audit` — each a required check. The audit job also runs weekly, so a new advisory surfaces without a code change. Actions
 are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm and the base image digests.
+
+## Releasing
+
+`.github/workflows/release.yml` runs on a tag `vX.Y.Z` and publishes binaries, the CLI bundle, the
+multi-arch image on GHCR, a source SBOM, `SHA256SUMS` and keyless cosign signatures, with the
+release notes taken from `CHANGELOG.md` (`scripts/release-notes.sh`). Steps for a release:
+
+1. One pull request that sets the version in `Cargo.toml` (`[workspace.package]`), the three
+   `package.json` files under `src/` and `package-lock.json`, and turns `## [Unreleased]` into
+   `## [X.Y.Z] - YYYY-MM-DD` with a fresh empty `[Unreleased]` above it.
+2. Optionally run the workflow by hand (`gh workflow run release.yml`): it builds and tests both
+   architectures for the version in `Cargo.toml` without publishing anything.
+3. After the merge, tag `main` with a signed tag and push it:
+   `git tag -s vX.Y.Z -m "CapsuleBin X.Y.Z" && git push origin vX.Y.Z`.
+
+The workflow refuses a tag that does not match the versions, or a changelog section without a date.
 
 ## Security boundaries (when editing code)
 
