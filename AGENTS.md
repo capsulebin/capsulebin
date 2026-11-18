@@ -36,6 +36,7 @@ capsulebin/
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary
+├── .github/            CI workflow (GitHub Actions) and Dependabot configuration
 ├── Cargo.toml          Workspace root (members: src/server)
 ├── package.json        npm workspace root (workspaces: src/core, src/cli, src/server/web)
 └── capsulebin.example.toml   Annotated configuration reference
@@ -354,6 +355,11 @@ Every command under [Test commands](#test-commands-ci-gates) must pass before a 
 including the acceptance run against a release binary. Dependency advisories are checked with
 `cargo deny check` and `npm audit --audit-level=high`; accepted exceptions are documented in
 `deny.toml`.
+
+`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in four jobs —
+`Rust`, `TypeScript`, `Acceptance (release binary)` and `Dependency audit` — each a required
+check. The audit job also runs weekly, so a new advisory surfaces without a code change. Actions
+are pinned to commit SHAs; Dependabot proposes updates for them, Cargo and npm.
 
 ## Security boundaries (when editing code)
 
