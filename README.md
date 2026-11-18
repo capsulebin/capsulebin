@@ -40,7 +40,7 @@ Every release on the [releases page](https://github.com/capsulebin/capsulebin/re
 | File | Contents |
 | --- | --- |
 | `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, changelog and example configuration |
-| `capsulebin-cli-<version>.mjs` | The command line client as one file for Node.js 22 |
+| `capsulebin-cli-<version>.mjs` | The command line client as one file for Node.js 24 or newer |
 | `capsulebin-<version>-source.spdx.json` | SBOM of the locked Rust and npm dependencies |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Checksums of all files and their cosign signature |
 
@@ -85,7 +85,7 @@ is its reference implementation ([ADR-009](docs/adr/ADR-009-typescript-cli-and-c
 
 ## Development
 
-Requirements: Rust (version from `rust-toolchain.toml`) and Node.js 22.
+Requirements: Rust (version from `rust-toolchain.toml`) and Node.js (version from `.node-version`).
 
 ```sh
 # The server embeds src/server/web/dist at compile time, so build the frontend first.

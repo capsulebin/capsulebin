@@ -10,7 +10,6 @@
  * public header or derive a key themselves.
  */
 
-import type { webcrypto } from 'node:crypto';
 import {
     DEFAULT_PBKDF2_ITERATIONS,
     deriveBits,
@@ -19,12 +18,12 @@ import {
     importAesGcmKey,
     randomBytes,
     sha256,
+    type CryptoKey,
 } from './crypto';
 import { concatByteArrays, encodeUtf8, fromBase64url, toBase64url } from './helpers/bytes';
 import { Capsule, MAX_ITEMS, CapsuleError, type CapsuleItem } from './capsule';
 import { FORMAT_VERSION, FRAGMENT_PREFIX, PublicHeader, type PasswordKdf } from './public_header';
 import type { PasteApi } from './api';
-type CryptoKey = webcrypto.CryptoKey;
 
 // --- sizes and domain labels ---------------------------------------------------
 

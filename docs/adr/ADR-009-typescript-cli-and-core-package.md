@@ -12,7 +12,7 @@ duplicate.
 
 The capsule format, the key derivation and the API client need no `window`, `document`, `File` or
 any other browser-only global — only `crypto.subtle`, `crypto.getRandomValues` and `fetch`, all of
-which are native globals in Node 22 as well. There is no technical reason the CLI needs a different
+which are native globals in Node 24 as well. There is no technical reason the CLI needs a different
 language.
 
 ## Decision
@@ -41,7 +41,7 @@ executable Rust crate — `docs/test-vectors/` is the shared fixture, and `@caps
 reference implementation that must match the specification (ADR-003).
 
 **The CLI ships as one bundled JavaScript file** (`dist/cli.js`, built by esbuild, with
-`@capsulebin/core` inlined) that runs wherever Node 22 runs; there is no per-platform compiled
+`@capsulebin/core` inlined) that runs wherever Node 24 runs; there is no per-platform compiled
 binary.
 
 ## Rejected
@@ -57,7 +57,7 @@ binary.
   blob is not (ADR-001's admission that the web client trusts the code served to it is a weak point
   that should not be made weaker).
 - **Compiling `@capsulebin/core` to a native Node addon.** Unnecessary: Web Crypto and `fetch` are
-  already native in Node 22, so there is nothing to gain by leaving JavaScript, and it would tie the
+  already native in Node 24, so there is nothing to gain by leaving JavaScript, and it would tie the
   CLI to a compiled artifact per platform for no benefit.
 - **Publishing the CLI as a compiled single binary per platform.** One JavaScript bundle is
   simpler to build, ship and keep current, and this project has no other reason to maintain

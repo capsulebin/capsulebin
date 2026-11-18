@@ -57,7 +57,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: .node-version
 
       # The server, core, CLI and web client share one version (CHANGELOG.md),
       # and a tag has to name exactly that version.
@@ -179,7 +179,7 @@ jobs:
       - name: Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: .node-version
 
       # The file that ships, not a fresh build, goes through the acceptance
       # check - with the bundled CLI against it.

@@ -23,7 +23,7 @@ web client and the CLI. Conformance is checked against
 | Capability verifiers | SHA-256 |
 
 All of the above are available as native Web Crypto (`crypto.subtle`) in
-browsers and in Node.js 22, which is what lets both `src/server/web` and
+browsers and in Node.js 24, which is what lets both `src/server/web` and
 `src/cli` share one implementation with no platform adapter.
 
 ## Secrets
