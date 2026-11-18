@@ -227,6 +227,10 @@ npm run check -w @capsulebin/cli && npm test -w @capsulebin/cli
 npm run build -w @capsulebin/web && npm run build -w @capsulebin/cli
 cargo build --release --locked -p capsulebin-server
 CAPSULEBIN_CLI=src/cli/dist/cli.js ./scripts/smoke.sh ./target/release/capsulebin
+
+# Browser tests against that binary (Chromium, Firefox, WebKit)
+npm exec -w @capsulebin/web -- playwright install chromium firefox webkit   # once
+npm run e2e -w @capsulebin/web
 ```
 
 ### Key test suites and what they encode
@@ -244,6 +248,7 @@ CAPSULEBIN_CLI=src/cli/dist/cli.js ./scripts/smoke.sh ./target/release/capsulebi
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow and hostile Markdown, failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -360,10 +365,11 @@ including the acceptance run against a release binary. Dependency advisories are
 `cargo deny check` and `npm audit --audit-level=high`; accepted exceptions are documented in
 `deny.toml`.
 
-`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in seven jobs —
+`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in eight jobs —
 `Rust`, `TypeScript` (on the Node.js version in `.node-version`), `TypeScript (Node 26)` (the tests
-on the newest LTS), `Acceptance (release binary)`, `Container image` (builds the `Dockerfile` and
-waits for the container to report healthy), `Support windows` and `Dependency audit` — each a
+on the newest LTS), `Acceptance (release binary)`, `Browser (Chromium, Firefox, WebKit)` (the
+Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`
+and waits for the container to report healthy), `Support windows` and `Dependency audit` — each a
 required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
 and the base image digests.
 
