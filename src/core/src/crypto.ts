@@ -8,9 +8,15 @@
  * can reuse it without dragging capsule-specific constants along.
  */
 
-import type { webcrypto } from 'node:crypto';
 import { concatByteArrays, encodeUtf8 } from './helpers/bytes';
-type CryptoKey = webcrypto.CryptoKey;
+
+/**
+ * The key type of the global Web Crypto API: the DOM's `CryptoKey` when this
+ * module is compiled for the browser, Node's `webcrypto.CryptoKey` when it is
+ * compiled without the DOM library. Naming either one directly breaks the other
+ * build as soon as the two declarations drift apart.
+ */
+export type CryptoKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
 
 /** Separator byte between an HKDF info label and mixed-in password key material. */
 const INFO_SEPARATOR = new Uint8Array([0]);

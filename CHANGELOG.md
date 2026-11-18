@@ -68,7 +68,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 
 ### Command line client
 
-- `capsulebin put`, `get` and `delete`, sharing `@capsulebin/core` with the web client.
+- `capsulebin put`, `get` and `delete`, sharing `@capsulebin/core` with the web client; runs on
+  Node.js 24 or newer.
 - Secrets only from files, environment variables or a prompt — never from arguments.
 - Stable exit codes, `--json` output, safe retries and confirmation before consuming a burn capsule.
 

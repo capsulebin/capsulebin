@@ -35,7 +35,8 @@ capsulebin/
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
-├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh
+├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
+│                         support-windows.mjs — Node.js/Debian end-of-support check
 ├── .github/            CI and release workflows (GitHub Actions), Dependabot configuration
 ├── Dockerfile          Container image: web build → release binary → distroless, non-root, /data
 ├── Cargo.toml          Workspace root (members: src/server)
@@ -55,7 +56,7 @@ only standalone client. (See [ADR-010](docs/adr/ADR-010-repository-layout.md).)
 |-------|-----------|
 | Server | Rust (edition 2024, MSRV 1.99), Axum 0.8, SQLx 0.9 (SQLite), Tokio |
 | Web client | TypeScript 7.0, Vite 7, Lit 3, highlight.js, marked, DOMPurify |
-| CLI | TypeScript, esbuild, Node.js 22 |
+| CLI | TypeScript, esbuild, Node.js 24 (version in `.node-version`) |
 | Core library | TypeScript (no DOM, no build step), Web Crypto API |
 | Database | SQLite via SQLx, WAL mode, `synchronous = full`, `secure_delete = on`, `journal_size_limit` 64 MiB |
 | CSS | Design tokens in `src/server/web/src/styles/tokens.css`, CSP without inline styles |
@@ -359,10 +360,18 @@ including the acceptance run against a release binary. Dependency advisories are
 `cargo deny check` and `npm audit --audit-level=high`; accepted exceptions are documented in
 `deny.toml`.
 
-`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in five jobs —
-`Rust`, `TypeScript`, `Acceptance (release binary)`, `Container image` (builds the `Dockerfile`
-and waits for the container to report healthy) and `Dependency audit` — each a required check. The audit job also runs weekly, so a new advisory surfaces without a code change. Actions
-are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm and the base image digests.
+`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in seven jobs —
+`Rust`, `TypeScript` (on the Node.js version in `.node-version`), `TypeScript (Node 26)` (the tests
+on the newest LTS), `Acceptance (release binary)`, `Container image` (builds the `Dockerfile` and
+waits for the container to report healthy), `Support windows` and `Dependency audit` — each a
+required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
+and the base image digests.
+
+`Support windows` (`scripts/support-windows.mjs`) checks that every place naming the Node.js
+version agrees with `.node-version`, and warns before Node.js or the Debian release under the base
+images reaches its end of support: Node.js with a warning at 180 days and a failure at 90, Debian
+at 365 and 180. It and the audit job also run weekly, so an advisory or an approaching end of
+support surfaces without a code change.
 
 ## Releasing
 
