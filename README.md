@@ -351,16 +351,22 @@ The TypeScript side (`src/core`, `src/cli`, `src/server/web`) is formatted with 
 in `.prettierrc.json` at the repo root — 4-space indentation, single quotes, a 100-column width. Run
 `npm run format` to apply it; `npm run format:check` (a mandatory CI gate) only verifies it.
 
-`scripts/smoke.sh` is the acceptance check for a release binary, and the only test that exercises
-the shipped artefact rather than the source. It starts the binary, drives a full lifecycle over a
-real socket, and asserts the security headers on every response including the 404. With
-`CAPSULEBIN_CLI` set (as in CI) it also drives the bundled CLI through `put`, `get` and `delete`
-against the binary:
+Two checks exercise the shipped artefact rather than the source. `scripts/smoke.sh` starts a
+release binary, drives a full lifecycle over a real socket, and asserts the security headers on
+every response including the 404. With `CAPSULEBIN_CLI` set (as in CI) it also drives the bundled
+CLI through `put`, `get` and `delete` against the binary. The browser tests in
+`src/server/web/e2e` (Playwright) run the embedded web client against the same binary in Chromium,
+Firefox and WebKit: create, open with a password, every item kind, delete, burn and report, plus
+hostile Markdown. Any CSP or Trusted Types violation, page error or executed XSS canary fails a
+test — jsdom, which the unit tests use, enforces neither.
 
 ```sh
 npm run build -w @capsulebin/web && npm run build -w @capsulebin/cli
 cargo build --release --locked -p capsulebin-server
 CAPSULEBIN_CLI=src/cli/dist/cli.js ./scripts/smoke.sh ./target/release/capsulebin
+
+npm exec -w @capsulebin/web -- playwright install chromium firefox webkit   # once
+npm run e2e -w @capsulebin/web                        # or: -- --project=chromium
 ```
 
 Several test suites are worth knowing about because they encode rules rather than behaviour:

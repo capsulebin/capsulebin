@@ -22,3 +22,7 @@
 
 # Office documents are not part of the repository.
 *.docx
+
+# Playwright output.
+/src/server/web/test-results
+/src/server/web/playwright-report

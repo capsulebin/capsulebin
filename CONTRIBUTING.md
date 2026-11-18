@@ -39,8 +39,8 @@ npm run check -w @capsulebin/web  && npm test -w @capsulebin/web
 npm run check -w @capsulebin/cli  && npm test -w @capsulebin/cli
 ```
 
-and, for changes to the server or the assets, the acceptance check against a release build
-(see [README.md](README.md#tests)).
+and, for changes to the server or the assets, the acceptance check and the browser tests against a
+release build (see [README.md](README.md#tests)).
 
 - **Tests come with the change.** A new data path needs a test that proves no plaintext travels
   along it; a new log line must not carry ids, tokens or report text (`logging.rs` will tell).

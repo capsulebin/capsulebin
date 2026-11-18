@@ -2,9 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     test: {
-        // The client is plain DOM without a framework, so jsdom is enough and fast.
-        // Real browser behaviour (Web Crypto, CSP, rendering) will be covered by a
-        // separate Playwright suite.
+        // jsdom is enough and fast for the unit tests. Real browser behaviour (Web
+        // Crypto, CSP, Trusted Types, rendering) is covered by the Playwright suite
+        // in e2e/ (playwright.config.ts), which runs against the release binary.
         environment: 'jsdom',
         include: ['tests/**/*.test.ts'],
     },
