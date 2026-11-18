@@ -5,6 +5,11 @@
 # A new release has to be a week old before it is proposed, so a compromised or
 # broken version has time to be yanked first.
 #
+# Commit messages and pull request titles follow Conventional Commits
+# (CONTRIBUTING.md): `build(deps): ...` and `build(deps-dev): ...` for
+# dependencies and base images,
+# `ci(deps): ...` for workflow actions.
+#
 # Runtime versions are not Dependabot's to move: the Node.js major lives in
 # .node-version, the Rust version in rust-toolchain.toml, and the Support
 # windows CI job says when they need to change. Updates that would move them
@@ -15,6 +20,9 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
     cooldown:
@@ -26,6 +34,9 @@ updates:
 
   - package-ecosystem: npm
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
     cooldown:
@@ -42,6 +53,9 @@ updates:
   # Base image digests in the Dockerfile.
   - package-ecosystem: docker
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
     cooldown:
@@ -60,6 +74,9 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    commit-message:
+      prefix: ci
+      include: scope
     schedule:
       interval: weekly
     cooldown:
