@@ -32,7 +32,7 @@ import {
     pasteIdFromInput,
 } from '@capsulebin/core';
 import { byAttr, initShell } from './shell';
-import { openCapsule } from './open-capsule';
+import { openCapsule, type PasswordRetry } from './open-capsule';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import {
     downloadItem,
@@ -563,15 +563,20 @@ class CbViewPage extends LitElement {
      * A local verifier would have meant storing it in the public header,
      * which anyone who knows the paste id can fetch unauthenticated —
      * turning it into an offline brute-force oracle. See ADR-001.
+     *
+     * When the server refused the previous answer, the prompt comes back with
+     * `retry`. The describe token was accepted, so a wrong password is the
+     * likely cause, but the capsule may also have gone away in the meantime;
+     * the server answers both alike, and so does the message.
      */
-    #promptForPassword(header: PublicHeader): Promise<Uint8Array> {
+    #promptForPassword(header: PublicHeader, retry?: PasswordRetry): Promise<Uint8Array> {
         const pwd = header.password!;
         this.#pwdContext = {
             pwdSalt: fromBase64url(pwd.salt),
             hkdfSalt: header.hkdfSaltBytes(),
             iterations: pwd.iterations,
         };
-        this.passwordError = '';
+        this.passwordError = passwordRetryMessage(retry);
         this.phase = 'password';
 
         return new Promise((resolve) => {
@@ -609,7 +614,7 @@ class CbViewPage extends LitElement {
                 this.phase = 'decrypting';
             },
             confirmBurn: () => this.#awaitBurnConfirm(),
-            promptForPassword: (header) => this.#promptForPassword(header),
+            promptForPassword: (header, retry) => this.#promptForPassword(header, retry),
         });
 
         switch (outcome.kind) {
@@ -635,6 +640,18 @@ class CbViewPage extends LitElement {
                 break;
         }
     }
+}
+
+/** The prompt's message after the server refused a password, empty on the first ask. */
+function passwordRetryMessage(retry: PasswordRetry | undefined): string {
+    if (!retry) return '';
+    if (retry.reason === 'rejected') {
+        return 'Wrong password, or the capsule is no longer available.';
+    }
+    const wait = retry.retryAfter;
+    return wait
+        ? `Too many attempts. Try again in ${wait} second${wait === 1 ? '' : 's'}.`
+        : 'Too many attempts. Try again in a moment.';
 }
 
 /**

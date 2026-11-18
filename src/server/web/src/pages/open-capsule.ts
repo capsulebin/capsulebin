@@ -24,13 +24,23 @@ import {
     type PublicHeader,
 } from '@capsulebin/core';
 
+/**
+ * Why the password prompt is shown again. The server answers a wrong password
+ * like a capsule that went away (ADR-001), so `rejected` covers both.
+ */
+export type PasswordRetry =
+    { reason: 'rejected' } | { reason: 'rate_limited'; retryAfter: number | null };
+
 export interface OpenCapsuleHooks {
     /** About to derive keys and decrypt; lets the caller show a spinner. */
     onDecrypting(): void;
     /** Show the burn-once warning; resolves once the user confirms. */
     confirmBurn(): Promise<void>;
-    /** Show the password prompt; resolves with the derived password key. */
-    promptForPassword(header: PublicHeader): Promise<Uint8Array>;
+    /**
+     * Show the password prompt; resolves with the derived password key. Called
+     * again with `retry` when the server refused the previous one.
+     */
+    promptForPassword(header: PublicHeader, retry?: PasswordRetry): Promise<Uint8Array>;
 }
 
 export type OpenCapsuleOutcome =
@@ -71,15 +81,33 @@ export async function openCapsule(hooks: OpenCapsuleHooks): Promise<OpenCapsuleO
     }
 
     // 2. Descriptor → (burn, password) → reveal → decrypt → decode, in core.
-    let askedForPassword = false;
-    const outcome = await openPaste(new PasteApi(''), id, linkSecret, {
-        confirmBurn: () => hooks.confirmBurn(),
-        passwordKey: (header) => {
-            askedForPassword = true;
-            return hooks.promptForPassword(header);
-        },
-        onDecrypting: () => hooks.onDecrypting(),
-    });
+    //    A refusal after a password was entered goes back to the prompt with the
+    //    reason instead of ending on "not available". If the capsule really went
+    //    away, the next round's descriptor request says so and ends the loop.
+    let burnConfirmed = false;
+    let retry: PasswordRetry | undefined;
+    let askedForPassword: boolean;
+    let outcome: Awaited<ReturnType<typeof openPaste>>;
+    for (;;) {
+        askedForPassword = false;
+        outcome = await openPaste(new PasteApi(''), id, linkSecret, {
+            confirmBurn: async () => {
+                if (burnConfirmed) return;
+                await hooks.confirmBurn();
+                burnConfirmed = true;
+            },
+            passwordKey: (header) => {
+                askedForPassword = true;
+                return hooks.promptForPassword(header, retry);
+            },
+            onDecrypting: () => hooks.onDecrypting(),
+        });
+        if (outcome.kind !== 'api_error' || !askedForPassword) break;
+        const { status, retryAfter } = outcome.error;
+        if (status === 404) retry = { reason: 'rejected' };
+        else if (status === 429) retry = { reason: 'rate_limited', retryAfter };
+        else break;
+    }
 
     switch (outcome.kind) {
         case 'success':

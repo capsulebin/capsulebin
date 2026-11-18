@@ -57,10 +57,10 @@ export async function installGuard(context: BrowserContext): Promise<Guard> {
         page.on('console', (message) => {
             const text = message.text();
             // The server answers unknown, consumed and wrong-password capsules
-            // with 404; engines log that as a failed resource load. CSP
-            // violations arrive through the event above with their source, so
-            // their console echo is not counted twice.
-            if (message.type() !== 'error' || /\b404\b/.test(text)) return;
+            // with 404, and too many wrong passwords with 429; engines log both
+            // as a failed resource load. CSP violations arrive through the event
+            // above with their source, so their console echo is not counted twice.
+            if (message.type() !== 'error' || /\b(404|429)\b/.test(text)) return;
             if (/Content Security Policy|Trusted Type/i.test(text)) return;
             recorded.push({ message: `console error: ${text}` });
         });
