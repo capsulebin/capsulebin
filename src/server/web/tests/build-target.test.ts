@@ -7,7 +7,7 @@
  *
  * These two settings look independent and are not. `tsconfig.json` decides which
  * APIs TypeScript believes exist at runtime; `vite.config.ts` decides which
- * browsers the output has to run on. esbuild rewrites *syntax* to match the
+ * browsers the output has to run on. The bundler rewrites *syntax* to match the
  * browser target but does **not** polyfill *APIs* — so raising `lib` alone does
  * not make a newer method available, it only removes the compile error that was
  * protecting users on older browsers from a runtime `TypeError`.
@@ -72,7 +72,7 @@ describe('browser baseline', () => {
             expect(
                 year,
                 `lib "${entry}" is newer than the browser baseline (${BASELINE.browsers.join(', ')}). ` +
-                    'esbuild does not polyfill APIs, so this would ship code that throws for some users. ' +
+                    'The bundler does not polyfill APIs, so this would ship code that throws for some users. ' +
                     'Raise vite.config.ts build.target in the same change, or lower this entry.',
             ).toBeLessThanOrEqual(baselineYear);
         }

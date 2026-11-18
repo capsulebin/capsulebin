@@ -7,7 +7,7 @@ import { defineConfig } from 'vite';
  * file.
  */
 export default defineConfig({
-    root: __dirname,
+    root: import.meta.dirname,
 
     build: {
         outDir: 'dist',
@@ -18,7 +18,7 @@ export default defineConfig({
         // without anyone deciding to.
         //
         // This has to stay in step with `target` and `lib` in tsconfig.json, because
-        // the two enforce different halves of the same promise: esbuild rewrites
+        // the two enforce different halves of the same promise: the bundler rewrites
         // *syntax* down to these browsers, but it does not polyfill *APIs*. If
         // tsconfig claimed a newer library than the browsers here provide, then
         // `Object.groupBy` or `Set.prototype.union` would type-check cleanly and then
@@ -31,12 +31,12 @@ export default defineConfig({
         // No source maps in production: the bundle ships inside the binary and source
         // maps would only widen the attack surface.
         sourcemap: false,
-        rollupOptions: {
+        rolldownOptions: {
             input: {
-                index: resolve(__dirname, 'index.html'),
-                p: resolve(__dirname, 'p.html'),
-                manage: resolve(__dirname, 'manage.html'),
-                report: resolve(__dirname, 'report.html'),
+                index: resolve(import.meta.dirname, 'index.html'),
+                p: resolve(import.meta.dirname, 'p.html'),
+                manage: resolve(import.meta.dirname, 'manage.html'),
+                report: resolve(import.meta.dirname, 'report.html'),
             },
         },
     },
