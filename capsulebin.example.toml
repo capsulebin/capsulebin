@@ -1,0 +1,204 @@
+# CapsuleBin example configuration.
+#
+# Every value below is the built-in default unless noted. Copy this file, adjust
+# it, and start with `capsulebin --config capsulebin.toml serve`.
+#
+# Two things to know:
+#
+#   * Unknown keys are a startup error, not a warning. A typo would otherwise
+#     leave a setting silently inactive.
+#   * Every setting can be overridden by an environment variable named
+#     CAPSULEBIN__<TABLE>__<KEY>, for example CAPSULEBIN__SERVER__BIND. That is
+#     the intended way to inject values in a container.
+#
+# Verify a file without opening a port:  capsulebin --config capsulebin.toml check
+
+[server]
+bind = "127.0.0.1:8080"
+
+# Required, no default. The externally reachable base URL, without a trailing
+# slash. It appears in problem+json "type" URIs and in generated share links, so
+# it is taken from configuration rather than from a request header - a Host header
+# is attacker-controlled.
+public_url = "https://paste.example"
+
+# Development only: serve assets from a directory instead of the embedded copy.
+# Leave unset in production, where the binary is self-contained.
+# asset_dir = "src/server/web/dist"
+
+# CIDR ranges of reverse proxies whose X-Forwarded-For is trusted to name the
+# real client IP - the address rate limiting keys on. Empty (the default) means
+# only the TCP peer address is used, which is correct when capsulebin is reached
+# directly. Behind a reverse proxy, list the proxy's own address or subnet, not
+# the clients':
+# trusted_proxies = ["127.0.0.1/32"]
+trusted_proxies = []
+
+[database]
+# Must be on a local filesystem. The write-ahead log is not reliable over NFS.
+path = "capsulebin.db"
+
+# SQLite allows one writer at a time. Without a timeout a concurrent write fails
+# immediately instead of waiting, so zero is rejected.
+busy_timeout_ms = 5000
+
+# "full" | "normal" | "off". Only "full" guarantees an acknowledged write survives
+# a power loss. For one-time pastes that loss would be unrecoverable, and at this
+# data volume the cost is negligible - change it only with a specific reason.
+synchronous = "full"
+
+[pastes]
+# Applied when a request does not specify an expiry.
+default_expiry = "7d"
+
+# Upper bound a request may ask for. Must not be below default_expiry.
+maximum_expiry = "90d"
+
+# Whether a paste may be created with no expiry at all. Off by default: an
+# accountless service accumulating permanent content is a moderation problem.
+allow_permanent = false
+
+# Plaintext budget per capsule. The server cannot measure plaintext - it never
+# sees any - so this is enforced against the ciphertext size plus a fixed
+# allowance for authentication overhead. Binary units only: "10MiB", not "10MB".
+max_plaintext_size = "10MiB"
+
+# Limit on the opaque public header a client may store. This is the one
+# client-supplied blob returned on an unauthenticated descriptor request, so it is
+# kept small; 4KiB is the highest accepted value.
+max_public_header_size = "2KiB"
+
+# There is deliberately no setting for the number of items in a capsule or for
+# which kinds of files it may hold: the server never sees inside a capsule, so
+# such a limit could only be honoured voluntarily by a client.
+
+[purge]
+# Retention. The purge job removes whole rows - the metadata goes with the
+# capsule, not just the payload.
+#
+# There is deliberately no interval setting. The job runs once after startup and
+# then once a day; what an operator configures is *what* is removed, not how often
+# the question is asked. `capsulebin prune` applies the same rules on demand.
+enabled = true
+
+# A capsule nobody ever retrieved is measured from its creation.
+never_retrieved_after = "30d"
+
+# A capsule that was retrieved is measured from the last authorized retrieval. A
+# capsule created without an expiry is not exempt: "no fixed expiry" means the
+# creator named no deadline, not that the instance keeps it forever.
+inactive_after = "90d"
+
+# How coarsely the last-retrieval timestamp is advanced. One write per window
+# instead of one per request; the inactivity measurement becomes correspondingly
+# imprecise, which the thresholds above are far too coarse to notice. Must not
+# exceed inactive_after.
+retrieval_timestamp_granularity = "1h"
+
+# Rows removed per rule per statement. The job keeps going until a pass removes
+# nothing, so this bounds a single write, not the total.
+batch_size = 500
+
+[creation]
+# "token" | "public" | "disabled"
+#
+#   token     a bearer token from token_hashes is required
+#   public    anyone may create; only sensible behind another access control
+#   disabled  read-only instance: existing pastes stay retrievable
+#
+# "token" is the default so that an instance reachable before it is configured is
+# not an open write target.
+mode = "token"
+
+# SHA-256 of each accepted token, base64url without padding. The plain token is
+# never stored here, so this file does not need to be treated as a secret store.
+#
+# Generate a token and its entry with:
+#
+#   capsulebin token
+#
+# The hash is domain-separated, so `sha256sum` of the token alone will not match.
+# Several entries are allowed, which is how a token is rotated: add the new hash,
+# switch clients over, then remove the old one.
+token_hashes = []
+
+[rate_limits]
+# Per-endpoint-class, per-client-IP token buckets. `requests_per_minute = 0`
+# (the default for every per-client class below) disables limiting for that
+# class. The one limit on by default is invalid_capability_per_paste, which is
+# keyed by paste id rather than client IP. In-memory only: a restart resets every
+# counter, which is fine for a single instance and out of scope for a fleet.
+#
+# The client IP a bucket keys on is the TCP peer address unless it is listed in
+# server.trusted_proxies, in which case X-Forwarded-For is trusted instead - set
+# that first, or every request behind a reverse proxy shares one bucket.
+#
+# A rate is either `requests_per_minute` or `requests_per_hour` (for classes
+# whose sensible rate is below one a minute), never both; a class with a rate
+# needs `burst >= 1`. A rejected request gets 429 with Retry-After (seconds
+# until the next token) and code "rate_limited".
+
+[rate_limits.create]
+requests_per_minute = 0
+burst = 0
+# Request bytes per client IP per day, refilled continuously (e.g. "100MiB").
+# Charged with the request's Content-Length before anything is stored, so a few
+# maximum-size uploads cannot hide behind the request rate. While set, a create
+# without Content-Length is refused with 411. Off unless set.
+# bytes_per_day = "100MiB"
+# Create requests in flight per client IP (e.g. 2).
+max_concurrent = 0
+
+[rate_limits.descriptor]
+requests_per_minute = 0
+burst = 0
+
+[rate_limits.retrieve]
+requests_per_minute = 0
+burst = 0
+
+[rate_limits.delete]
+requests_per_minute = 0
+burst = 0
+
+[rate_limits.invalid_capability_per_paste]
+# Wrong passwords for ONE paste, from any address: retrieves that prove the
+# link (correct describe token) but fail the reveal token. Callers with only
+# the id never count against it and never see its 429.
+# On by default: it is what protects a capsule's password once its link has
+# leaked (every guess needs a retrieve), and unlike the per-client limits it
+# does not depend on trusted_proxies being right. 0 disables it.
+requests_per_minute = 10
+burst = 10
+
+[rate_limits.invalid_capability]
+# Describes, retrieves and deletes answered with 404 - unknown id, wrong capability,
+# expired, moderated, all alike. Each costs a token; with the bucket empty,
+# further requests of these kinds from that client are refused with 429 before
+# any lookup. Legitimate use almost never fails, so e.g. 10 per minute with a
+# burst of 10 throttles guessing without getting in anyone's way.
+requests_per_minute = 0
+burst = 0
+
+[rate_limits.report]
+# POST /api/v1/reports. Reports are rare; once this is on, something like
+# 5 per hour with a burst of 2 is plenty.
+requests_per_hour = 0
+burst = 0
+
+[abuse]
+# Notice and action (ADR-013). Anyone can report a capsule by id on /report;
+# the operator handles reports with `capsulebin reports ...` and blocks or
+# removes capsules with `capsulebin moderation ...` - without decrypting them.
+# A moderated capsule answers exactly like an unknown one; there is no notice.
+
+# Accept reports at POST /api/v1/reports. Moderation works either way.
+enabled = true
+
+# Shown on the report page as an out-of-band channel (an address or a URL).
+# contact = "abuse@paste.example"
+
+# How long closed reports and moderation records are kept. Reports contain
+# free text and contact details from the public - personal data. Open reports
+# stay until they are closed.
+report_retention = "90d"

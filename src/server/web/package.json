@@ -1,0 +1,31 @@
+{
+    "name": "@capsulebin/web",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "license": "AGPL-3.0-only",
+    "description": "CapsuleBin web client: TypeScript, Web Crypto, Lit for view rendering, no SPA router",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "check": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "devDependencies": {
+        "@types/dompurify": "^3.0.5",
+        "@types/node": "^22.19.0",
+        "jsdom": "^26.1.0",
+        "typescript": "~7.0.2",
+        "vite": "^7.1.5",
+        "vitest": "^5.1.0"
+    },
+    "dependencies": {
+        "@capsulebin/core": "*",
+        "dompurify": "^3.4.13",
+        "highlight.js": "^11.11.1",
+        "lit": "^3.3.3",
+        "marked": "^18.0.9"
+    }
+}

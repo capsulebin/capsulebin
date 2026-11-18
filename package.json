@@ -1,0 +1,18 @@
+{
+    "name": "capsulebin",
+    "private": true,
+    "license": "AGPL-3.0-only",
+    "workspaces": [
+        "src/core",
+        "src/cli",
+        "src/server/web"
+    ],
+    "scripts": {
+        "format": "prettier --write \"src/**/*.{ts,css,html,json}\" package.json",
+        "format:check": "prettier --check \"src/**/*.{ts,css,html,json}\" package.json"
+    },
+    "devDependencies": {
+        "jsdom": "^26.1.0",
+        "prettier": "3.9.6"
+    }
+}

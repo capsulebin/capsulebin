@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="robots" content="noindex, nofollow, noarchive" />
+        <meta name="referrer" content="no-referrer" />
+        <title>Manage capsule · CapsuleBin</title>
+        <script src="/theme-init.js"></script>
+        <script type="module" src="/src/pages/manage.ts"></script>
+    </head>
+    <body>
+        <header class="cb-head">
+            <a class="cb-logo" href="/">
+                <svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true">
+                    <path
+                        d="M9 1.2 16.4 5.4v9.2L9 18.8 1.6 14.6V5.4L9 1.2Z"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                    />
+                    <path
+                        d="M6.2 9.4h5.6v4.2H6.2V9.4Zm1.1 0V7.9a1.7 1.7 0 0 1 3.4 0v1.5"
+                        stroke="currentColor"
+                        stroke-width="1.3"
+                    />
+                </svg>
+                CapsuleBin
+            </a>
+            <span class="cb-claim">Manage</span>
+            <button
+                type="button"
+                class="cb-btn-icon cb-push"
+                data-theme-toggle
+                aria-label="Switch theme"
+            >
+                ◐
+            </button>
+        </header>
+
+        <main class="cb-main" data-manage-root></main>
+
+        <noscript>
+            <div class="cb-main">
+                <h1 class="cb-h1">This page needs JavaScript</h1>
+                <p class="cb-lede">
+                    The delete secret is in the fragment of the address and is only turned into a
+                    capability inside your browser. Without JavaScript there is nowhere for that to
+                    happen.
+                </p>
+            </div>
+        </noscript>
+
+        <footer class="cb-foot">
+            <span>Deleting is permanent and cannot be undone.</span>
+        </footer>
+
+        <template id="tmpl-loading">
+            <h1 class="cb-h1">Manage capsule</h1>
+            <p class="cb-lede">
+                This page can delete the capsule but not open it: the delete link contains no
+                decryption key.
+            </p>
+        </template>
+
+        <template id="tmpl-ready">
+            <h1 class="cb-h1">Delete this capsule?</h1>
+            <p class="cb-lede">
+                The capsule will be permanently removed. Anyone with the share link will no longer
+                be able to open it.
+            </p>
+            <ul class="cb-status">
+                <li data-meta-expires></li>
+                <li data-meta-burn></li>
+                <li data-meta-size></li>
+            </ul>
+            <div class="cb-callout cb-callout-danger">
+                <strong>This cannot be undone.</strong>
+                The ciphertext is deleted immediately from the database.
+            </div>
+            <p>
+                <button type="button" class="cb-btn" data-delete-btn>
+                    Yes, delete permanently
+                </button>
+                <a href="/" class="cb-btn cb-btn-ghost">Cancel</a>
+            </p>
+        </template>
+
+        <template id="tmpl-deleting">
+            <h1 class="cb-h1">Deleting&hellip;</h1>
+            <div class="cb-spinner"></div>
+            <p class="cb-lede cb-pulse">Contacting the server to remove the capsule.</p>
+        </template>
+
+        <template id="tmpl-done">
+            <h1 class="cb-h1">Deleted</h1>
+            <p class="cb-lede">The capsule has been permanently deleted.</p>
+            <p><a href="/" class="cb-btn">Create your own capsule</a></p>
+        </template>
+
+        <template id="tmpl-error">
+            <h1 class="cb-h1">Not available</h1>
+            <p class="cb-lede" data-error-message>
+                This capsule does not exist, has already been deleted, or the link is incomplete.
+            </p>
+            <p><a href="/" class="cb-btn">Create your own capsule</a></p>
+        </template>
+    </body>
+</html>

@@ -1,0 +1,29 @@
+# Development configuration. Committed so that a fresh clone can start the server
+# with one command.
+#
+#   cargo run -p capsulebin-server -- --config capsulebin.dev.toml serve
+#
+# NOT suitable for anything reachable from a network:
+#
+#   * creation is open to anyone (mode = "public")
+#   * assets are read from a directory instead of the binary, so an edited file
+#     takes effect without a rebuild
+#   * public_url points at localhost
+#
+# Copy capsulebin.example.toml for a real deployment.
+
+[server]
+bind = "127.0.0.1:8081"
+public_url = "http://localhost:8081"
+
+# Serve the built frontend from disk. Remove this line to test the embedded copy.
+asset_dir = "src/server/web/dist"
+
+[database]
+# Gitignored via *.db. Delete the file to start from an empty database.
+path = "capsulebin.db"
+
+[creation]
+# Open, because a development instance should not need a token to be useful.
+# Any deployment reachable beyond localhost must use "token".
+mode = "public"

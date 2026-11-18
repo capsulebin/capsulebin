@@ -1,0 +1,88 @@
+{
+  "description": "Golden test vectors for Capsule File Format v1 and Crypto Profile v1. All values are deterministic \u2014 the random bytes are fixed sequences. Generated from the specifications by an independent reference (Python stdlib for HKDF, PBKDF2, SHA-256 and the capsule encoding; Node's node:crypto for AES-256-GCM), not by the implementation they test.",
+  "format_version": 1,
+  "inputs": {
+    "link_secret_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "hkdf_salt_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+    "nonce_hex": "d0d1d2d3d4d5d6d7d8d9dadb",
+    "delete_secret_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+    "public_header_json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\"}",
+    "item_text": "Hello, CapsuleBin!"
+  },
+  "expected": {
+    "content_key_hex": "f2414e19a5612ffaa50738945fd9c24563391047c48b44eb0a3a55d25f3f2513",
+    "reveal_token_hex": "6385194861024bd931231dd7b183059eaaf5512216f230b6e3a5fa5010213458",
+    "reveal_verifier_b64": "o2g9-Vlt2flmhkglyyIcN12HX2Fa96EKJPz2m8Y_4io",
+    "delete_verifier_b64": "XTgGtOvBGhdYlst_OR_RNoE_26aA8kgU1kYgg4O0PU8",
+    "capsule_b64": "Q0FQU1VMRQAAAQAAAJ17InNjaGVtYV92ZXJzaW9uIjoxLCJ0aXRsZSI6bnVsbCwiaXRlbXMiOlt7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoiaGVsbG8udHh0Iiwic2l6ZSI6MTgsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoicGxhaW4ifV19SGVsbG8sIENhcHN1bGVCaW4hAAAA",
+    "ciphertext_b64": "cTaHqj7zr2z_BgON7IeOBaucMCoMVSWupXDXypHRAcuIRQ5yVYr12-PZEe0io67W2bauwsrhBdLdOECCIM9A12uLZ0_PeM-d1ylFQuSaze81JvLGCGCsP5YLBbQgQIMtFh9frLLPXAq5Qo7V_GZggScmbRQLhQbHHDQK_ALB8Dd-sehMQx_U_uh6dC5c6zMkzC77nPlZz-MaNd8WvgDi43c8i4SMNjQYKS-Xuf7hAasEgRqbeIuI8TFla04AEia_TPNrOQG9MeQoL6dEune40A",
+    "capsule_unpadded_length": 189,
+    "capsule_padded_length": 192
+  },
+  "forward_compat": {
+    "description": "A valid capsule with an unknown optional manifest field. Decoders must ignore unknown fields, not reject them.",
+    "capsule_b64": "Q0FQU1VMRQAAAQAAAKZ7InNjaGVtYV92ZXJzaW9uIjoxLCJ0aXRsZSI6bnVsbCwiZnV0dXJlX2ZpZWxkIjo0MiwiaXRlbXMiOlt7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoieCIsInNpemUiOjUsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoicGxhaW4ifV19aGVsbG8"
+  },
+  "negative": [
+    {
+      "name": "oversized_manifest",
+      "capsule_b64": "Q0FQU1VMRQAAAQAAAX____94eHh4eHh4eHh4",
+      "error_contains": "manifest length"
+    },
+    {
+      "name": "unknown_schema_version",
+      "capsule_b64": "Q0FQU1VMRQAAAQAAAC17InNjaGVtYV92ZXJzaW9uIjo5OSwidGl0bGUiOm51bGwsIml0ZW1zIjpbXX0",
+      "error_contains": "schema version"
+    },
+    {
+      "name": "duplicate_item_id",
+      "capsule_b64": "Q0FQU1VMRQAAAQAAAP17InNjaGVtYV92ZXJzaW9uIjoxLCJ0aXRsZSI6bnVsbCwiaXRlbXMiOlt7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoiYSIsInNpemUiOjUsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoicGxhaW4ifSx7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoiYiIsInNpemUiOjUsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoicGxhaW4ifV19aGVsbG9oZWxsbw",
+      "error_contains": "duplicate"
+    },
+    {
+      "name": "invalid_presentation",
+      "capsule_b64": "Q0FQU1VMRQAAAQAAAJN7InNjaGVtYV92ZXJzaW9uIjoxLCJ0aXRsZSI6bnVsbCwiaXRlbXMiOlt7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoieCIsInNpemUiOjUsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoiaHRtbCJ9XX1oZWxsbw",
+      "error_contains": "presentation"
+    },
+    {
+      "name": "non_zero_padding",
+      "capsule_b64": "Q0FQU1VMRQAAAQAAAJ17InNjaGVtYV92ZXJzaW9uIjoxLCJ0aXRsZSI6bnVsbCwiaXRlbXMiOlt7ImlkIjoiMDFKMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJuYW1lIjoiaGVsbG8udHh0Iiwic2l6ZSI6MTgsIm1lZGlhX3R5cGUiOiJ0ZXh0L3BsYWluIiwicHJlc2VudGF0aW9uIjoicGxhaW4ifV19SGVsbG8sIENhcHN1bGVCaW4hAAAB",
+      "error_contains": "padding"
+    }
+  ],
+  "password": {
+    "description": "Same inputs as above, but with password='test-password' mixed into HKDF.",
+    "inputs": {
+      "link_secret_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "hkdf_salt_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+      "password": "test-password",
+      "password_salt_hex": "0102030405060708090a0b0c0d0e0f10",
+      "password_iterations": 1000
+    },
+    "expected": {
+      "password_key_hex": "370d1a50de52c7294c36ee6fa9e3fbf6464b4d3671c0805efccab4649998f37a",
+      "content_key_hex": "a6843dcbac097479044bdad32db3c90db4612afe6e2b287dcb80efa72622e135",
+      "reveal_token_hex": "4b811b6822cbf892a01299fc5b80901c281dfee75cdd6f8a0805416b87e03739"
+    }
+  },
+  "describe": {
+    "description": "Describe token: HKDF-SHA-256(ikm=link secret, salt=the paste id's 16 raw bytes, info=\"capsule/v1/describe\"); its verifier is SHA-256 of the token. Uses inputs.link_secret_hex.",
+    "inputs": {
+      "paste_id": "EBESExQVFhcYGRobHB0eHw"
+    },
+    "expected": {
+      "describe_token_hex": "bb7ab6d094065652a313ce7b50a6fa2b63d8a74fc88e39076c2b5f296795a131",
+      "describe_verifier_b64": "jSCtm_7Dj8ltZ_apbO9TMQ3-E1wokkW-iWI6-6BRBew"
+    }
+  },
+  "password_nfc": {
+    "description": "Passwords are normalized to Unicode NFC before PBKDF2: both spellings derive the same key. Uses password.inputs.password_salt_hex and password_iterations.",
+    "inputs": {
+      "password_composed": "P\u00e4ssw\u00f6rd",
+      "password_decomposed": "Pa\u0308sswo\u0308rd"
+    },
+    "expected": {
+      "password_key_hex": "18bbff3788a31d18a425690700817071e6aff242bf1b0882096e92ef3590ab9b"
+    }
+  }
+}

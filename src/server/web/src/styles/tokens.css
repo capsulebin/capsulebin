@@ -1,0 +1,136 @@
+/* CapsuleBin design tokens.
+ *
+ * Hard constraint: the Content Security Policy allows neither inline styles nor
+ * external resources. For this file that means:
+ *
+ *   - No web fonts. System stacks only.
+ *   - No CSS-in-JS. State travels through classes and data attributes.
+ *
+ * Theme resolution: the system preference is the default, and a manual toggle
+ * must be able to override it in BOTH directions. The values are therefore set
+ * three times - a media query for the preference, then [data-theme] with higher
+ * specificity for an explicit choice.
+ *
+ * Contrast: every text/ground pair holds at least 4.5:1 against --cb-bg,
+ * --cb-surface and --cb-surface-sunken; the weakest pair is --cb-warning on
+ * --cb-surface-sunken at 4.58:1. Verified in tests/contrast.test.ts.
+ */
+
+:root {
+    color-scheme: light dark;
+
+    /* --- Light --- */
+    --cb-bg: #fbfcfc;
+    --cb-surface: #ffffff;
+    --cb-surface-sunken: #f2f5f5;
+    --cb-border: #dbe3e2;
+    --cb-border-strong: #7d8e8c;
+    --cb-text: #0d1b1a;
+    --cb-text-muted: #4a5c5a;
+    --cb-accent: #0f766e;
+    --cb-accent-hover: #115e59;
+    --cb-accent-text: #ffffff;
+    --cb-danger: #b42318;
+    --cb-warning: #b45309;
+    --cb-success: #067647;
+    --cb-focus-ring: #0f766e;
+    --cb-tint-accent: #e6f2f1;
+    --cb-tint-danger: #fdecea;
+    --cb-tint-warning: #fdf3e5;
+    --cb-tint-success: #e6f4ee;
+    --cb-shadow-card: 0 1px 2px rgba(13, 27, 26, 0.06);
+
+    /* --- Not theme dependent --- */
+    --cb-font-sans:
+        ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+        sans-serif;
+    --cb-font-mono:
+        ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --cb-radius-sm: 4px;
+    --cb-radius-md: 8px;
+    --cb-radius-lg: 12px;
+
+    --cb-space-1: 0.25rem;
+    --cb-space-2: 0.5rem;
+    --cb-space-3: 0.75rem;
+    --cb-space-4: 1rem;
+    --cb-space-5: 1.5rem;
+    --cb-space-6: 2rem;
+
+    /* Line length for body copy. */
+    --cb-measure: 72ch;
+}
+
+/* Dark values. --cb-accent is lightened because #0f766e would drop below 3:1 on
+ * a dark ground. */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --cb-bg: #0c1413;
+        --cb-surface: #131e1d;
+        --cb-surface-sunken: #0f1a19;
+        --cb-border: #263735;
+        --cb-border-strong: #587471;
+        --cb-text: #e6efee;
+        --cb-text-muted: #9db0ae;
+        --cb-accent: #2dd4bf;
+        --cb-accent-hover: #5eead4;
+        --cb-accent-text: #08201e;
+        --cb-danger: #f97066;
+        --cb-warning: #f79009;
+        --cb-success: #47cd89;
+        --cb-focus-ring: #2dd4bf;
+        --cb-tint-accent: #10322e;
+        --cb-tint-danger: #33150f;
+        --cb-tint-warning: #2e1e05;
+        --cb-tint-success: #0e2a1d;
+        --cb-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+}
+
+/* An explicit choice wins over the system preference - in both directions. */
+:root[data-theme="light"] {
+    color-scheme: light;
+    --cb-bg: #fbfcfc;
+    --cb-surface: #ffffff;
+    --cb-surface-sunken: #f2f5f5;
+    --cb-border: #dbe3e2;
+    --cb-border-strong: #7d8e8c;
+    --cb-text: #0d1b1a;
+    --cb-text-muted: #4a5c5a;
+    --cb-accent: #0f766e;
+    --cb-accent-hover: #115e59;
+    --cb-accent-text: #ffffff;
+    --cb-danger: #b42318;
+    --cb-warning: #b45309;
+    --cb-success: #067647;
+    --cb-focus-ring: #0f766e;
+    --cb-tint-accent: #e6f2f1;
+    --cb-tint-danger: #fdecea;
+    --cb-tint-warning: #fdf3e5;
+    --cb-tint-success: #e6f4ee;
+    --cb-shadow-card: 0 1px 2px rgba(13, 27, 26, 0.06);
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --cb-bg: #0c1413;
+    --cb-surface: #131e1d;
+    --cb-surface-sunken: #0f1a19;
+    --cb-border: #263735;
+    --cb-border-strong: #587471;
+    --cb-text: #e6efee;
+    --cb-text-muted: #9db0ae;
+    --cb-accent: #2dd4bf;
+    --cb-accent-hover: #5eead4;
+    --cb-accent-text: #08201e;
+    --cb-danger: #f97066;
+    --cb-warning: #f79009;
+    --cb-success: #47cd89;
+    --cb-focus-ring: #2dd4bf;
+    --cb-tint-accent: #10322e;
+    --cb-tint-danger: #33150f;
+    --cb-tint-warning: #2e1e05;
+    --cb-tint-success: #0e2a1d;
+    --cb-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+}

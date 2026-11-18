@@ -1,0 +1,6 @@
+# Tests may use unwrap/expect; production code may not (see lints in Cargo.toml).
+# Note: this only covers `#[cfg(test)]` modules. Files under `tests/` are separate
+# crates and opt in explicitly with an inner attribute.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

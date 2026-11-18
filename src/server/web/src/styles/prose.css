@@ -1,0 +1,158 @@
+/**
+ * Markdown prose typography.
+ *
+ * Applied to the rendered output container so that Markdown content looks
+ * deliberate without any framework or class annotation on the generated
+ * elements.  Uses CapsuleBin design tokens for colours; keeps line length
+ * within the --cb-measure variable. Rendered Markdown is sanitized before it
+ * reaches these styles (see render-markdown.ts).
+ */
+
+/* ----- blocks ----------------------------------------------------------- */
+
+.cb-prose {
+    max-width: var(--cb-measure);
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+.cb-prose h1,
+.cb-prose h2,
+.cb-prose h3,
+.cb-prose h4,
+.cb-prose h5,
+.cb-prose h6 {
+    margin-top: var(--cb-space-5);
+    margin-bottom: var(--cb-space-3);
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--cb-text);
+}
+
+.cb-prose h1 {
+    font-size: 1.5rem;
+}
+.cb-prose h2 {
+    font-size: 1.25rem;
+}
+.cb-prose h3 {
+    font-size: 1.125rem;
+}
+.cb-prose h4 {
+    font-size: 1rem;
+}
+
+.cb-prose p {
+    margin: var(--cb-space-3) 0;
+}
+
+.cb-prose blockquote {
+    margin: var(--cb-space-3) 0;
+    padding: var(--cb-space-2) var(--cb-space-4);
+    border-left: 3px solid var(--cb-accent);
+    background: var(--cb-tint-accent);
+    color: var(--cb-text);
+}
+
+/* ----- lists ------------------------------------------------------------ */
+
+.cb-prose ul,
+.cb-prose ol {
+    margin: var(--cb-space-3) 0;
+    padding-left: var(--cb-space-5);
+}
+
+.cb-prose li {
+    margin: var(--cb-space-1) 0;
+}
+
+.cb-prose li > ul,
+.cb-prose li > ol {
+    margin-top: var(--cb-space-1);
+    margin-bottom: var(--cb-space-1);
+}
+
+.cb-prose input[type="checkbox"] {
+    /* Task-list checkboxes are always read-only. */
+    pointer-events: none;
+    margin-right: var(--cb-space-2);
+}
+
+/* ----- code ------------------------------------------------------------- */
+
+.cb-prose code {
+    font-family: var(--cb-font-mono);
+    font-size: 0.875em;
+    background: var(--cb-surface-sunken);
+    padding: 0.125em 0.375em;
+    border-radius: var(--cb-radius-sm);
+}
+
+.cb-prose pre {
+    margin: var(--cb-space-4) 0;
+    padding: var(--cb-space-4);
+    background: var(--cb-surface-sunken);
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius-md);
+    overflow-x: auto;
+}
+
+.cb-prose pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+}
+
+/* ----- tables ----------------------------------------------------------- */
+
+.cb-prose table {
+    width: 100%;
+    margin: var(--cb-space-4) 0;
+    border-collapse: collapse;
+}
+
+.cb-prose th,
+.cb-prose td {
+    padding: var(--cb-space-2) var(--cb-space-3);
+    border: 1px solid var(--cb-border);
+    text-align: left;
+}
+
+.cb-prose th {
+    background: var(--cb-surface-sunken);
+    font-weight: 600;
+}
+
+/* ----- links & hr ------------------------------------------------------- */
+
+.cb-prose a {
+    color: var(--cb-accent);
+    text-decoration: underline;
+}
+
+.cb-prose a:hover {
+    color: var(--cb-accent-hover);
+}
+
+.cb-prose hr {
+    margin: var(--cb-space-5) 0;
+    border: none;
+    border-top: 1px solid var(--cb-border);
+}
+
+/* ----- details ---------------------------------------------------------- */
+
+.cb-prose details {
+    margin: var(--cb-space-3) 0;
+}
+
+.cb-prose summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--cb-text);
+}
+
+.cb-prose details > *:not(summary) {
+    margin-left: var(--cb-space-4);
+}

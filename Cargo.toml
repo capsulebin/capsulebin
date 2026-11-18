@@ -1,0 +1,66 @@
+[workspace]
+members = ["src/server"]
+resolver = "3"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+repository = "https://github.com/capsulebin/capsulebin"
+homepage = "https://capsulebin.eu"
+authors = ["CapsuleBin contributors"]
+# The server does not go to crates.io: it is an application, not a library
+# meant for reuse. Saying so keeps `cargo publish` from succeeding by accident.
+publish = false
+
+[workspace.dependencies]
+# anyhow is for the binary boundary only, thiserror for typed library errors.
+# See docs/adr/ADR-007-error-handling.md.
+anyhow = "1"
+axum = "0.8"
+# The SIMD engines are default-on from 0.23 and carry hand-written unsafe
+# intrinsics. Base64 decoding runs on attacker-controlled request bodies here, and
+# `URL_SAFE_NO_PAD` is a scalar engine either way, so the feature buys us nothing
+# and is left out of the build.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+clap = { version = "4", features = ["derive"] }
+# OS entropy only - no userspace PRNG to seed or reason about.
+getrandom = "0.4"
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+# Constant-time comparison for capability verifiers. A `==` on secrets is a timing
+# oracle, so the crate is a hard requirement rather than a convenience.
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+toml = "1"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["limit", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ulid = "3"
+# Property-based tests for the parsers that read request data (dev only).
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[workspace.dependencies.sqlx]
+version = "0.9"
+default-features = false
+features = ["runtime-tokio", "sqlite", "migrate", "macros"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# The server is a long-running process: a panic inside a handler must not be able
+# to bypass the "no plaintext leaves the server" invariant.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

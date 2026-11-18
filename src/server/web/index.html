@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="robots" content="noindex, nofollow, noarchive" />
+        <meta name="referrer" content="no-referrer" />
+        <title>CapsuleBin</title>
+        <script src="/theme-init.js"></script>
+        <script type="module" src="/src/pages/create.ts"></script>
+    </head>
+    <body>
+        <header class="cb-head">
+            <a class="cb-logo" href="/">
+                <svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true">
+                    <path
+                        d="M9 1.2 16.4 5.4v9.2L9 18.8 1.6 14.6V5.4L9 1.2Z"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                    />
+                    <path
+                        d="M6.2 9.4h5.6v4.2H6.2V9.4Zm1.1 0V7.9a1.7 1.7 0 0 1 3.4 0v1.5"
+                        stroke="currentColor"
+                        stroke-width="1.3"
+                    />
+                </svg>
+                CapsuleBin
+            </a>
+            <span class="cb-claim">Paste it. Seal it. Share it.</span>
+            <button
+                type="button"
+                class="cb-btn-icon cb-push"
+                data-theme-toggle
+                aria-label="Switch theme"
+            >
+                ◐
+            </button>
+        </header>
+
+        <main class="cb-main" data-create-root></main>
+
+        <noscript>
+            <div class="cb-main">
+                <h1 class="cb-h1">This page needs JavaScript</h1>
+                <p class="cb-lede">
+                    CapsuleBin encrypts content exclusively in your browser before it is sent
+                    anywhere. Without JavaScript there is nowhere for that to happen, so the editor
+                    cannot be shown.
+                </p>
+            </div>
+        </noscript>
+
+        <footer class="cb-foot">
+            <span>Encrypted in your browser.</span>
+            <span class="cb-push"><a href="/report">Report content</a></span>
+        </footer>
+
+        <!-- templates ----------------------------------------------------------- -->
+
+        <template id="tmpl-edit">
+            <h1 class="cb-h1">Share encrypted, without an account</h1>
+            <p class="cb-lede">
+                Text is encrypted in your browser. The server stores ciphertext only and knows
+                neither the content nor the key.
+            </p>
+            <form class="cb-form cb-form--full" data-create-form novalidate>
+                <label class="cb-sr-only" for="create-title">Title (optional)</label>
+                <input
+                    id="create-title"
+                    class="cb-input cb-title-input"
+                    type="text"
+                    maxlength="200"
+                    autocomplete="off"
+                    placeholder="Title (optional)"
+                    data-capsule-title
+                />
+                <div class="cb-viewer-head">
+                    <div class="cb-itemtabs-row" data-tabs-row>
+                        <div
+                            class="cb-itemtabs"
+                            role="tablist"
+                            aria-label="Items in this capsule"
+                            data-item-tabs
+                        ></div>
+                        <div class="cb-more" data-more hidden>
+                            <button
+                                type="button"
+                                class="cb-btn-secondary cb-more-btn"
+                                aria-haspopup="menu"
+                                aria-expanded="false"
+                                aria-controls="cb-more-menu"
+                                data-more-btn
+                            >
+                                ☰ more
+                            </button>
+                            <div
+                                id="cb-more-menu"
+                                class="cb-menu"
+                                role="menu"
+                                data-more-menu
+                                hidden
+                            ></div>
+                        </div>
+                        <div class="cb-add">
+                            <button
+                                type="button"
+                                class="cb-btn-secondary cb-add-btn"
+                                aria-haspopup="menu"
+                                aria-expanded="false"
+                                aria-controls="cb-add-menu"
+                                data-item-add
+                            >
+                                + Add item
+                            </button>
+                            <div id="cb-add-menu" class="cb-menu" role="menu" data-add-menu hidden>
+                                <button type="button" role="menuitem" data-add-type="plain">
+                                    Text
+                                </button>
+                                <button type="button" role="menuitem" data-add-type="code">
+                                    Code
+                                </button>
+                                <button type="button" role="menuitem" data-add-type="markdown">
+                                    Markdown
+                                </button>
+                                <button type="button" role="menuitem" data-add-type="download">
+                                    File
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="cb-itembar">
+                        <label class="cb-sr-only" for="create-item-type">Item type</label>
+                        <select
+                            id="create-item-type"
+                            class="cb-input cb-select cb-input-sm"
+                            data-item-type
+                        >
+                            <option value="plain">Text</option>
+                            <option value="code">Code</option>
+                            <option value="markdown">Markdown</option>
+                            <option value="download">File</option>
+                        </select>
+                        <label class="cb-sr-only" for="create-item-name">Item name</label>
+                        <input
+                            id="create-item-name"
+                            class="cb-input cb-input-sm cb-item-name-input"
+                            type="text"
+                            maxlength="200"
+                            spellcheck="false"
+                            autocomplete="off"
+                            placeholder="Name"
+                            data-item-name
+                        />
+                        <label class="cb-sr-only" for="create-item-lang">Language</label>
+                        <select
+                            id="create-item-lang"
+                            class="cb-input cb-select cb-input-sm"
+                            data-item-lang
+                            hidden
+                        >
+                            <option value="plaintext">Plain text</option>
+                            <option value="bash">Bash</option>
+                            <option value="css">CSS</option>
+                            <option value="diff">Diff</option>
+                            <option value="html">HTML</option>
+                            <option value="ini">INI / TOML</option>
+                            <option value="javascript">JavaScript</option>
+                            <option value="json">JSON</option>
+                            <option value="markdown">Markdown</option>
+                            <option value="python">Python</option>
+                            <option value="rust">Rust</option>
+                            <option value="sql">SQL</option>
+                            <option value="typescript">TypeScript</option>
+                            <option value="yaml">YAML</option>
+                        </select>
+                        <span class="cb-itembar-actions">
+                            <span
+                                class="cb-segmented"
+                                role="group"
+                                aria-label="Markdown editor"
+                                data-preview-switch
+                                hidden
+                            >
+                                <button type="button" aria-pressed="true" data-preview-write>
+                                    Write
+                                </button>
+                                <button type="button" aria-pressed="false" data-preview-show>
+                                    Preview
+                                </button>
+                            </span>
+                            <button type="button" class="cb-btn-secondary" data-item-remove hidden>
+                                Remove
+                            </button>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="cb-item-panel" role="tabpanel" id="cb-create-panel" data-item-panel>
+                    <textarea
+                        class="cb-input cb-textarea cb-item-text"
+                        rows="10"
+                        maxlength="10485760"
+                        placeholder="Start typing&hellip;"
+                        aria-label="Item content"
+                        data-item-text
+                    ></textarea>
+                    <div class="cb-item-preview" data-item-preview hidden></div>
+                    <div class="cb-drop" data-item-drop hidden>
+                        <p data-item-drop-label>Drop a file here</p>
+                        <button type="button" class="cb-btn-secondary" data-item-choose>
+                            Choose file
+                        </button>
+                        <input type="file" class="cb-item-file" data-item-file hidden multiple />
+                    </div>
+                </div>
+                <p class="cb-size-meter" data-size-meter></p>
+
+                <div class="cb-form-row">
+                    <label class="cb-label" for="create-expiry">Expires</label>
+                    <select id="create-expiry" class="cb-input cb-select">
+                        <option value="3600">1 hour</option>
+                        <option value="86400">1 day</option>
+                        <option value="604800" selected>1 week</option>
+                        <option value="2592000">30 days</option>
+                        <option value="7776000">90 days</option>
+                        <option value="">No expiry</option>
+                    </select>
+                </div>
+                <label class="cb-check">
+                    <input type="checkbox" id="create-burn" />
+                    <span>Delete after first retrieval (burn)</span>
+                </label>
+                <div class="cb-form-row">
+                    <label class="cb-label" for="create-password">Password (optional)</label>
+                    <input
+                        type="password"
+                        id="create-password"
+                        class="cb-input"
+                        placeholder="Leave blank for no password"
+                        autocomplete="new-password"
+                    />
+                    <span class="cb-label-note">
+                        The password never leaves your browser. Choose a strong passphrase — the
+                        link alone will not open this capsule.
+                    </span>
+                </div>
+                <button type="submit" class="cb-btn" data-create-submit>Encrypt and share</button>
+            </form>
+        </template>
+
+        <template id="tmpl-encrypting">
+            <h1 class="cb-h1">Encrypting&hellip;</h1>
+            <div class="cb-spinner"></div>
+            <p class="cb-lede cb-pulse">Generating keys and encrypting your content locally.</p>
+        </template>
+
+        <template id="tmpl-done">
+            <h1 class="cb-h1">Your capsule is ready</h1>
+            <p class="cb-lede">
+                Copy the link now. It is shown only once — the server does not store it.
+            </p>
+            <div class="cb-callout">
+                <label class="cb-label" for="share-link">Share link</label>
+                <div class="cb-copy-row">
+                    <input id="share-link" class="cb-input" type="text" readonly data-share-link />
+                    <button type="button" class="cb-btn cb-btn-sm" data-copy="share-link">
+                        Copy
+                    </button>
+                </div>
+            </div>
+            <div class="cb-callout">
+                <label class="cb-label" for="delete-link">Delete link (keep this private)</label>
+                <div class="cb-copy-row">
+                    <input
+                        id="delete-link"
+                        class="cb-input"
+                        type="text"
+                        readonly
+                        data-delete-link
+                    />
+                    <button type="button" class="cb-btn cb-btn-sm" data-copy="delete-link">
+                        Copy
+                    </button>
+                </div>
+            </div>
+            <p>
+                <a href="/" class="cb-btn">Create another</a>
+            </p>
+        </template>
+
+        <template id="tmpl-error">
+            <h1 class="cb-h1">Something went wrong</h1>
+            <p class="cb-lede" data-error-message></p>
+            <p><button type="button" class="cb-btn" data-retry-btn>Try again</button></p>
+        </template>
+    </body>
+</html>

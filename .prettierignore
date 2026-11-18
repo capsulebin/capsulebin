@@ -1,0 +1,7 @@
+# Scripts already scope Prettier to source globs by extension; this is a
+# safety net in case it's ever invoked more broadly.
+node_modules
+target
+dist
+package-lock.json
+Cargo.lock

@@ -1,0 +1,123 @@
+/**
+ * Syntax highlighting via highlight.js class annotations.
+ *
+ * Maps the .hljs-* classes onto CapsuleBin design tokens so that code and
+ * prose share the same colour palette.  Works in both light and dark themes
+ * through custom properties — no separate theme stylesheet needed.
+ *
+ * @see ADR-006, ADR-005
+ */
+
+/* --- comment ------------------------------------------------------------ */
+
+.hljs-comment,
+.hljs-quote {
+    color: var(--cb-text-muted);
+    font-style: italic;
+}
+
+/* --- keywords ----------------------------------------------------------- */
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-type {
+    color: var(--cb-accent);
+    font-weight: 600;
+}
+
+/* --- strings & templates ------------------------------------------------ */
+
+.hljs-string,
+.hljs-template-variable,
+.hljs-template-tag {
+    color: var(--cb-success);
+}
+
+/* --- numbers & constants ------------------------------------------------ */
+
+.hljs-number,
+.hljs-literal,
+.hljs-built_in,
+.hljs-boolean {
+    color: var(--cb-warning);
+}
+
+/* --- names -------------------------------------------------------------- */
+
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_,
+.hljs-title.function_.invoke__ {
+    color: var(--cb-accent);
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-variable.language_,
+.hljs-variable.constant_ {
+    color: var(--cb-text);
+}
+
+.hljs-params {
+    color: var(--cb-text-muted);
+}
+
+/* --- regex -------------------------------------------------------------- */
+
+.hljs-regexp {
+    color: var(--cb-danger);
+}
+
+/* --- meta --------------------------------------------------------------- */
+
+.hljs-meta,
+.hljs-meta.keyword_,
+.hljs-meta.string_ {
+    color: var(--cb-text-muted);
+}
+
+.hljs-section {
+    color: var(--cb-accent);
+    font-weight: 600;
+}
+
+/* --- markup (diff, additions, deletions) -------------------------------- */
+
+.hljs-addition {
+    color: var(--cb-success);
+}
+
+.hljs-deletion {
+    color: var(--cb-danger);
+}
+
+.hljs-subst {
+    color: var(--cb-text);
+}
+
+.hljs-doctag,
+.hljs-formula {
+    color: var(--cb-text-muted);
+}
+
+/* --- link & emphasis ---------------------------------------------------- */
+
+.hljs-link {
+    color: var(--cb-accent);
+    text-decoration: underline;
+}
+
+.hljs-emphasis {
+    font-style: italic;
+}
+
+.hljs-strong {
+    font-weight: 700;
+}
+
+.hljs-bullet,
+.hljs-symbol {
+    color: var(--cb-accent);
+}
