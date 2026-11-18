@@ -16,7 +16,7 @@
 
 # --- web client --------------------------------------------------------------
 # Built first: the server embeds src/server/web/dist at compile time.
-FROM docker.io/library/node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS web
+FROM docker.io/library/node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS web
 
 WORKDIR /build
 # The manifests alone first, so the dependency layer is reused while only
