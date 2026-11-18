@@ -1,8 +1,14 @@
-# Version updates for the three dependency ecosystems. Security updates are
-# enabled separately in the repository settings and are not delayed.
+# Version updates for Cargo, npm, the Dockerfile's base images and the workflow
+# actions. Security updates are enabled separately in the repository settings
+# and are not delayed.
 #
 # A new release has to be a week old before it is proposed, so a compromised or
 # broken version has time to be yanked first.
+#
+# Runtime versions are not Dependabot's to move: the Node.js major lives in
+# .node-version, the Rust version in rust-toolchain.toml, and the Support
+# windows CI job says when they need to change. Updates that would move them
+# on their own are ignored below.
 
 version: 2
 
@@ -28,6 +34,10 @@ updates:
       npm-minor:
         patterns: ['*']
         update-types: [minor, patch]
+    ignore:
+      # Types for the Node.js major in .node-version, not the newest one.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   # Base image digests in the Dockerfile.
   - package-ecosystem: docker
@@ -36,6 +46,17 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      # The build image follows .node-version.
+      - dependency-name: library/node
+        update-types: ['version-update:semver-major']
+      # The Rust image follows rust-toolchain.toml; rustup would install the
+      # pinned toolchain anyway. Only its digest is updated.
+      - dependency-name: library/rust
+        update-types:
+          - 'version-update:semver-major'
+          - 'version-update:semver-minor'
+          - 'version-update:semver-patch'
 
   - package-ecosystem: github-actions
     directory: /
