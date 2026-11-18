@@ -92,12 +92,14 @@ test('a capsule with four items and a password', async ({ page, context }) => {
     const view = await context.newPage();
     await view.goto(share);
 
-    // A wrong password answers exactly like an unknown capsule (ADR-001).
+    // The server answers a wrong password like an unknown capsule (ADR-001); the
+    // prompt stays, saying it cannot tell the two apart.
     await view.fill('#pwd-input', 'wrong password');
     await view.click('button[type=submit]');
-    await expect(view.locator('h1')).toHaveText('Not available', { timeout: 30_000 });
-
-    await view.reload();
+    await expect(view.locator('.cb-error')).toHaveText(
+        'Wrong password, or the capsule is no longer available.',
+        { timeout: 30_000 },
+    );
     await view.fill('#pwd-input', password);
     await view.click('button[type=submit]');
     const tabs = view.locator('.cb-itemtab');
@@ -134,6 +136,32 @@ test('a capsule with four items and a password', async ({ page, context }) => {
     await view.click('[data-theme-toggle]');
 });
 
+test('too many wrong passwords are throttled with a wait', async ({ page, context }) => {
+    // invalid_capability_per_paste is on by default: 10 per minute, burst 10.
+    const { share } = await create(page, {
+        password: 'the right one',
+        items: [{ type: 'plain', text: 'throttled' }],
+    });
+    const view = await context.newPage();
+    await view.goto(share);
+
+    const attempt = async () => {
+        await view.fill('#pwd-input', 'wrong');
+        const [response] = await Promise.all([
+            view.waitForResponse((r) => r.url().endsWith('/retrieve'), { timeout: 30_000 }),
+            view.click('button[type=submit]'),
+        ]);
+        await expect(view.locator('#pwd-input')).toBeEnabled({ timeout: 30_000 });
+        return response.status();
+    };
+
+    for (let i = 0; i < 10; i += 1) expect(await attempt()).toBe(404);
+    expect(await attempt()).toBe(429);
+    await expect(view.locator('.cb-error')).toHaveText(
+        /^Too many attempts\. Try again in \d+ seconds?\.$/,
+    );
+});
+
 test('the management link deletes a capsule', async ({ page, context }) => {
     const { share, manage } = await create(page, { items: [{ type: 'plain', text: 'delete me' }] });
 
@@ -163,6 +191,33 @@ test('a burn capsule opens exactly once', async ({ page, context }) => {
     const second = await context.newPage();
     await second.goto(share);
     await expect(second.locator('h1')).toHaveText(/Not available|Already retrieved/, {
+        timeout: 30_000,
+    });
+});
+
+test('a burn capsule with a password survives a wrong password', async ({ page, context }) => {
+    const { share } = await create(page, {
+        password: 'the right one',
+        burn: true,
+        items: [{ type: 'plain', text: 'burn after the right password' }],
+    });
+    const view = await context.newPage();
+    await view.goto(share);
+    await view.getByRole('button', { name: 'Yes, open and burn' }).click();
+
+    // A wrong password consumes nothing: the server checks the reveal token first.
+    await view.fill('#pwd-input', 'wrong');
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-error')).toHaveText(
+        'Wrong password, or the capsule is no longer available.',
+        { timeout: 30_000 },
+    );
+
+    // The burn warning was confirmed once and is not asked again.
+    await expect(view.getByRole('button', { name: 'Yes, open and burn' })).toHaveCount(0);
+    await view.fill('#pwd-input', 'the right one');
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-item-panel')).toContainText('burn after the right password', {
         timeout: 30_000,
     });
 });

@@ -62,6 +62,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 
 - Creation and view pages with item tabs, a sticky tab bar and an overflow menu, plus a capsule title.
 - Markdown (sanitized) and code (highlight.js) rendering; copy, download and source view per item.
+- A wrong password keeps the password prompt open. Its message does not claim more than the server
+  says - a wrong password and a capsule that went away look alike - and too many attempts show
+  how long to wait.
 - Management page for deleting a capsule and checking its status; report page that strips the key
   from a pasted link.
 - Light and dark themes from design tokens, WCAG contrast verified by tests.
