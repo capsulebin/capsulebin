@@ -55,7 +55,7 @@ only standalone client. (See [ADR-010](docs/adr/ADR-010-repository-layout.md).)
 | Layer | Technology |
 |-------|-----------|
 | Server | Rust (edition 2024, MSRV 1.99), Axum 0.8, SQLx 0.9 (SQLite), Tokio |
-| Web client | TypeScript 7.0, Vite 7, Lit 3, highlight.js, marked, DOMPurify |
+| Web client | TypeScript 7.0, Vite 8, Lit 3, highlight.js, marked, DOMPurify |
 | CLI | TypeScript, esbuild, Node.js 24 (version in `.node-version`) |
 | Core library | TypeScript (no DOM, no build step), Web Crypto API |
 | Database | SQLite via SQLx, WAL mode, `synchronous = full`, `secure_delete = on`, `journal_size_limit` 64 MiB |
