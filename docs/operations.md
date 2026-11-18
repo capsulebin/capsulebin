@@ -7,7 +7,8 @@ properties is in the [threat model](threat-model.md).
 
 ## What a deployment consists of
 
-- **One binary** (`capsulebin`) — server, embedded web client, migrations and operator tools.
+- **One binary** (`capsulebin`) — server, embedded web client, migrations and operator tools —
+  run directly (see [systemd](#systemd)) or as the [container image](#container).
 - **One SQLite database** on a local filesystem (WAL mode; not NFS).
 - **Optionally a configuration file**; every setting also has an environment variable
   `CAPSULEBIN__<TABLE>__<KEY>`.
@@ -93,6 +94,39 @@ WantedBy=multi-user.target
 
 `UMask=0077` keeps the database and its `-wal`/`-shm` readable by the service user only.
 
+### Container
+
+The `Dockerfile` at the repository root builds the web client, embeds it into the binary and copies
+the result into a distroless image: no shell, no package manager, user `65532`. It is configured
+through environment variables only and keeps the database on the `/data` volume.
+
+```sh
+docker build -t capsulebin .
+docker run --rm capsulebin token                  # creation token + hash
+docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data \
+  -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
+  -e CAPSULEBIN__SERVER__TRUSTED_PROXIES='["172.16.0.0/12"]' \
+  -e CAPSULEBIN__CREATION__TOKEN_HASHES='["sha256:…"]' \
+  -e CAPSULEBIN__ABUSE__CONTACT=abuse@example.org \
+  capsulebin
+```
+
+- The image sets `CAPSULEBIN__SERVER__BIND=0.0.0.0:8080` and
+  `CAPSULEBIN__DATABASE__PATH=/data/capsulebin.db`. A configuration file can be mounted instead and
+  passed as `--config /path serve`.
+- `trusted_proxies` must name the address the proxy connects *from* as the container sees it —
+  with a published port that is usually the bridge gateway, not `127.0.0.1`. Check the peer
+  address in the access log once and narrow the range to it.
+- The image's health check runs `capsulebin healthcheck`, which probes `/health/ready` from inside
+  the container (see [Health and logs](#health-and-logs)). Podman drops `HEALTHCHECK` from images
+  in its default OCI format; build with `podman build --format docker` to keep it.
+- Logs go to stderr without colour codes, so `docker logs` shows plain lines.
+- Operator commands run in the container: `docker exec capsulebin capsulebin reports list`.
+  Backups go to the volume, e.g. `docker exec capsulebin capsulebin backup --output
+  /data/backup-2026-11-18.db`; copy them off the host from there.
+- Restore with the container stopped, from a one-off container on the same volume:
+  `docker run --rm -v capsulebin-data:/data capsulebin restore --input /data/backup-….db --force`.
+
 ### Reverse proxy
 
 The proxy terminates TLS, sets HSTS and passes the client address in `X-Forwarded-For`. CapsuleBin
@@ -148,6 +182,11 @@ client share the proxy's bucket.
 - `GET /health/live` — the process runs.
 - `GET /health/ready` — configuration, database, schema and embedded assets are usable. Use this
   for load balancer checks.
+- `capsulebin healthcheck` probes `/health/ready` on the address from `server.bind` and exits
+  non-zero unless it answers `200` — for container health checks, where there is no `curl`.
+  `--live` probes `/health/live` instead; use that where an unhealthy container gets restarted,
+  because a database that is briefly unavailable is a reason to wait, not to restart. `--address`
+  overrides the address for a server started with `serve --bind`.
 - Logs go to stderr. `CAPSULEBIN_LOG` sets the filter (default `info,tower_http=info,sqlx=warn`).
   The access log contains method, redacted path (`/api/v1/pastes/{id}`), status and latency —
   never paste ids, bodies, tokens or report text.

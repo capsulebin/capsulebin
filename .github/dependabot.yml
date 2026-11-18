@@ -29,6 +29,14 @@ updates:
         patterns: ['*']
         update-types: [minor, patch]
 
+  # Base image digests in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

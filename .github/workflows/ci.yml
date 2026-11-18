@@ -194,6 +194,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  container:
+    name: Container image
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: capsulebin:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The image as an operator runs it: environment only, a fresh volume, the
+      # built-in health check. Healthy means assets, database and schema are
+      # usable as the non-root user.
+      - name: Run
+        run: |
+          hash="$(docker run --rm capsulebin:ci token | grep -o 'sha256:[A-Za-z0-9_-]*' | head -1)"
+          docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data \
+            -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example \
+            -e CAPSULEBIN__CREATION__TOKEN_HASHES="[\"${hash}\"]" \
+            --health-interval 2s \
+            capsulebin:ci
+          for _ in $(seq 1 30); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' capsulebin)" = healthy ] && break
+            sleep 2
+          done
+          if [ "$(docker inspect --format '{{.State.Health.Status}}' capsulebin)" != healthy ]; then
+            docker logs capsulebin
+            exit 1
+          fi
+          test "$(docker inspect --format '{{.Config.User}}' capsulebin)" = "65532:65532"
+          curl -fsS http://127.0.0.1:8080/health/ready
+          echo
+          docker exec capsulebin /usr/local/bin/capsulebin backup --output /data/ci-backup.db
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-24.04

@@ -133,6 +133,7 @@ node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
 | --- | --- |
 | `serve` | Start the server |
 | `check` | Verify configuration, database and migrations without opening a port |
+| `healthcheck` | Probe the running server's `/health/ready` (`--live`: `/health/live`); exit 0 if healthy. For container health checks |
 | `migrate` | Apply pending migrations and exit |
 | `prune` | Apply the retention policy (capsules, closed reports, moderation records) once and exit |
 | `token` | Generate a creation token and the hash to configure for it |

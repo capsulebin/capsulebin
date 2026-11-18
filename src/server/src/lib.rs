@@ -12,6 +12,7 @@ pub mod backup;
 pub mod config;
 pub mod db;
 pub mod domain;
+pub mod healthcheck;
 pub mod repository;
 
 use std::sync::Arc;
