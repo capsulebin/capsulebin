@@ -122,6 +122,15 @@ grep -q '"assets":"ok"' <<<"${READY}" ||
 grep -q '"schema_version":3' <<<"${READY}" || fail "unexpected schema version: ${READY}"
 echo "ok  /health/ready (assets embedded, schema applied)"
 
+# The container health check: the binary probes its own endpoints, derived from
+# CAPSULEBIN__SERVER__BIND, and must fail where nothing listens.
+"${BINARY}" healthcheck >/dev/null || fail "\`healthcheck\` reported the running server as unhealthy"
+"${BINARY}" healthcheck --live >/dev/null || fail "\`healthcheck --live\` reported the running server as unhealthy"
+if "${BINARY}" healthcheck --address "127.0.0.1:$((PORT + 2))" >/dev/null 2>&1; then
+  fail "\`healthcheck\` succeeded against a port nobody listens on"
+fi
+echo "ok  healthcheck"
+
 # --- shells ------------------------------------------------------------------
 
 VALID_ID="2pS3xQ7Rk9mNpLz4AbCdEA"

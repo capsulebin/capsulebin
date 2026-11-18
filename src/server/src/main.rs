@@ -32,6 +32,23 @@ enum Command {
     },
     /// Verify configuration, database and migrations without listening.
     Check,
+    /// Ask the running server whether it is healthy; exit 0 if it is.
+    ///
+    /// Meant for container health checks, where no `curl` is available. Probes
+    /// `/health/ready` on the address from `server.bind` (`0.0.0.0` and `[::]`
+    /// become loopback). Opens neither the database nor a port.
+    Healthcheck {
+        /// Probe `/health/live` (the process answers) instead of `/health/ready`
+        /// (assets, database and schema are usable). Use this where an unhealthy
+        /// container gets restarted: a database that is briefly unavailable is a
+        /// reason to wait, not to restart.
+        #[arg(long)]
+        live: bool,
+        /// Address to probe instead of the one derived from `server.bind`, for a
+        /// server started with `serve --bind`.
+        #[arg(long)]
+        address: Option<String>,
+    },
     /// Apply pending migrations and exit.
     Migrate,
     /// Apply the retention policy once and exit.
@@ -176,6 +193,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Token => unreachable!("handled above"),
         Command::Serve { bind } => commands::serve(resolved, bind).await,
         Command::Check => commands::check(resolved).await,
+        Command::Healthcheck { live, address } => commands::healthcheck(&resolved, live, address).await,
         Command::Migrate => commands::migrate(resolved).await,
         Command::Prune { batch_size } => commands::prune(resolved, batch_size).await,
         Command::Backup { output } => commands::backup(resolved, output).await,
@@ -211,9 +229,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 /// would put a capability-adjacent value into a file whose retention is longer
 /// than the paste's own.
 fn init_tracing() {
+    use std::io::IsTerminal as _;
     use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = EnvFilter::try_from_env("CAPSULEBIN_LOG").unwrap_or_else(|_| EnvFilter::new("info,tower_http=info,sqlx=warn"));
 
-    fmt().with_env_filter(filter).with_target(false).init();
+    // Logs go to stderr, so stdout carries only a command's own output (`--json`,
+    // a generated token) and stays parseable. Colours only on a terminal: a
+    // container runtime or journald stores the escape codes verbatim.
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .init();
 }

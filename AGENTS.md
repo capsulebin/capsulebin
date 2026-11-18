@@ -37,6 +37,7 @@ capsulebin/
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary
 ├── .github/            CI workflow (GitHub Actions) and Dependabot configuration
+├── Dockerfile          Container image: web build → release binary → distroless, non-root, /data
 ├── Cargo.toml          Workspace root (members: src/server)
 ├── package.json        npm workspace root (workspaces: src/core, src/cli, src/server/web)
 └── capsulebin.example.toml   Annotated configuration reference
@@ -199,6 +200,7 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 |---------|---------|
 | `serve`  | Start the server |
 | `check`  | Validate configuration, database, migrations (no port opened) |
+| `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`) |
 | `migrate`| Apply pending migrations and exit |
 | `prune`  | Apply retention policy once and exit |
 | `token`  | Generate a creation token + the hash to configure (domain-separated) |
@@ -274,6 +276,7 @@ CAPSULEBIN_CLI=src/cli/dist/cli.js ./scripts/smoke.sh ./target/release/capsulebi
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner |
+| `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
 | `src/backup.rs` | Backup (`VACUUM INTO`), backup verification, restore |
 | `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
@@ -296,7 +299,7 @@ CAPSULEBIN_CLI=src/cli/dist/cli.js ./scripts/smoke.sh ./target/release/capsulebi
 | `src/api/reports.rs` | Report endpoint and policy |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
-| `src/commands/` | Subcommand implementations (serve, check, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |
+| `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |
 | `build.rs` | Embeds `web/dist` and `migrations/` into the binary |
 
 ### TypeScript core (`src/core/`)
@@ -356,10 +359,10 @@ including the acceptance run against a release binary. Dependency advisories are
 `cargo deny check` and `npm audit --audit-level=high`; accepted exceptions are documented in
 `deny.toml`.
 
-`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in four jobs —
-`Rust`, `TypeScript`, `Acceptance (release binary)` and `Dependency audit` — each a required
-check. The audit job also runs weekly, so a new advisory surfaces without a code change. Actions
-are pinned to commit SHAs; Dependabot proposes updates for them, Cargo and npm.
+`.github/workflows/ci.yml` runs all of this on every pull request and on `main` in five jobs —
+`Rust`, `TypeScript`, `Acceptance (release binary)`, `Container image` (builds the `Dockerfile`
+and waits for the container to report healthy) and `Dependency audit` — each a required check. The audit job also runs weekly, so a new advisory surfaces without a code change. Actions
+are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm and the base image digests.
 
 ## Security boundaries (when editing code)
 

@@ -1,0 +1,13 @@
+# Allowlist: only what the image build reads goes into the build context, so
+# local configuration, databases and secrets cannot end up in a layer.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!package.json
+!package-lock.json
+!migrations
+!src
+
+**/node_modules
+**/dist
