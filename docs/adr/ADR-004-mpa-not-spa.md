@@ -44,12 +44,12 @@ prefix, served from a shell generated for that language:
 Vite runs once per language with that language's five generated shells as inputs
 (`scripts/build.ts`), each build carrying only its own language's texts. All builds write to the
 shared `/assets/`: chunks that import the catalogue exist once per language, language-free code
-(libraries, `@capsulebin/core`) in chunks of its own that exist once. The byte-identity rule below holds for `GET /{lang}/p/{id}` and for the redirect
-from `/p/{id}`; `view_shell_is_identical_for_every_id` and the acceptance script check the
-prefixed path.
+(libraries, `@capsulebin/core`) in chunks of its own that exist once. The byte-identity rule
+below holds for `GET /{lang}/p/{id}` and for the redirect from `/p/{id}`;
+`view_shell_is_identical_for_every_id` and the acceptance script check the prefixed path.
 
-**The server does not inspect the path id.** `GET /p/{id}` returns byte-identical HTML for every
-syntactically valid id. This is a security property, not convenience: a link scanner cannot infer
+**The server does not inspect the path id.** `GET /{lang}/p/{id}` returns byte-identical HTML and
+`GET /p/{id}` the same redirect for every syntactically valid id. This is a security property, not convenience: a link scanner cannot infer
 from status code, length or content whether the capsule exists, and it does not burn a one-time
 paste. Retrieval is an explicit `POST` carrying the capabilities derived from the fragment
 (ADR-001). An integration test (`view_shell_is_identical_for_every_id`) and the acceptance script

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
-import { MAX_CAPSULE_BYTES, MAX_ITEM_BYTES, formatSize } from '@capsulebin/core';
+import { MAX_CAPSULE_BYTES, MAX_ITEM_BYTES } from '@capsulebin/core';
 import { expect, test } from './guard';
 
 /**
@@ -42,8 +42,7 @@ test('a capsule at the size limit is created, opened and downloaded intact', asy
     await chooseFile(page, 'maximum.bin', bytes);
 
     const meter = page.locator('[data-size-meter]');
-    const budget = formatSize(MAX_ITEM_BYTES);
-    await expect(meter).toHaveText(`${budget} of ${budget}`);
+    await expect(meter).toHaveText('9.9 MiB of 9.9 MiB');
     await expect(meter).not.toHaveClass(/cb-size-meter-over/);
     await page.click('[data-create-submit]');
     const share = page.locator('#share-link');
@@ -83,7 +82,7 @@ test('a file over the absolute limit is refused before it is read', async ({ pag
     const dialog = page.waitForEvent('dialog');
     const choosing = chooseFile(page, 'huge.bin', Buffer.alloc(MAX_CAPSULE_BYTES + 1));
     const alert = await dialog;
-    expect(alert.message()).toBe(`huge.bin exceeds the ${formatSize(MAX_CAPSULE_BYTES)} limit.`);
+    expect(alert.message()).toBe('huge.bin exceeds the 10.0 MiB limit.');
     await alert.dismiss();
     await choosing;
 

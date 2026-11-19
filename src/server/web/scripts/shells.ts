@@ -57,7 +57,7 @@ export function readTemplate(shell: ShellName): string {
     return readFileSync(join(WEB_ROOT, `${shell}.html`), 'utf8');
 }
 
-export function escapeHtml(text: string): string {
+function escapeHtml(text: string): string {
     return text
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')

@@ -47,6 +47,11 @@ export interface LanguageSwitch {
      * from the next page on). For pages whose fragment is already gone.
      */
     storeOnly(onStored: (language: Language) => void): void;
+    /**
+     * Adds an empty live region next to the switch and returns it, for a notice
+     * about the switch. It exists before its text changes, so the change is announced.
+     */
+    addNotice(): HTMLElement;
 }
 
 /**
@@ -82,6 +87,14 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
             mode = 'store';
             onStored = callback;
         },
+        addNotice() {
+            const notice = document.createElement('span');
+            notice.className = 'cb-status';
+            notice.setAttribute('role', 'status');
+            notice.dataset.languageNotice = '';
+            container.before(notice);
+            return notice;
+        },
     };
 }
 
@@ -91,17 +104,11 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
  * key - and says next to it that the choice applies from the next page on.
  */
 export function languageFromNextPage(shell: Shell): void {
-    const container = document.querySelector<HTMLElement>('[data-language-switch]');
-    if (!shell.languageSwitch || !container) return;
+    const { languageSwitch } = shell;
+    if (!languageSwitch) return;
 
-    // A live region exists before its text changes, so the change is announced.
-    const notice = document.createElement('span');
-    notice.className = 'cb-status';
-    notice.setAttribute('role', 'status');
-    notice.dataset.languageNotice = '';
-    container.before(notice);
-
-    shell.languageSwitch.storeOnly(() => {
+    const notice = languageSwitch.addNotice();
+    languageSwitch.storeOnly(() => {
         notice.textContent = t('shell.languageNextPage');
     });
 }

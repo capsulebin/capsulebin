@@ -91,6 +91,8 @@ pub struct Languages {
     /// Offered languages in configuration order, each with the legal pages and
     /// footer links for its shells.
     offered: Vec<(&'static str, LegalPages)>,
+    /// The codes of `offered`, in the same order.
+    codes: Vec<&'static str>,
     default: &'static str,
     /// What [`LANGUAGES_MARKER`] is replaced with.
     meta: String,
@@ -98,18 +100,23 @@ pub struct Languages {
 
 impl Languages {
     pub fn new(offered: Vec<(&'static str, LegalPages)>, default: &'static str) -> Self {
-        let codes: Vec<&str> = offered.iter().map(|(code, _)| *code).collect();
+        let codes: Vec<&'static str> = offered.iter().map(|(code, _)| *code).collect();
         let meta = format!(
             r#"<meta name="capsulebin-languages" content="{}" data-default="{}">"#,
             crate::legal::escape(&codes.join(" ")),
             crate::legal::escape(default)
         );
-        Self { offered, default, meta }
+        Self {
+            offered,
+            codes,
+            default,
+            meta,
+        }
     }
 
     /// The offered language codes, in configuration order.
     pub fn codes(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.offered.iter().map(|(code, _)| *code)
+        self.codes.iter().copied()
     }
 
     fn legal(&self, language: &str) -> Option<&LegalPages> {
@@ -123,7 +130,7 @@ impl Languages {
         accept_language
             .and_then(|value| value.to_str().ok())
             .filter(|value| value.len() <= MAX_ACCEPT_LANGUAGE_BYTES)
-            .and_then(|value| preferred(value, &self.codes().collect::<Vec<_>>()))
+            .and_then(|value| preferred(value, &self.codes))
             .unwrap_or(self.default)
     }
 }

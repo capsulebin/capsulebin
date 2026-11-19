@@ -5,8 +5,8 @@
  * - a page's scripts carry texts of its own language only: no JS reachable from
  *   `dist/<lang>/*.html` contains a text of another language that differs from
  *   its own and is longer than 3 characters;
- * - texts only the shell templates use stay in the HTML: no JS asset names such a
- *   key or contains its text;
+ * - texts only the shell templates use stay in the HTML: no JS asset names the
+ *   key of such a text;
  * - what does not depend on the language is built once: the chunks without texts
  *   (and without imports of chunks with texts) are the same files for every
  *   language and none exists twice.

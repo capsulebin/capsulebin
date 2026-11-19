@@ -8,10 +8,10 @@
  * is for.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { type DistInput, checkDist } from '../scripts/check-dist';
 
@@ -28,9 +28,17 @@ const VENDOR = 'export const html = (s) => s;';
 
 type Assets = Record<string, string>;
 
+/** The directories `dist()` created, removed after each test. */
+const created: string[] = [];
+
+afterEach(() => {
+    for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 /** Writes `dist/` with one page per language, loading `entry-<lang>.js`. */
 function dist(assets: Assets): string {
     const dir = mkdtempSync(join(tmpdir(), 'capsulebin-dist-'));
+    created.push(dir);
     mkdirSync(join(dir, 'assets'));
     for (const [name, code] of Object.entries(assets))
         writeFileSync(join(dir, 'assets', name), code);
