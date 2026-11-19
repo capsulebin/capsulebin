@@ -175,12 +175,17 @@ async fn ac6_the_server_substitutes_no_languages_marker() {
 
 /// AC23 (N2): `capsulebin check` rejects an `[i18n]` table and the
 /// `CAPSULEBIN__I18N__*` variables like any other unknown key, while the same
-/// configuration without them is valid.
+/// configuration without them is valid. The shells come from `asset_dir`, so
+/// `check` does not depend on the embedded web build.
 #[test]
 fn ac23_check_rejects_an_i18n_table_and_its_env_variables() {
     let dir = tempdir("acc-i18n-check");
+    let assets = dir.join("assets");
+    write_shells(&assets);
     let valid = format!(
-        "[server]\npublic_url = \"https://paste.example\"\n[database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+        "[server]\npublic_url = \"https://paste.example\"\nasset_dir = \"{}\"\n\
+         [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+        assets.display(),
         dir.join("capsulebin.db").display()
     );
     let ok = dir.join("ok.toml");
