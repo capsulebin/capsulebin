@@ -6,14 +6,15 @@
  *
  *   1. the choice stored by the language switch (localStorage, if offered),
  *   2. the first entry of navigator.languages whose primary subtag is offered,
- *   3. the operator's default language.
+ *   3. the default language.
  *
  * If that differs from the prefix of the current path, it replaces the page with
  * the same path under the other prefix. Query and fragment are kept unchanged -
  * the fragment holds the key and never leaves the browser.
  *
- * The offered languages come from <meta name="capsulebin-languages">, which the
- * server puts into every shell. Without it (Vite dev server), without
+ * The offered languages and the default come from
+ * <meta name="capsulebin-languages">, which the shell generator
+ * (scripts/shells.ts) writes into every shell. Without it, without
  * localStorage, or on any exception the script does nothing.
  *
  * Like theme-init.js this is an external classic script without defer/async, so

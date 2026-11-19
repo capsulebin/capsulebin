@@ -188,13 +188,12 @@ client share the proxy's bucket.
 | `purge.*` | Leave enabled. Never-retrieved capsules go after 30 days, inactive ones after 90. |
 | `abuse.contact`, `abuse.report_retention` | Set a contact; keep closed reports no longer than needed (default 90 days). |
 | `legal.*` | A public instance in the EU usually needs an imprint and a privacy notice. Set `[legal.operator]`; see [Legal pages](#legal-pages). |
-| `i18n.*` | Defaults offer English and German, English as fallback. See [Interface languages](#interface-languages). |
 | `database.synchronous` | `full` (default). Lower only if you accept losing acknowledged writes on power loss. |
 
 ## Legal pages
 
 CapsuleBin serves an imprint, a privacy notice and terms of use at `/<language>/imprint`,
-`/<language>/privacy` and `/<language>/terms` for every offered language, and links them from the
+`/<language>/privacy` and `/<language>/terms` for every interface language, and links them from the
 footer of every page, once `[legal.operator]` is set. The texts are English under every prefix; in
 a shell of another language the text is marked `lang="en"`.
 
@@ -215,26 +214,16 @@ instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state
 
 ## Interface languages
 
-Every page is served once per offered language, under its prefix: `/en/`, `/de/p/{id}`,
-`/de/report`. `[i18n]` chooses which:
-
-```toml
-[i18n]
-default_language = "en"     # for a browser that prefers none of the offered languages
-languages = ["en", "de"]    # offered, in the order of the language switch
-```
-
-As environment variables: `CAPSULEBIN__I18N__DEFAULT_LANGUAGE=de`,
-`CAPSULEBIN__I18N__LANGUAGES='["de"]'`. Known languages are `en` and `de`; an unknown or duplicate
-code, an empty list or a default that is not offered stops startup and `capsulebin check`.
+Every page is served in English and German, under its prefix: `/en/`, `/de/p/{id}`,
+`/de/report`. There is nothing to configure: every language the binary was built with is offered,
+English is the default.
 
 - Links without a prefix — share and management links are always created that way — are redirected
-  (`302`) to the offered language the browser's `Accept-Language` prefers, otherwise to
-  `default_language`. The key in the fragment stays in the browser.
-- In the browser, a language the user picked in the switch (kept in `localStorage`) or an offered
+  (`302`) to the language the browser's `Accept-Language` prefers, otherwise to English. The key in
+  the fragment stays in the browser.
+- In the browser, a language the user picked in the switch (kept in `localStorage`) or a supported
   browser language moves the page to that prefix.
-- A prefix you do not offer is an unknown path (`404`). Removing a language from `languages` breaks
-  addresses with that prefix, not share links.
+- Any other prefix is an unknown path (`404`).
 - The CLI, the API's error texts and the legal texts stay English.
 
 See [i18n.md](i18n.md) for the rules in detail.
@@ -243,7 +232,7 @@ See [i18n.md](i18n.md) for the rules in detail.
 
 - `GET /health/live` — the process runs.
 - `GET /health/ready` — configuration, database, schema and embedded assets (every page of every
-  offered language) are usable. Use this for load balancer checks.
+  interface language) are usable. Use this for load balancer checks.
 - `capsulebin healthcheck` probes `/health/ready` on the address from `server.bind` and exits
   non-zero unless it answers `200` — for container health checks, where there is no `curl`.
   `--live` probes `/health/live` instead; use that where an unhealthy container gets restarted,

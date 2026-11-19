@@ -19,7 +19,7 @@ mod env;
 mod model;
 
 pub use model::{
-    AbuseConfig, Config, CreationConfig, CreationMode, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES, LegalConfig, LegalSection,
+    AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, KNOWN_LANGUAGES, LegalConfig, LegalSection,
     PastesConfig, PurgeConfig, ServerConfig, Synchronous,
 };
 
@@ -67,11 +67,9 @@ pub struct Resolved {
     pub creation_tokens: Vec<Verifier>,
     /// Largest accepted request body, including base64 overhead.
     pub max_body_bytes: usize,
-    /// The offered interface languages with their legal pages and footer
-    /// links, read and rendered, in the order of `i18n.languages`.
-    pub languages: Vec<(&'static str, crate::legal::LegalPages)>,
-    /// The language a request without a usable `Accept-Language` gets.
-    pub default_language: &'static str,
+    /// The legal pages and footer links of every interface language, read
+    /// and rendered, in the order of [`KNOWN_LANGUAGES`].
+    pub legal: Vec<(&'static str, crate::legal::LegalPages)>,
 }
 
 impl Config {
@@ -114,10 +112,9 @@ impl Config {
         self.abuse.validate()?;
         self.rate_limits.validate()?;
         let creation_tokens = self.creation.validate()?;
-        let (offered, default_language) = self.i18n.validate()?;
-        let languages = offered
-            .into_iter()
-            .map(|language| Ok((language, crate::legal::resolve(self, language)?)))
+        let legal = KNOWN_LANGUAGES
+            .iter()
+            .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))
             .collect::<Result<_, ConfigError>>()?;
         self.database.validate()?;
 
@@ -125,8 +122,7 @@ impl Config {
             max_body_bytes: max_body_bytes(self.pastes.max_plaintext_size),
             config: self.clone(),
             creation_tokens,
-            languages,
-            default_language,
+            legal,
         })
     }
 }

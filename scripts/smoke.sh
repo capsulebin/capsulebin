@@ -183,9 +183,9 @@ echo "ok  healthcheck"
 
 VALID_ID="2pS3xQ7Rk9mNpLz4AbCdEA"
 
-# Every page exists once per offered language (both by default), under its
-# prefix and in its language, with the offered languages for the head script and
-# the legal links of its own prefix in the footer.
+# Every page exists once per known language, under its prefix and in its
+# language, with every known language for the head script and the legal links
+# of its own prefix in the footer.
 for lang in en de; do
   for route in "/${lang}/" "/${lang}/p/${VALID_ID}" "/${lang}/manage/${VALID_ID}" "/${lang}/report" \
     "/${lang}/imprint" "/${lang}/privacy" "/${lang}/terms"; do
@@ -194,7 +194,8 @@ for lang in en de; do
     grep -qi '^content-type: text/html; charset=utf-8$' <<<"${headers}" || fail "${route} is not served as HTML"
     grep -qi '^cache-control: no-store$' <<<"${headers}" || fail "${route} may be cached"
     grep -q "<html lang=\"${lang}\">" "${WORKDIR}/shell.html" || fail "${route} is not a shell in '${lang}'"
-    grep -q '<meta name="capsulebin-languages" content="en de" data-default="en">' "${WORKDIR}/shell.html" ||
+    grep -qE '<meta name="capsulebin-languages" content="en de" data-default="en"[[:space:]]*/?>' \
+      "${WORKDIR}/shell.html" ||
       fail "${route} does not carry the offered languages"
     grep -q "href=\"/${lang}/imprint\"" "${WORKDIR}/shell.html" || fail "${route} lacks the footer link to /${lang}/imprint"
     if grep -qE '(src|href)="https?://' "${WORKDIR}/shell.html"; then

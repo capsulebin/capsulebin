@@ -19,6 +19,7 @@
 
 import { KNOWN_LANGUAGES, type Language, isKnownLanguage } from '@capsulebin/core';
 
+import { DEFAULT_LANGUAGE } from './default-language';
 import type en from './i18n/en.json';
 import catalogue from 'virtual:catalogue';
 
@@ -37,9 +38,6 @@ export type PluralKey = {
     [K in MessageKey]: K extends `${infer Base}#other` ? Base : never;
 }[MessageKey];
 
-/** The language the catalogue keys are written for; used if `<html lang>` is unusable. */
-const SOURCE_LANGUAGE: Language = 'en';
-
 /** Where the language switch stores the choice. `public/language-init.js` reads it. */
 export const LANGUAGE_STORAGE_KEY = 'capsulebin.language';
 
@@ -49,7 +47,7 @@ export const LANGUAGE_STORAGE_KEY = 'capsulebin.language';
  */
 export function pageLanguage(): Language {
     const primary = document.documentElement.lang.split('-')[0]?.toLowerCase() ?? '';
-    return isKnownLanguage(primary) ? primary : SOURCE_LANGUAGE;
+    return isKnownLanguage(primary) ? primary : DEFAULT_LANGUAGE;
 }
 
 /** Replaces `{name}` in `text` with the matching parameter. */
@@ -137,8 +135,8 @@ export function localPath(path: string): string {
 
 /**
  * The languages this instance offers, from the `<meta name="capsulebin-languages">`
- * the server puts into every shell. Without it (Vite dev server, where the marker
- * stays a comment) every known language is offered.
+ * the shell generator puts into every shell. Without it every known language is
+ * offered.
  */
 export function offeredLanguages(): Language[] {
     const meta = document.querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]');

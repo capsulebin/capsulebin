@@ -2,10 +2,13 @@
  * Generates one HTML shell per interface language from the templates in the
  * web root and the catalogues in `src/i18n/`.
  *
- * Templates are ordinary HTML with two kinds of placeholders:
+ * Templates are ordinary HTML with these placeholders:
  *
  * - `{{lang}}` - the language code, for `<html lang>` and the prefix of internal
  *   links (`href="/{{lang}}/report"`);
+ * - `{{languages}}` and `{{default}}` - every known language, space-separated,
+ *   and the default language, for the `<meta name="capsulebin-languages">` that
+ *   `public/language-init.js` and the language switch read;
  * - `{{<catalogue key>}}` - a text from the catalogue. Catalogue values are plain
  *   text and are HTML-escaped here, so a catalogue cannot bring markup or script
  *   into a page.
@@ -17,6 +20,11 @@
 
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+
+// Deep import: plain Node (`npm run build`) cannot resolve core's extensionless index imports.
+import { KNOWN_LANGUAGES } from '@capsulebin/core/src/languages.ts';
+
+import { DEFAULT_LANGUAGE } from '../src/default-language.ts';
 
 const WEB_ROOT = resolve(import.meta.dirname, '..');
 
@@ -34,8 +42,17 @@ export const GENERATED_DIR = '.shells';
 
 const CATALOGUE_DIR = join(WEB_ROOT, 'src', 'i18n');
 
-/** Language-code placeholder; catalogue keys always contain a dot, so it cannot clash. */
-const LANG_PLACEHOLDER = 'lang';
+/**
+ * Placeholders filled from the language rather than the catalogue; catalogue keys
+ * always contain a dot, so they cannot clash.
+ */
+function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
+    return new Map([
+        ['lang', lang],
+        ['languages', KNOWN_LANGUAGES.join(' ')],
+        ['default', DEFAULT_LANGUAGE],
+    ]);
+}
 
 const PLACEHOLDER = /\{\{([A-Za-z0-9_.]+)\}\}/g;
 
@@ -72,9 +89,9 @@ function escapeHtml(text: string): string {
  * ship as a blank button.
  */
 export function renderShell(template: string, lang: string, catalogue: Catalogue): string {
+    const fromLanguage = languagePlaceholders(lang);
     return template.replace(PLACEHOLDER, (_, key: string) => {
-        if (key === LANG_PLACEHOLDER) return lang;
-        const value = catalogue[key];
+        const value = fromLanguage.get(key) ?? catalogue[key];
         if (value === undefined) {
             throw new Error(`${lang}.json has no entry for {{${key}}}`);
         }

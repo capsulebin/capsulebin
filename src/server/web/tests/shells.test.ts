@@ -1,10 +1,12 @@
 /**
  * The shell templates and the per-language shells generated from them
  * (scripts/shells.ts): every visible text comes from the catalogue, nothing of
- * the template machinery is left over, the server's markers are all there, and
- * every internal link stays within the page's language.
+ * the template machinery is left over, the server's markers are all there, the
+ * languages meta is written at build time, and every internal link stays within
+ * the page's language.
  */
 
+import { KNOWN_LANGUAGES } from '@capsulebin/core';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -46,7 +48,6 @@ const ALLOWED_LITERALS = new Set([
 
 /** The server's markers and how often each shell carries them. */
 const MARKERS = {
-    '<!--capsulebin:languages-->': () => 1,
     '<!--capsulebin:legal-links-->': () => 1,
     '<!--capsulebin:legal-title-->': (shell: string) => (shell === 'legal' ? 2 : 0),
     '<!--capsulebin:legal-content-->': (shell: string) => (shell === 'legal' ? 1 : 0),
@@ -98,7 +99,7 @@ describe('templates', () => {
         const html = readTemplate(shell);
         const head = html.slice(0, html.indexOf('</head>'));
         const order = [
-            '<!--capsulebin:languages-->',
+            'name="capsulebin-languages"',
             '<script src="/language-init.js"></script>',
             '<script src="/theme-init.js"></script>',
             '<script type="module"',
@@ -145,6 +146,23 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         for (const [marker, count] of Object.entries(MARKERS)) {
             expect(html.split(marker).length - 1, marker).toBe(count(shell));
         }
+        expect(html).not.toContain('<!--capsulebin:languages-->');
+    });
+
+    /** public/language-init.js and the language switch read it; the server adds nothing. */
+    it('names every known language and the default in its head, before the head script', () => {
+        const metas = doc.querySelectorAll<HTMLMetaElement>('meta[name="capsulebin-languages"]');
+        expect(metas).toHaveLength(1);
+        const meta = metas[0]!;
+        expect(meta.parentElement).toBe(doc.head);
+        expect(meta.content).toBe(KNOWN_LANGUAGES.join(' '));
+        expect(meta.content.split(' ')[0]).toBe('en');
+        expect(meta.dataset.default).toBe('en');
+
+        const script = doc.head.querySelector('script[src="/language-init.js"]')!;
+        expect(
+            meta.compareDocumentPosition(script) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
     });
 
     it('links internally only within its language', () => {

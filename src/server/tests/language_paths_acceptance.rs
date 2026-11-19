@@ -7,27 +7,13 @@
 mod support;
 
 use axum::http::StatusCode;
+use capsulebin_server::config::KNOWN_LANGUAGES;
 use support::*;
-
-const LANGUAGES: [&str; 2] = ["en", "de"];
-
-fn text_section(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
-    Some(capsulebin_server::config::LegalSection {
-        text: Some(markdown.to_owned()),
-        ..Default::default()
-    })
-}
 
 /// Every legal page configured as text, so all three are served.
 fn all_legal_pages(config: &mut capsulebin_server::config::Config) {
-    config.legal.operator = text_section("Example GmbH");
-    config.legal.terms = text_section("Own terms of use.");
-}
-
-fn stable(answer: &Answer) -> axum::http::HeaderMap {
-    let mut headers = answer.headers.clone();
-    headers.remove("x-request-id");
-    headers
+    config.legal.operator = legal_text("Example GmbH");
+    config.legal.terms = legal_text("Own terms of use.");
 }
 
 /// AC2 + AC17: `/L/imprint`, `/L/privacy`, `/L/terms` answer `200`, HTML, `no-store`,
@@ -37,7 +23,7 @@ fn stable(answer: &Answer) -> axum::http::HeaderMap {
 async fn ac2_ac17_every_legal_page_under_every_prefix() {
     let h = harness_with("acc-legal-all", all_legal_pages).await;
 
-    for language in LANGUAGES {
+    for &language in KNOWN_LANGUAGES {
         for page in ["imprint", "privacy", "terms"] {
             let path = format!("/{language}/{page}");
             let answer = h.get(&path).await;
@@ -83,19 +69,19 @@ async fn ac4_redirects_and_shells_do_not_depend_on_the_id() {
             let language = if accept.is_some_and(|v| v.starts_with("de")) { "de" } else { "en" };
             assert_eq!(a.header("location"), Some(format!("/{language}/{page}/{existing}")).as_deref());
             assert_eq!(b.header("location"), Some(format!("/{language}/{page}/{absent}")).as_deref());
-            let (mut ha, mut hb) = (stable(&a), stable(&b));
+            let (mut ha, mut hb) = (stable_headers(&a), stable_headers(&b));
             ha.remove("location");
             hb.remove("location");
             assert_eq!(ha, hb, "/{page} {accept:?}: redirect headers differ");
         }
 
-        for language in LANGUAGES {
+        for &language in KNOWN_LANGUAGES {
             let a = h.get(&format!("/{language}/{page}/{existing}")).await;
             let b = h.get(&format!("/{language}/{page}/{absent}")).await;
             assert_eq!(a.status, StatusCode::OK);
             assert_eq!(a.status, b.status);
             assert_eq!(a.body, b.body, "/{language}/{page}: shell differs");
-            assert_eq!(stable(&a), stable(&b), "/{language}/{page}: headers differ");
+            assert_eq!(stable_headers(&a), stable_headers(&b), "/{language}/{page}: headers differ");
         }
     }
 
@@ -135,5 +121,101 @@ async fn ac3_redirects_keep_the_query_and_carry_the_security_headers() {
     ] {
         let answer = h.get_with_headers("/", &[("accept-language", accept)]).await;
         assert_eq!(answer.header("location"), Some(location), "{accept}");
+    }
+}
+
+/// AC5 (N2): every known language is offered, so no known prefix is a 404 any
+/// more; a prefix that is not a known language is the generic 404 on every
+/// page path, status and body identical to an unknown path.
+#[tokio::test]
+async fn ac5_only_unknown_language_prefixes_are_unknown_paths() {
+    let h = harness_with("acc-unknown-prefix", all_legal_pages).await;
+    let unknown = h.get("/does-not-exist").await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    for &language in KNOWN_LANGUAGES {
+        assert_eq!(h.get(&format!("/{language}/")).await.status, StatusCode::OK, "/{language}/");
+    }
+    for path in [
+        "/fr/",
+        "/fr/p/2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/xx/manage/2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/zz/report?id=2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/it/imprint",
+        "/es/privacy",
+        "/nl/terms",
+    ] {
+        let answer = h.get(path).await;
+        assert_eq!(answer.status, unknown.status, "{path}");
+        assert_eq!(answer.body, unknown.body, "{path}");
+    }
+}
+
+/// AC6 (N2): the languages meta is written by the web build; the server
+/// substitutes no languages marker. A shell that still carried one would be
+/// served with it untouched, the language list is not the server's business.
+#[tokio::test]
+async fn ac6_the_server_substitutes_no_languages_marker() {
+    let h = harness("acc-no-languages-marker").await;
+    for &language in KNOWN_LANGUAGES {
+        std::fs::write(
+            h.dir.join(language).join("index.html"),
+            format!(
+                "<!doctype html><html lang=\"{language}\"><head><!--capsulebin:languages--><title>create</title></head>\
+                 <footer><!--capsulebin:legal-links--></footer>"
+            ),
+        )
+        .unwrap();
+
+        let text = h.get(&format!("/{language}/")).await.text();
+        assert!(text.contains("<head><!--capsulebin:languages--><title>"), "/{language}/: {text}");
+        assert!(!text.contains("capsulebin-languages"), "/{language}/: {text}");
+    }
+}
+
+/// AC23 (N2): `capsulebin check` rejects an `[i18n]` table and the
+/// `CAPSULEBIN__I18N__*` variables like any other unknown key, while the same
+/// configuration without them is valid.
+#[test]
+fn ac23_check_rejects_an_i18n_table_and_its_env_variables() {
+    let dir = tempdir("acc-i18n-check");
+    let valid = format!(
+        "[server]\npublic_url = \"https://paste.example\"\n[database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+        dir.join("capsulebin.db").display()
+    );
+    let ok = dir.join("ok.toml");
+    std::fs::write(&ok, &valid).unwrap();
+    let with_table = dir.join("i18n.toml");
+    std::fs::write(
+        &with_table,
+        format!("{valid}[i18n]\ndefault_language = \"en\"\nlanguages = [\"en\", \"de\"]\n"),
+    )
+    .unwrap();
+
+    let check = |config: &std::path::Path, env: &[(&str, &str)]| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_capsulebin"));
+        command.arg("--config").arg(config).arg("check");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command.output().unwrap()
+    };
+
+    let output = check(&ok, &[]);
+    assert!(
+        output.status.success(),
+        "valid configuration rejected: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for (config, env) in [
+        (&with_table, &[][..]),
+        (&ok, &[("CAPSULEBIN__I18N__LANGUAGES", r#"["en"]"#)][..]),
+        (&ok, &[("CAPSULEBIN__I18N__DEFAULT_LANGUAGE", "de")][..]),
+    ] {
+        let output = check(config, env);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{config:?} {env:?} accepted");
+        assert!(stderr.contains("i18n"), "{config:?} {env:?}: error does not name the key: {stderr}");
     }
 }

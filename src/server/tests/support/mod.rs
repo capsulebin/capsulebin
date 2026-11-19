@@ -72,7 +72,6 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
-        i18n: Default::default(),
     }
 }
 
@@ -144,14 +143,33 @@ pub async fn harness_from_dump(name: &str, dump: &'static str, now: i64) -> Harn
     }
 }
 
+/// What the web build writes into the `<head>` of every shell: all known
+/// languages and the default.
+pub const LANGUAGES_META: &str = r#"<meta name="capsulebin-languages" content="en de" data-default="en">"#;
+
+/// A legal section configured as Markdown text.
+pub fn legal_text(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
+    Some(capsulebin_server::config::LegalSection {
+        text: Some(markdown.to_owned()),
+        ..Default::default()
+    })
+}
+
+/// The headers of an answer without the one that differs per request.
+pub fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
+    let mut headers = answer.headers.clone();
+    headers.remove("x-request-id");
+    headers
+}
+
 /// The asset directory doubles as the shell source, so the tests do not depend on
 /// a frontend build having happened. Like the build, it has the shells of every
-/// known language under `<language>/`, whichever the configuration offers.
+/// known language under `<language>/`, each with the language list in its head.
 pub fn write_shells(dir: &Path) {
     for language in capsulebin_server::config::KNOWN_LANGUAGES {
         let shells = dir.join(language);
         std::fs::create_dir_all(&shells).unwrap();
-        let head = format!(r#"<!doctype html><html lang="{language}"><head><!--capsulebin:languages-->"#);
+        let head = format!(r#"<!doctype html><html lang="{language}"><head>{LANGUAGES_META}"#);
         for (file, marker) in [
             ("index.html", "create"),
             ("p.html", "view"),

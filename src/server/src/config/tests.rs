@@ -29,7 +29,6 @@ fn valid(directory: &Path) -> Config {
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
-        i18n: Default::default(),
     }
 }
 
@@ -570,68 +569,26 @@ fn removed_content_limits_are_rejected() {
 }
 
 #[test]
-fn offers_english_and_german_by_default() {
-    let dir = tempdir("i18n-default");
+fn offers_every_known_language() {
+    let dir = tempdir("languages");
     let resolved = valid(&dir).validate().expect("valid configuration");
 
-    let offered: Vec<&str> = resolved.languages.iter().map(|(code, _)| *code).collect();
-    assert_eq!(offered, ["en", "de"]);
-    assert_eq!(resolved.default_language, "en");
+    let offered: Vec<&str> = resolved.legal.iter().map(|(code, _)| *code).collect();
+    assert_eq!(offered, KNOWN_LANGUAGES);
 }
 
+/// The interface languages are not configurable: a leftover `[i18n]` table, in
+/// the file or from the environment, stops the start like any unknown key.
 #[test]
-fn keeps_the_configured_order_and_default() {
-    let dir = tempdir("i18n-order");
-    let mut config = valid(&dir);
-    config.i18n.languages = vec!["de".to_owned(), "en".to_owned()];
-    config.i18n.default_language = "de".to_owned();
-    let resolved = config.validate().expect("valid configuration");
+fn rejects_an_i18n_table() {
+    let dir = tempdir("i18n-table");
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(&path, "[i18n]\nlanguages = [\"en\"]\n").expect("write config");
+    let error = Config::load(Some(&path)).expect_err("[i18n] accepted");
+    assert!(error.to_string().contains("i18n"), "unexpected error: {error}");
 
-    let offered: Vec<&str> = resolved.languages.iter().map(|(code, _)| *code).collect();
-    assert_eq!(offered, ["de", "en"]);
-    assert_eq!(resolved.default_language, "de");
-}
-
-/// Each mistake fails at startup and names the key to fix.
-#[test]
-fn rejects_unusable_language_settings() {
-    let dir = tempdir("i18n-invalid");
-    let cases: [(&[&str], &str, &str); 5] = [
-        (&["en", "fr"], "en", "i18n.languages"),
-        (&["EN"], "en", "i18n.languages"),
-        (&[], "en", "i18n.languages"),
-        (&["en", "de", "en"], "en", "i18n.languages"),
-        (&["en"], "de", "i18n.default_language"),
-    ];
-
-    for (languages, default, key) in cases {
-        let mut config = valid(&dir);
-        config.i18n.languages = languages.iter().map(|code| (*code).to_owned()).collect();
-        config.i18n.default_language = default.to_owned();
-        let message = error(&config);
-        assert!(message.contains(key), "{languages:?}/{default}: {message}");
-    }
-}
-
-#[test]
-fn rejects_unknown_i18n_keys() {
-    let error = toml::from_str::<Config>("[i18n]\ndefault_langauge = \"de\"\n").expect_err("typo accepted");
-    assert!(error.to_string().contains("default_langauge"), "unexpected error: {error}");
-}
-
-#[test]
-fn languages_can_be_set_from_the_environment() {
     let mut table = toml::Table::new();
-    apply_env(
-        &mut table,
-        [
-            ("CAPSULEBIN__I18N__DEFAULT_LANGUAGE".to_owned(), "de".to_owned()),
-            ("CAPSULEBIN__I18N__LANGUAGES".to_owned(), r#"["de"]"#.to_owned()),
-        ],
-    )
-    .expect("overlay");
-    let config: Config = table.try_into().expect("parse");
-
-    assert_eq!(config.i18n.default_language, "de");
-    assert_eq!(config.i18n.languages, ["de"]);
+    apply_env(&mut table, [("CAPSULEBIN__I18N__DEFAULT_LANGUAGE".to_owned(), "de".to_owned())]).expect("overlay");
+    let error = table.try_into::<Config>().expect_err("CAPSULEBIN__I18N__* accepted");
+    assert!(error.to_string().contains("i18n"), "unexpected error: {error}");
 }

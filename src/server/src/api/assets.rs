@@ -1,11 +1,12 @@
 //! Serving the client application.
 //!
 //! The client is a multi-page application with no client-side router, so every
-//! route maps to exactly one HTML document. Every page exists once per offered
+//! route maps to exactly one HTML document. Every page exists once per known
 //! language, under its prefix (`/en/p/{id}`, `/de/p/{id}`), built from
 //! `dist/<language>/<shell>.html`. A page path without a prefix - above all the
 //! share and management links - is redirected by `Accept-Language`; a prefix
-//! that is not offered is an unknown path.
+//! that is not a known language is an unknown path. The shells carry the
+//! language list for the head script themselves, written by the web build.
 //!
 //! Key property: `GET /<language>/p/{id}` returns the same bytes for **every**
 //! syntactically valid id and triggers no retrieval, and so does the redirect
@@ -21,6 +22,7 @@ use axum::{
 };
 
 use crate::AppState;
+use crate::config::{DEFAULT_LANGUAGE, KNOWN_LANGUAGES};
 use crate::legal::{LegalPages, Which};
 
 /// Where the footer of every HTML shell takes the operator's legal links.
@@ -32,9 +34,6 @@ pub const LEGAL_LINKS_MARKER: &str = "<!--capsulebin:legal-links-->";
 pub const LEGAL_TITLE_MARKER: &str = "<!--capsulebin:legal-title-->";
 /// Where `legal.html` takes the rendered text.
 pub const LEGAL_CONTENT_MARKER: &str = "<!--capsulebin:legal-content-->";
-/// Where the `<head>` of every HTML shell takes the offered languages and the
-/// default, as `<meta name="capsulebin-languages" content="en de" data-default="en">`.
-pub const LANGUAGES_MARKER: &str = "<!--capsulebin:languages-->";
 
 /// Page paths without a language prefix. Each is redirected to the same path
 /// under the prefix the request prefers.
@@ -84,63 +83,29 @@ impl Shell {
     }
 }
 
-/// The interface languages as the page routes need them, prepared once at
-/// startup from the resolved configuration.
+/// The legal pages and footer links of every interface language, prepared
+/// once at startup from the resolved configuration.
 #[derive(Debug)]
-pub struct Languages {
-    /// Offered languages in configuration order, each with the legal pages and
-    /// footer links for its shells.
-    offered: Vec<(&'static str, LegalPages)>,
-    /// The codes of `offered`, in the same order.
-    codes: Vec<&'static str>,
-    default: &'static str,
-    /// What [`LANGUAGES_MARKER`] is replaced with.
-    meta: String,
+pub struct LegalByLanguage {
+    legal: Vec<(&'static str, LegalPages)>,
 }
 
-impl Languages {
-    pub fn new(offered: Vec<(&'static str, LegalPages)>, default: &'static str) -> Self {
-        let codes: Vec<&'static str> = offered.iter().map(|(code, _)| *code).collect();
-        let meta = format!(
-            r#"<meta name="capsulebin-languages" content="{}" data-default="{}">"#,
-            crate::legal::escape(&codes.join(" ")),
-            crate::legal::escape(default)
-        );
-        Self {
-            offered,
-            codes,
-            default,
-            meta,
-        }
+impl LegalByLanguage {
+    pub fn new(legal: Vec<(&'static str, LegalPages)>) -> Self {
+        Self { legal }
     }
 
-    /// The offered language codes, in configuration order.
-    pub fn codes(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.codes.iter().copied()
-    }
-
-    fn legal(&self, language: &str) -> Option<&LegalPages> {
-        self.offered.iter().find_map(|(code, legal)| (*code == language).then_some(legal))
-    }
-
-    /// The language a request without a prefix is sent to: the offered one
-    /// `Accept-Language` weighs highest, otherwise the default. A missing,
-    /// malformed or overlong header is no error, just no preference.
-    fn negotiate(&self, accept_language: Option<&HeaderValue>) -> &'static str {
-        accept_language
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| value.len() <= MAX_ACCEPT_LANGUAGE_BYTES)
-            .and_then(|value| preferred(value, &self.codes))
-            .unwrap_or(self.default)
+    fn get(&self, language: &str) -> Option<&LegalPages> {
+        self.legal.iter().find_map(|(code, legal)| (*code == language).then_some(legal))
     }
 }
 
-pub fn routes(languages: &Languages) -> Router<AppState> {
+pub fn routes() -> Router<AppState> {
     let mut router = Router::new();
     for path in UNPREFIXED_PAGES {
         router = router.route(path, get(redirect));
     }
-    for language in languages.codes() {
+    for &language in KNOWN_LANGUAGES {
         router = router
             .route(
                 &format!("/{language}"),
@@ -164,8 +129,8 @@ pub fn routes(languages: &Languages) -> Router<AppState> {
 /// language. Only the path is copied, never inspected, so the answer for
 /// `/p/{id}` does not depend on whether the id exists; the fragment with the
 /// key never reaches the server and stays in the browser.
-async fn redirect(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let language = state.languages.negotiate(headers.get(header::ACCEPT_LANGUAGE));
+async fn redirect(headers: HeaderMap, uri: Uri) -> Response {
+    let language = negotiate(headers.get(header::ACCEPT_LANGUAGE));
     found(&format!("/{language}{}{}", uri.path(), query(&uri)))
 }
 
@@ -188,17 +153,28 @@ fn found(location: &str) -> Response {
     response
 }
 
-/// The offered language with the highest weight in an `Accept-Language` value
+/// The language a request without a prefix is sent to: the known one
+/// `Accept-Language` weighs highest, otherwise the default. A missing,
+/// malformed or overlong header is no error, just no preference.
+fn negotiate(accept_language: Option<&HeaderValue>) -> &'static str {
+    accept_language
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= MAX_ACCEPT_LANGUAGE_BYTES)
+        .and_then(|value| preferred(value, KNOWN_LANGUAGES))
+        .unwrap_or(DEFAULT_LANGUAGE)
+}
+
+/// The known language with the highest weight in an `Accept-Language` value
 /// (RFC 9110), matched by its primary subtag (`de-AT` is `de`). `q=0` rules a
 /// language out; malformed entries are skipped; on equal weight the earlier
 /// entry wins.
-fn preferred(accept_language: &str, offered: &[&'static str]) -> Option<&'static str> {
+fn preferred(accept_language: &str, known: &[&'static str]) -> Option<&'static str> {
     let mut best: Option<(u16, &'static str)> = None;
     for entry in accept_language.split(',') {
         let Some((primary, weight)) = parse_entry(entry) else {
             continue;
         };
-        let Some(code) = offered.iter().copied().find(|code| code.eq_ignore_ascii_case(primary)) else {
+        let Some(code) = known.iter().copied().find(|code| code.eq_ignore_ascii_case(primary)) else {
             continue;
         };
         if weight > 0 && best.is_none_or(|(highest, _)| weight > highest) {
@@ -249,12 +225,12 @@ fn parse_weight(value: &str) -> Option<u16> {
 /// it would be the first step towards a response that depends on whether it
 /// exists.
 async fn shell(State(state): State<AppState>, language: &'static str, which: Shell) -> Response {
-    let Some(legal) = state.languages.legal(language) else {
+    let Some(legal) = state.legal.get(language) else {
         return not_found();
     };
     let file = which.file_for(language);
     match state.assets.load(&file) {
-        Some(bytes) => html(render(bytes, &state.languages, legal).into_bytes()),
+        Some(bytes) => html(render(bytes, legal).into_bytes()),
         None => missing_frontend(&file),
     }
 }
@@ -262,7 +238,7 @@ async fn shell(State(state): State<AppState>, language: &'static str, which: She
 /// A legal page: the `legal.html` shell with the page put in. Not configured,
 /// or configured as a link elsewhere: the same `404` as any unknown path.
 async fn legal(State(state): State<AppState>, language: &'static str, which: Which) -> Response {
-    let Some(legal) = state.languages.legal(language) else {
+    let Some(legal) = state.legal.get(language) else {
         return not_found();
     };
     let Some(page) = legal.page(which) else {
@@ -271,7 +247,7 @@ async fn legal(State(state): State<AppState>, language: &'static str, which: Whi
     let file = Shell::Legal.file_for(language);
     match state.assets.load(&file) {
         Some(bytes) => html(
-            render(bytes, &state.languages, legal)
+            render(bytes, legal)
                 .replace(LEGAL_TITLE_MARKER, &crate::legal::escape(page.title))
                 .replace(LEGAL_CONTENT_MARKER, &page.html)
                 .into_bytes(),
@@ -280,14 +256,12 @@ async fn legal(State(state): State<AppState>, language: &'static str, which: Whi
     }
 }
 
-/// Puts the offered languages and the legal links into a shell. The same for
+/// Puts the legal links into a shell. The same for
 /// every request, so the shell still does not depend on the path id. The
 /// shells are UTF-8; a lossy conversion only matters for a broken build, which
 /// `/health/ready` reports.
-fn render(bytes: Vec<u8>, languages: &Languages, legal: &LegalPages) -> String {
-    String::from_utf8_lossy(&bytes)
-        .replace(LANGUAGES_MARKER, &languages.meta)
-        .replace(LEGAL_LINKS_MARKER, &legal.footer)
+fn render(bytes: Vec<u8>, legal: &LegalPages) -> String {
+    String::from_utf8_lossy(&bytes).replace(LEGAL_LINKS_MARKER, &legal.footer)
 }
 
 /// Static assets (JS, CSS, icons). No directory listing and no path traversal:
@@ -384,11 +358,11 @@ impl AssetSource {
         }
     }
 
-    /// Whether every shell exists for each of `languages`; without them there
+    /// Whether every shell exists for each known language; without them there
     /// is no application. Used by `/health/ready`.
-    pub fn has_shells<'a>(&self, languages: impl IntoIterator<Item = &'a str>) -> bool {
-        languages
-            .into_iter()
+    pub fn has_shells(&self) -> bool {
+        KNOWN_LANGUAGES
+            .iter()
             .all(|language| Shell::ALL.iter().all(|shell| self.exists(&shell.file_for(language))))
     }
 
@@ -432,17 +406,18 @@ mod tests {
     }
 
     #[test]
-    fn the_language_and_footer_markers_are_replaced() {
+    fn the_footer_marker_is_replaced() {
         let legal = LegalPages {
             footer: "<a>x</a>".to_owned(),
             ..LegalPages::default()
         };
-        let languages = Languages::new(vec![("de", LegalPages::default()), ("en", LegalPages::default())], "en");
-        let shell = format!("<head>{LANGUAGES_MARKER}</head><footer>{LEGAL_LINKS_MARKER}</footer>").into_bytes();
-        assert_eq!(
-            render(shell, &languages, &legal),
-            r#"<head><meta name="capsulebin-languages" content="de en" data-default="en"></head><footer><a>x</a></footer>"#
-        );
+        let shell = format!("<head></head><footer>{LEGAL_LINKS_MARKER}</footer>").into_bytes();
+        assert_eq!(render(shell, &legal), "<head></head><footer><a>x</a></footer>");
+    }
+
+    #[test]
+    fn the_default_language_is_a_known_one() {
+        assert!(KNOWN_LANGUAGES.contains(&DEFAULT_LANGUAGE));
     }
 
     #[test]
@@ -478,16 +453,15 @@ mod tests {
 
     #[test]
     fn a_missing_malformed_or_overlong_header_gets_the_default() {
-        let languages = Languages::new(vec![("en", LegalPages::default()), ("de", LegalPages::default())], "de");
         let value = |text: &str| HeaderValue::from_str(text).ok();
 
-        assert_eq!(languages.negotiate(None), "de");
-        assert_eq!(languages.negotiate(value("en").as_ref()), "en");
-        assert_eq!(languages.negotiate(value(";;;,,,q=").as_ref()), "de");
-        let overlong = format!("{}en", "x;q=0.1,".repeat(200));
-        assert_eq!(languages.negotiate(value(&overlong).as_ref()), "de");
-        let not_text = HeaderValue::from_bytes(b"en\xff").ok();
-        assert_eq!(languages.negotiate(not_text.as_ref()), "de");
+        assert_eq!(negotiate(None), "en");
+        assert_eq!(negotiate(value("de").as_ref()), "de");
+        assert_eq!(negotiate(value(";;;,,,q=").as_ref()), "en");
+        let overlong = format!("{}de", "x;q=0.1,".repeat(200));
+        assert_eq!(negotiate(value(&overlong).as_ref()), "en");
+        let not_text = HeaderValue::from_bytes(b"de\xff").ok();
+        assert_eq!(negotiate(not_text.as_ref()), "en");
     }
 
     /// The template a shell is generated from, once per language, with its path.
@@ -506,30 +480,6 @@ mod tests {
                 source.matches(LEGAL_LINKS_MARKER).count(),
                 1,
                 "{} must contain the legal links marker exactly once",
-                path.display()
-            );
-        }
-    }
-
-    /// `language-init.js` reads the offered languages synchronously from the
-    /// `<meta>` that replaces the marker, so the marker must be in the `<head>`
-    /// before the script.
-    #[test]
-    fn every_shell_source_carries_the_languages_marker_before_the_head_script() {
-        for shell in Shell::ALL {
-            let (path, source) = template(shell);
-            assert_eq!(
-                source.matches(LANGUAGES_MARKER).count(),
-                1,
-                "{} must contain the languages marker exactly once",
-                path.display()
-            );
-            let marker = source.find(LANGUAGES_MARKER);
-            let script = source.find(r#"<script src="/language-init.js"></script>"#);
-            let head_end = source.find("</head>");
-            assert!(
-                matches!((marker, script, head_end), (Some(marker), Some(script), Some(head_end)) if marker < script && script < head_end),
-                "{}: the languages marker must be in the <head>, before language-init.js",
                 path.display()
             );
         }

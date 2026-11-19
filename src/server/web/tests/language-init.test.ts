@@ -96,7 +96,7 @@ describe('language-init.js', () => {
         expect(run({ path: '/de/report', browser: ['EN-gb', 'de'] })).toBe('/en/report');
     });
 
-    it("falls back to the operator's default", () => {
+    it('falls back to the default language (data-default)', () => {
         expect(
             run({ path: '/de/', browser: ['fr'], meta: { content: 'en de', default: 'en' } }),
         ).toBe('/en/');

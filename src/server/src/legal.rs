@@ -80,7 +80,7 @@ enum Target {
 
 /// Reads, checks and renders the legal pages for the shells of `language`:
 /// links to the pages served here carry its prefix (`/de/privacy`). Called by
-/// `Config::validate` for every offered language, so `capsulebin check`
+/// `Config::validate` for every known language, so `capsulebin check`
 /// reports a missing file or a bad combination too.
 pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigError> {
     let legal = &config.legal;

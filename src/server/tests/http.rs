@@ -9,6 +9,7 @@
 mod support;
 
 use axum::http::StatusCode;
+use capsulebin_server::config::KNOWN_LANGUAGES;
 use support::*;
 
 #[tokio::test]
@@ -39,31 +40,19 @@ async fn health_ready_is_ok_with_assets() {
     assert_eq!(h.get("/health/ready").await.status, StatusCode::OK);
 }
 
-/// Every shell of every offered language is needed; one missing is a page that
+/// Every shell of every known language is needed; one missing is a page that
 /// would answer `500`.
 #[tokio::test]
-async fn health_ready_needs_every_shell_of_every_offered_language() {
+async fn health_ready_needs_every_shell_of_every_language() {
     let h = harness("shell-ready-partial").await;
     std::fs::remove_file(h.dir.join("de/legal.html")).unwrap();
 
     let answer = h.get("/health/ready").await;
     assert_eq!(answer.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(answer.json()["assets"], "missing");
-
-    // A language that is not offered is not needed.
-    let h = harness_with("shell-ready-english", english_only).await;
-    std::fs::remove_dir_all(h.dir.join("de")).unwrap();
-    assert_eq!(h.get("/health/ready").await.status, StatusCode::OK);
 }
-
-/// The languages every test runs under: the default configuration offers both.
-const LANGUAGES: [&str; 2] = ["en", "de"];
 
 const SOME_ID: &str = "2pS3xQ7Rk9mNpLz4AbCdEA";
-
-fn english_only(config: &mut capsulebin_server::config::Config) {
-    config.i18n.languages = vec!["en".to_owned()];
-}
 
 /// The page paths under `language`, each with the shell it must be served with.
 fn pages(language: &str) -> [(String, &'static str); 4] {
@@ -75,13 +64,6 @@ fn pages(language: &str) -> [(String, &'static str); 4] {
     ]
 }
 
-/// The headers of an answer without the one that differs per request.
-fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
-    let mut headers = answer.headers.clone();
-    headers.remove("x-request-id");
-    headers
-}
-
 /// The security headers are part of the boundary and must appear on **every**
 /// response - including the 404 and the redirect, where a naively placed layer
 /// loses them.
@@ -89,7 +71,7 @@ fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
 async fn security_headers_are_on_every_response() {
     let h = harness("shell-headers").await;
 
-    let mut paths: Vec<String> = LANGUAGES
+    let mut paths: Vec<String> = KNOWN_LANGUAGES
         .iter()
         .flat_map(|language| pages(language).map(|(path, _)| path))
         .collect();
@@ -172,7 +154,7 @@ async fn fetching_the_shell_does_not_touch_the_paste() {
     for _ in 0..5 {
         for path in ["/p", "/manage"] {
             assert_eq!(h.get(&format!("{path}/{}", id(1).encode())).await.status, StatusCode::FOUND);
-            for language in LANGUAGES {
+            for &language in KNOWN_LANGUAGES {
                 assert_eq!(h.get(&format!("/{language}{path}/{}", id(1).encode())).await.status, StatusCode::OK);
             }
         }
@@ -237,61 +219,28 @@ async fn unprefixed_pages_are_redirected_by_accept_language() {
     assert_eq!(h.send(request).await.header("location"), Some("/en/"));
 }
 
+/// A prefix that is not a known language is an unknown path: same status,
+/// same body. So is a shell file requested directly: it would come without its
+/// markers.
 #[tokio::test]
-async fn the_default_language_is_the_operators_choice() {
-    let h = harness_with("shell-redirect-default", |config| {
-        config.i18n.default_language = "de".to_owned();
-    })
-    .await;
-
-    assert_eq!(
-        h.get("/p/2pS3xQ7Rk9mNpLz4AbCdEA").await.header("location"),
-        Some("/de/p/2pS3xQ7Rk9mNpLz4AbCdEA")
-    );
-    let english = h.get_with_headers("/", &[("accept-language", "en-GB")]).await;
-    assert_eq!(english.header("location"), Some("/en/"));
-}
-
-/// A prefix that is not offered is an unknown path: same status, same body.
-/// So is a shell file requested directly: it would come without its markers.
-#[tokio::test]
-async fn prefixes_that_are_not_offered_and_shell_files_are_unknown_paths() {
-    let both = harness("shell-unknown-prefix").await;
-    let english = harness_with("shell-unknown-prefix-en", english_only).await;
-    let unknown = both.get("/does-not-exist").await;
+async fn unknown_prefixes_and_shell_files_are_unknown_paths() {
+    let h = harness("shell-unknown-prefix").await;
+    let unknown = h.get("/does-not-exist").await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
 
-    let cases = [
-        (&both, "/fr/"),
-        (&both, "/fr"),
-        (&both, "/xx/p/2pS3xQ7Rk9mNpLz4AbCdEA"),
-        (&both, "/en/index.html"),
-        (&both, "/de/p.html"),
-        (&both, "/en/legal.html"),
-        (&both, "/en/INDEX.HTML"),
-        (&english, "/de/"),
-        (&english, "/de"),
-        (&english, "/de/p/2pS3xQ7Rk9mNpLz4AbCdEA"),
-        (&english, "/de/report"),
-    ];
-    for (h, path) in cases {
+    for path in [
+        "/fr/",
+        "/fr",
+        "/xx/p/2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/en/index.html",
+        "/de/p.html",
+        "/en/legal.html",
+        "/en/INDEX.HTML",
+    ] {
         let answer = h.get(path).await;
         assert_eq!(answer.status, unknown.status, "{path}");
         assert_eq!(answer.body, unknown.body, "{path}");
     }
-
-    // Only offered languages are redirected to.
-    assert_eq!(
-        english.get_with_headers("/", &[("accept-language", "de")]).await.header("location"),
-        Some("/en/")
-    );
-}
-
-fn legal_text(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
-    Some(capsulebin_server::config::LegalSection {
-        text: Some(markdown.to_owned()),
-        ..Default::default()
-    })
 }
 
 fn legal_configuration(config: &mut capsulebin_server::config::Config) {
@@ -306,7 +255,7 @@ fn legal_configuration(config: &mut capsulebin_server::config::Config) {
 async fn every_shell_carries_the_configured_legal_links() {
     let h = harness_with("shell-legal", legal_configuration).await;
 
-    for language in LANGUAGES {
+    for &language in KNOWN_LANGUAGES {
         let mut paths: Vec<String> = pages(language).map(|(path, _)| path).into();
         paths.push(format!("/{language}/imprint"));
         for path in paths {
@@ -319,40 +268,21 @@ async fn every_shell_carries_the_configured_legal_links() {
     }
 }
 
-/// Every shell learns which languages there are, in the configured order, and
-/// the default.
+/// Every route serves its shell with the language list the web build wrote
+/// into the head, untouched, and no marker left over.
 #[tokio::test]
-async fn every_shell_carries_the_offered_languages() {
-    let both = harness_with("shell-languages", legal_configuration).await;
-    let english = harness_with("shell-languages-en", |config| {
-        legal_configuration(config);
-        english_only(config);
-    })
-    .await;
+async fn every_shell_carries_the_language_list() {
+    let h = harness_with("shell-languages", legal_configuration).await;
 
-    for (h, languages, meta) in [
-        (
-            &both,
-            &LANGUAGES[..],
-            r#"<meta name="capsulebin-languages" content="en de" data-default="en">"#,
-        ),
-        (
-            &english,
-            &LANGUAGES[..1],
-            r#"<meta name="capsulebin-languages" content="en" data-default="en">"#,
-        ),
-    ] {
-        for language in languages {
-            let mut paths: Vec<String> = pages(language).map(|(path, _)| path).into();
-            paths.push(format!("/{language}/privacy"));
-            for path in paths {
-                let text = h.get(&path).await.text();
-                assert!(text.contains(&format!("<head>{meta}<title>")), "{path}: {text}");
-                assert!(!text.contains("<!--capsulebin:"), "{path}: a marker is left: {text}");
-            }
+    for &language in KNOWN_LANGUAGES {
+        let mut paths: Vec<String> = pages(language).map(|(path, _)| path).into();
+        paths.push(format!("/{language}/privacy"));
+        for path in paths {
+            let text = h.get(&path).await.text();
+            assert!(text.contains(&format!("<head>{LANGUAGES_META}<title>")), "{path}: {text}");
+            assert!(!text.contains("<!--capsulebin:"), "{path}: a marker is left: {text}");
         }
     }
-    assert!(english.get("/en/").await.text().contains(r#"<a href="/en/imprint">Imprint</a>"#));
 }
 
 #[tokio::test]
@@ -363,7 +293,7 @@ async fn legal_pages_are_served_with_their_title_and_text() {
     })
     .await;
 
-    for language in LANGUAGES {
+    for &language in KNOWN_LANGUAGES {
         let imprint = h.get(&format!("/{language}/imprint")).await;
         assert_eq!(imprint.status, StatusCode::OK);
         let text = imprint.text();
@@ -411,7 +341,7 @@ async fn legal_texts_in_another_language_than_the_shell_are_marked() {
 async fn without_legal_configuration_there_are_no_pages_and_no_links() {
     let h = harness("shell-no-legal").await;
 
-    for language in LANGUAGES {
+    for &language in KNOWN_LANGUAGES {
         assert!(h.get(&format!("/{language}/")).await.text().contains("<footer></footer>"));
         for page in ["imprint", "privacy", "terms"] {
             let path = format!("/{language}/{page}");
@@ -432,7 +362,7 @@ async fn without_legal_configuration_there_are_no_pages_and_no_links() {
 async fn every_route_serves_its_own_shell() {
     let h = harness("shell-routes").await;
 
-    for language in LANGUAGES {
+    for &language in KNOWN_LANGUAGES {
         for (path, marker) in pages(language) {
             let answer = h.get(&path).await;
 

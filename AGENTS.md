@@ -141,12 +141,12 @@ Versioned in the path: `/api/v1/pastes`.
 Errors are `application/problem+json` with a stable `code` field and `X-Request-Id`.
 Clients branch on `code`, never on `title`.
 
-Pages live under a language prefix per offered language (ADR-016, [`docs/i18n.md`](docs/i18n.md)):
+Pages live under a language prefix per known language (ADR-016, [`docs/i18n.md`](docs/i18n.md)):
 `/{lang}/`, `/{lang}/p/{id}`, `/{lang}/manage/{id}`, `/{lang}/report`, `/{lang}/imprint`,
 `/{lang}/privacy`, `/{lang}/terms`. The same paths without a prefix answer `302` to the language
-from `Accept-Language` (`Vary: Accept-Language`, `no-store`); a prefix that is not offered is the
-generic `404`. Share and management links are created without a prefix. API, `/health/*` and static
-assets have no prefix, and no `*.html` is served directly.
+from `Accept-Language` (`Vary: Accept-Language`, `no-store`); a prefix that is not a known language
+is the generic `404`. Share and management links are created without a prefix. API, `/health/*` and
+static assets have no prefix, and no `*.html` is served directly.
 
 ## Configuration
 
@@ -164,9 +164,9 @@ Critical rules:
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
   privacy notice and terms (`legal/defaults.rs`) describe what the server stores and
   logs: change them together with any such behaviour.
-- **`[i18n]` `languages` / `default_language`** (default `["en", "de"]` / `"en"`) — only codes
-  from `KNOWN_LANGUAGES`, no duplicates, the default must be offered; anything else is a startup
-  error. The known languages exist three times (server `config/model.rs`, core `languages.ts`,
+- **Interface languages are not configurable** — every language in `KNOWN_LANGUAGES` is always
+  offered, `en` is the default (`DEFAULT_LANGUAGE` in the server, `default-language.ts` in the web
+  client). The known languages exist three times (server `config/model.rs`, core `languages.ts`,
   catalogue files in `src/server/web/src/i18n/`), kept equal by `tests/languages.rs` and
   `i18n-catalogues.test.ts`.
 
@@ -305,7 +305,7 @@ npm run e2e -w @capsulebin/web
 | `src/main.rs` | Binary entry point, CLI argument parsing (clap) |
 | `src/lib.rs` | `AppState`, `router()` — layer order is security-critical (see comments) |
 | `src/config.rs` | Config loading: TOML + env override, validation, `Resolved` |
-| `src/config/model.rs` | Config struct definitions; `I18nConfig`, `KNOWN_LANGUAGES` |
+| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE` |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner |
@@ -324,8 +324,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language prefix, `Accept-Language` redirect of prefix-less paths, asset serving (embedded or from disk); puts the languages meta and the legal footer links into every shell and legal pages into `legal.html` |
-| `src/legal.rs` | `[legal]` resolution per offered language: imprint, privacy notice, terms; footer links with the language prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
+| `src/api/assets.rs` | Page routes per language prefix, `Accept-Language` redirect of prefix-less paths, asset serving (embedded or from disk); puts the legal footer links into every shell and legal pages into `legal.html` |
+| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer links with the language prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |
@@ -371,7 +371,7 @@ npm run e2e -w @capsulebin/web
 | `src/theme.ts` | Theme switching |
 | `src/language.ts` | Page language from `<html lang>`, `t()`/`tn()` over `virtual:catalogue`, `Intl` formatting, prefixed paths, switch logic |
 | `src/i18n/<lang>.json` | Catalogues (plain text, plural keys `<key>#<category>`) |
-| `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`) |
+| `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` |
 | `scripts/build.ts` | `npm run build`: one Vite build per language into the shared `dist/`, then `scripts/check-dist.ts` (no foreign texts per page, language-free chunks once) |
 | `scripts/catalogue.ts` | `virtual:catalogue`: the texts the scripts name, one language per build (every language by `<html lang>` in dev server and tests) |
 | `public/language-init.js` | Head script: moves the page to the stored, browser or default language before the paint |
@@ -380,7 +380,7 @@ npm run e2e -w @capsulebin/web
 | `src/styles/base.css` | Base styles |
 | `src/styles/code.css` | Code block styles |
 | `src/styles/prose.css` | Prose/typography styles |
-| `*.html` | Shell templates with `{{lang}}`/`{{<key>}}` placeholders: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
+| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{default}}`/`{{<key>}}` placeholders: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
 
 ### CLI (`src/cli/`)
 

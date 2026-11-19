@@ -28,7 +28,7 @@ preview and source, and manages object URLs for downloads.
 Vite builds this through `rolldownOptions.input` with five entries. Shared code (`shell.ts`,
 `theme.ts`, styles) automatically ends up in a common chunk.
 
-**Amendment (ADR-016):** every route above exists once per offered interface language, under its
+**Amendment (ADR-016):** every route above exists once per known interface language, under its
 prefix, served from a shell generated for that language:
 
 | Route | Document |
@@ -49,11 +49,11 @@ below holds for `GET /{lang}/p/{id}` and for the redirect from `/p/{id}`;
 `view_shell_is_identical_for_every_id` and the acceptance script check the prefixed path.
 
 **The server does not inspect the path id.** `GET /{lang}/p/{id}` returns byte-identical HTML and
-`GET /p/{id}` the same redirect for every syntactically valid id. This is a security property, not convenience: a link scanner cannot infer
-from status code, length or content whether the capsule exists, and it does not burn a one-time
-paste. Retrieval is an explicit `POST` carrying the capabilities derived from the fragment
-(ADR-001). An integration test (`view_shell_is_identical_for_every_id`) and the acceptance script
-both assert the byte equality.
+`GET /p/{id}` the same redirect for every syntactically valid id. This is a security property, not
+convenience: a link scanner cannot infer from status code, length or content whether the capsule
+exists, and it does not burn a one-time paste. Retrieval is an explicit `POST` carrying the
+capabilities derived from the fragment (ADR-001). An integration test
+(`view_shell_is_identical_for_every_id`) and the acceptance script both assert the byte equality.
 
 **[Lit](https://lit.dev/) (`lit` 3) renders views with non-trivial state** — today the recipient
 view (`pages/view.ts`, `pages/render-items.ts`). Within these constraints:
