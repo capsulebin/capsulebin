@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest';
 import {
     SHELLS,
     catalogueLanguages,
+    fitsInComment,
+    keysInComments,
     readCatalogue,
     readTemplate,
     renderShell,
@@ -48,7 +50,6 @@ const ALLOWED_LITERALS = new Set([
 
 /** The server's markers and how often each shell carries them. */
 const MARKERS = {
-    '<!--capsulebin:legal-links-->': () => 1,
     '<!--capsulebin:legal-title-->': (shell: string) => (shell === 'legal' ? 2 : 0),
     '<!--capsulebin:legal-content-->': (shell: string) => (shell === 'legal' ? 1 : 0),
 };
@@ -121,8 +122,54 @@ describe('generator', () => {
         );
     });
 
+    it('keeps a catalogue value inside a marker comment', () => {
+        const html = renderShell('<!--capsulebin:legal-link:terms:{{a.b}}-->', 'en', {
+            'a.b': '><script>alert(1)</script>',
+        });
+        expect(html).toBe(
+            '<!--capsulebin:legal-link:terms:&gt;&lt;script&gt;alert(1)&lt;/script&gt;-->',
+        );
+    });
+
+    /** Escaping leaves `-` alone; the server ends the label at the first `-->`. */
+    it.each(['Terms-', 'A--B', '--', '-', 'x--><b>'])(
+        'fails on a value inside a comment that contains "--" or ends in "-": %j',
+        (value) => {
+            expect(() =>
+                renderShell('<!--capsulebin:legal-link:terms:{{a.b}}-->', 'de', { 'a.b': value }),
+            ).toThrow(/de\.json.*\{\{a\.b\}\}.*comment/);
+        },
+    );
+
+    it('allows such a value outside a comment', () => {
+        expect(renderShell('<!-- x --><p>{{a.b}}</p>', 'en', { 'a.b': 'A--B-' })).toBe(
+            '<!-- x --><p>A--B-</p>',
+        );
+    });
+
+    it('allows a single inner hyphen inside a comment', () => {
+        expect(
+            renderShell('<!--capsulebin:legal-link:terms:{{a.b}}-->', 'en', { 'a.b': 'Opt-in' }),
+        ).toBe('<!--capsulebin:legal-link:terms:Opt-in-->');
+    });
+
     it('fails on a text the catalogue does not have', () => {
         expect(() => renderShell('{{missing.key}}', 'de', {})).toThrow(/de\.json.*missing\.key/);
+    });
+});
+
+describe.each(LANGUAGES)('catalogue %s', (lang) => {
+    const catalogue = readCatalogue(lang);
+    const keys = [...new Set(SHELLS.flatMap((shell) => keysInComments(readTemplate(shell))))];
+
+    it('has the footer labels among the texts placed inside comments', () => {
+        expect(keys).toEqual(
+            expect.arrayContaining(['shell.imprint', 'shell.privacy', 'shell.terms']),
+        );
+    });
+
+    it.each(keys)('keeps %s fit for a comment: no "--", no trailing "-"', (key) => {
+        expect(fitsInComment(catalogue[key]!)).toBe(true);
     });
 });
 
@@ -147,6 +194,21 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
             expect(html.split(marker).length - 1, marker).toBe(count(shell));
         }
         expect(html).not.toContain('<!--capsulebin:languages-->');
+    });
+
+    /**
+     * The server turns each into a link or drops it (`api/assets.rs`); the label is
+     * written here, in the shell's language, and escaped so it cannot end the comment.
+     */
+    it('carries one footer marker per legal page, labelled from its catalogue', () => {
+        const catalogue = readCatalogue(lang);
+        const footer = html.slice(html.indexOf('<footer'), html.indexOf('</footer>'));
+        expect(footer.match(/<!--capsulebin:legal-link:/g)).toHaveLength(3);
+        for (const page of ['imprint', 'privacy', 'terms']) {
+            const label = catalogue[`shell.${page}`]!;
+            expect(footer, page).toContain(`<!--capsulebin:legal-link:${page}:${label}-->`);
+        }
+        expect(html).not.toContain('<!--capsulebin:legal-links-->');
     });
 
     /** public/language-init.js and the language switch read it; the server adds nothing. */

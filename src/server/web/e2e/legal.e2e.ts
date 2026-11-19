@@ -7,11 +7,19 @@ import { expect, test } from './guard';
  * violation or console error.
  */
 
-const LINKS = [
-    ['Imprint', '/imprint'],
-    ['Privacy', '/privacy'],
-    ['Terms', '/terms'],
-] as const;
+/** The footer labels of each language, from its catalogue. */
+const LINKS = {
+    en: [
+        ['Imprint', '/imprint'],
+        ['Privacy', '/privacy'],
+        ['Terms', '/terms'],
+    ],
+    de: [
+        ['Impressum', '/imprint'],
+        ['Datenschutz', '/privacy'],
+        ['Nutzungsbedingungen', '/terms'],
+    ],
+} as const;
 
 for (const [language, locale] of [
     ['en', 'en-US'],
@@ -32,7 +40,7 @@ for (const [language, locale] of [
                 await page.goto(`/${language}${path}`);
 
                 const footer = page.locator('footer');
-                for (const [name, href] of LINKS) {
+                for (const [name, href] of LINKS[language]) {
                     await expect(footer.getByRole('link', { name, exact: true })).toHaveAttribute(
                         'href',
                         `/${language}${href}`,

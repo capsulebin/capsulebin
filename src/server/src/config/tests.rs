@@ -82,6 +82,83 @@ fn rejects_relative_or_trailing_slash_public_url() {
     }
 }
 
+/// A link like `https://example.org/team/de/p/<id>` could be a sub-path ending
+/// in `de` or the `/de/` language prefix, so such a base URL is refused.
+#[test]
+fn rejects_public_url_ending_in_a_language_code() {
+    let dir = tempdir("language-url");
+
+    for bad in [
+        "https://example.org/de",
+        "https://example.org/team/de",
+        "https://example.org/team/en",
+        "https://example.org/de/",
+        "http://example.org:8080/team/de//",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("language"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
+/// Only an exact known code is a language segment, as in `parseLink`.
+#[test]
+fn accepts_public_url_with_a_segment_that_is_not_a_language_code() {
+    let dir = tempdir("not-language-url");
+
+    for good in [
+        "https://de.example.org",
+        "https://example.org/team",
+        "https://example.org/de/team",
+        "https://example.org/deutsch",
+        "https://example.org/de-at",
+        "https://example.org/DE",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(good.to_owned());
+        assert!(config.validate().is_ok(), "public_url {good:?} should be accepted");
+    }
+}
+
+#[test]
+fn rejects_public_url_ending_in_a_language_code_from_file_and_env() {
+    let dir = tempdir("language-url-sources");
+    let database = dir.join("capsulebin.db").display().to_string();
+
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[server]\npublic_url = \"https://example.org/team/de\"\n\n[database]\npath = {database:?}\n\n\
+             [creation]\nmode = \"public\"\n"
+        ),
+    )
+    .expect("write config");
+    let config = Config::load(Some(&path)).expect("file loads");
+    assert!(error(&config).contains("server.public_url"));
+
+    let mut table = toml::Table::new();
+    apply_env(
+        &mut table,
+        [
+            ("CAPSULEBIN__SERVER__PUBLIC_URL".to_owned(), "https://example.org/de/".to_owned()),
+            ("CAPSULEBIN__DATABASE__PATH".to_owned(), database),
+            ("CAPSULEBIN__CREATION__MODE".to_owned(), "public".to_owned()),
+        ],
+    )
+    .expect("overlay applies");
+    let config: Config = table.try_into().expect("deserialise");
+    let message = error(&config);
+    assert!(
+        message.contains("server.public_url") && message.contains("language"),
+        "unexpected error: {message}"
+    );
+}
+
 #[test]
 fn rejects_unparsable_bind_address() {
     let dir = tempdir("bad-bind");

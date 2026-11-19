@@ -182,6 +182,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
+| `server.public_url` | The address users reach, without a trailing slash. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -224,7 +225,10 @@ English is the default.
 - In the browser, a language the user picked in the switch (kept in `localStorage`) or a supported
   browser language moves the page to that prefix.
 - Any other prefix is an unknown path (`404`).
-- The CLI, the API's error texts and the legal texts stay English.
+- `server.public_url` must not end in a language code (see
+  [Settings that matter](#settings-that-matter)).
+- The footer link labels follow the page language; the CLI, the API's error texts and the legal
+  texts stay English.
 
 See [i18n.md](i18n.md) for the rules in detail.
 
@@ -294,7 +298,8 @@ and restart. Existing capsules are unaffected — the token only authorizes crea
 
 ## Abuse handling runbook
 
-Reports arrive through the report form (`/<language>/report`). Only reports about capsules that currently exist reach the queue.
+Reports arrive through the report form (`/<language>/report`). Only reports about capsules that
+currently exist reach the queue.
 
 ```sh
 capsulebin reports list                             # open reports, oldest first

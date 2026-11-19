@@ -16,20 +16,35 @@ import {
  * the catalogues in src/i18n/ (scripts/shells.ts) before Vite sees them. Vite
  * builds the generated files; this plugin puts them at `dist/<lang>/<shell>.html`
  * and, in the dev server, answers the page routes under every language prefix
- * the way the server does.
+ * the way the server does. Paths without a prefix get a 404 there instead of the
+ * server's redirect.
  */
 function languageShells(): Plugin {
+    /** The shell a page path without language prefix shows, e.g. `/p/x` -> `p`. */
+    const shellForPage = (path: string): ShellName | null => {
+        if (path === '/') return 'index';
+        if (path === '/report') return 'report';
+        if (/^\/(imprint|privacy|terms)$/.test(path)) return 'legal';
+        if (/^\/p\/[^/]+$/.test(path)) return 'p';
+        if (/^\/manage\/[^/]+$/.test(path)) return 'manage';
+        return null;
+    };
     const shellForRoute = (path: string): { lang: string; shell: ShellName } | null => {
         const match = /^\/([a-z]{2,3})(\/.*)$/.exec(path);
         const [, lang = '', rest = ''] = match ?? [];
         if (!catalogueLanguages().includes(lang)) return null;
-        if (rest === '/') return { lang, shell: 'index' };
-        if (rest === '/report') return { lang, shell: 'report' };
-        if (/^\/(imprint|privacy|terms)$/.test(rest)) return { lang, shell: 'legal' };
-        if (/^\/p\/[^/]+$/.test(rest)) return { lang, shell: 'p' };
-        if (/^\/manage\/[^/]+$/.test(rest)) return { lang, shell: 'manage' };
-        return null;
+        const shell = shellForPage(rest);
+        return shell ? { lang, shell } : null;
     };
+    /**
+     * Paths that would otherwise get a raw template (`{{lang}}` unfilled): pages
+     * without a prefix, which only the real server redirects, the bare prefix
+     * (`/en`), and the templates themselves.
+     */
+    const wouldServeTemplate = (path: string): boolean =>
+        shellForPage(path) !== null ||
+        catalogueLanguages().some((lang) => path === `/${lang}`) ||
+        SHELLS.some((shell) => path === `/${shell}.html`);
 
     return {
         name: 'capsulebin-language-shells',
@@ -55,10 +70,21 @@ function languageShells(): Plugin {
                     server.ws.send({ type: 'full-reload' });
                 }
             });
-            server.middlewares.use((req, _res, next) => {
+            server.middlewares.use((req, res, next) => {
                 const url = new URL(req.url ?? '/', 'http://dev');
                 const route = shellForRoute(url.pathname);
-                if (route) req.url = `/${generatedPath(route.lang, route.shell)}${url.search}`;
+                if (route) {
+                    req.url = `/${generatedPath(route.lang, route.shell)}${url.search}`;
+                } else if (wouldServeTemplate(url.pathname)) {
+                    const prefixes = catalogueLanguages().map((lang) => `/${lang}/`);
+                    res.statusCode = 404;
+                    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    res.end(
+                        `Not found. The dev server serves pages only under a language prefix ` +
+                            `(${prefixes.join(', ')}); the server redirects paths without one.\n`,
+                    );
+                    return;
+                }
                 next();
             });
         },
@@ -81,6 +107,8 @@ const LANGUAGE_FREE = /[\\/](node_modules|src[\\/]core)[\\/]/;
 export default defineConfig({
     root: import.meta.dirname,
     base: '/',
+    // No SPA fallback: an unknown path is a 404, not the raw index.html template.
+    appType: 'mpa',
     plugins: [languageShells(), { ...catalogueModule(null), apply: 'serve' }],
 
     build: {

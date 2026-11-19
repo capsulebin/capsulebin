@@ -173,9 +173,12 @@ export function pathInLanguage(language: Language, location: Location = window.l
  * What choosing a language in the switch does:
  *
  * - `navigate` stores the choice and loads the same page (query and fragment
- *   included) under the new prefix;
- * - `store` only stores it, for pages whose fragment has already been removed
- *   (an opened capsule, the management page): reloading them would lose the key.
+ *   included) under the new prefix, in place of the current history entry: a
+ *   language change is no step to go back to, and an entry kept behind would
+ *   hold the key in its fragment after the page has removed it from its own;
+ * - `store` only stores it, for pages that must not be reloaded: once a capsule
+ *   is being retrieved or deleted (a burned capsule would be gone on the new
+ *   page) and once the fragment has been removed (the key would be lost).
  */
 export type SwitchMode = 'navigate' | 'store';
 
@@ -186,6 +189,6 @@ export function chooseLanguage(
 ): void {
     storeLanguage(language);
     if (mode === 'navigate' && language !== pageLanguage()) {
-        location.assign(pathInLanguage(language, location));
+        location.replace(pathInLanguage(language, location));
     }
 }

@@ -36,11 +36,30 @@ const TEXT_LANGUAGE: &str = "en";
 /// rendered.
 #[derive(Debug, Clone, Default)]
 pub struct LegalPages {
-    /// The footer links as HTML, empty when there are none.
-    pub footer: String,
+    /// Where the footer links point; `None` omits a link. The labels come
+    /// from the shell, written by the web build in its language.
+    pub footer: FooterLinks,
     pub imprint: Option<Page>,
     pub privacy: Option<Page>,
     pub terms: Option<Page>,
+}
+
+/// The target of each footer link, `None` for a page that is not configured.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FooterLinks {
+    pub imprint: Option<String>,
+    pub privacy: Option<String>,
+    pub terms: Option<String>,
+}
+
+impl FooterLinks {
+    pub fn href(&self, which: Which) -> Option<&str> {
+        match which {
+            Which::Imprint => self.imprint.as_deref(),
+            Which::Privacy => self.privacy.as_deref(),
+            Which::Terms => self.terms.as_deref(),
+        }
+    }
 }
 
 /// One page served by CapsuleBin.
@@ -59,6 +78,20 @@ pub enum Which {
     Imprint,
     Privacy,
     Terms,
+}
+
+impl Which {
+    pub const ALL: [Self; 3] = [Self::Imprint, Self::Privacy, Self::Terms];
+
+    /// The page's path below the language prefix, and its name in the
+    /// shell's footer marker.
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Imprint => "imprint",
+            Self::Privacy => "privacy",
+            Self::Terms => "terms",
+        }
+    }
 }
 
 impl LegalPages {
@@ -125,12 +158,12 @@ pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigErro
         }
     };
 
-    let imprint_href = match &imprint {
-        Target::Here(_) => Some(format!("{prefix}/imprint")),
-        Target::Elsewhere(url) => Some(url.clone()),
+    let href = |which: Which, target: &Target| match target {
         Target::None => None,
+        Target::Here(_) => Some(format!("{prefix}/{}", which.path())),
+        Target::Elsewhere(url) => Some(url.clone()),
     };
-    let mut facts = defaults::Facts::from_config(config, &prefix, imprint_href, legal.hosting.is_some());
+    let mut facts = defaults::Facts::from_config(config, &prefix, href(Which::Imprint, &imprint), legal.hosting.is_some());
 
     let privacy = document(
         legal.privacy.as_ref(),
@@ -145,18 +178,11 @@ pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigErro
     }
     let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms, &page)?;
 
-    let footer = [
-        ("Imprint", "imprint", &imprint),
-        ("Privacy", "privacy", &privacy),
-        ("Terms", "terms", &terms),
-    ]
-    .into_iter()
-    .filter_map(|(label, path, target)| match target {
-        Target::None => None,
-        Target::Here(_) => Some(link(&format!("{prefix}/{path}"), label)),
-        Target::Elsewhere(url) => Some(link(url, label)),
-    })
-    .collect();
+    let footer = FooterLinks {
+        imprint: href(Which::Imprint, &imprint),
+        privacy: href(Which::Privacy, &privacy),
+        terms: href(Which::Terms, &terms),
+    };
 
     let served = |target: Target| match target {
         Target::Here(page) => Some(page),
@@ -312,10 +338,6 @@ fn page(title: &'static str, markdown: &str, language: &str) -> Page {
             render_markdown(markdown)
         ),
     }
-}
-
-fn link(href: &str, label: &str) -> String {
-    format!(r#"<a href="{}">{}</a>"#, escape(href), escape(label))
 }
 
 /// HTML escaping for text and attribute values.

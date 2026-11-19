@@ -162,7 +162,7 @@ async fn ac6_the_server_substitutes_no_languages_marker() {
             h.dir.join(language).join("index.html"),
             format!(
                 "<!doctype html><html lang=\"{language}\"><head><!--capsulebin:languages--><title>create</title></head>\
-                 <footer><!--capsulebin:legal-links--></footer>"
+                 <footer></footer>"
             ),
         )
         .unwrap();
@@ -222,5 +222,74 @@ fn ac23_check_rejects_an_i18n_table_and_its_env_variables() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{config:?} {env:?} accepted");
         assert!(stderr.contains("i18n"), "{config:?} {env:?}: error does not name the key: {stderr}");
+    }
+}
+
+/// AC25 (N4): a `public_url` whose path ends in a known language code is a
+/// startup error naming the key - from the file and from the environment -
+/// while a code elsewhere in the path or in the host is fine.
+#[test]
+fn ac25_check_rejects_a_public_url_ending_in_a_language_code() {
+    let dir = tempdir("acc-public-url-language");
+    let assets = dir.join("assets");
+    write_shells(&assets);
+    let config_with = |url: &str, name: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\npublic_url = \"{url}\"\nasset_dir = \"{}\"\n\
+                 [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+                assets.display(),
+                dir.join("capsulebin.db").display()
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let check = |config: &std::path::Path, env: &[(&str, &str)]| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_capsulebin"));
+        command.arg("--config").arg(config).arg("check");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command.output().unwrap()
+    };
+
+    for (index, url) in [
+        "https://paste.example/team",
+        "https://de.paste.example",
+        "https://paste.example/de/team",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = check(&config_with(url, &format!("ok-{index}.toml")), &[]);
+        assert!(
+            output.status.success(),
+            "{url} rejected: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let ok = config_with("https://paste.example", "ok.toml");
+    for &language in KNOWN_LANGUAGES {
+        for (config, env) in [
+            (
+                config_with(&format!("https://paste.example/team/{language}"), &format!("bad-{language}.toml")),
+                None,
+            ),
+            (ok.clone(), Some(format!("https://paste.example/{language}"))),
+        ] {
+            let env: Vec<(&str, &str)> = env
+                .as_deref()
+                .map(|url| ("CAPSULEBIN__SERVER__PUBLIC_URL", url))
+                .into_iter()
+                .collect();
+            let output = check(&config, &env);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{config:?} {env:?} accepted");
+            assert!(stderr.contains("server.public_url"), "{config:?} {env:?}: key not named: {stderr}");
+        }
     }
 }

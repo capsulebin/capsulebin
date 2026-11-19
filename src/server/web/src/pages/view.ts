@@ -594,6 +594,9 @@ class CbViewPage extends LitElement {
     async #openCapsule(): Promise<void> {
         const outcome = await openCapsule({
             onDecrypting: () => {
+                // The retrieve request follows: loading the page in another language
+                // now could burn the capsule here and show it nowhere.
+                languageFromNextPage(shell);
                 this.phase = 'decrypting';
             },
             confirmBurn: () => this.#awaitBurnConfirm(),
@@ -638,7 +641,7 @@ function passwordRetryMessage(retry: PasswordRetry | undefined): string {
  * entry, once the link has served its purpose or cannot work any more - so it
  * does not linger on screen, in screenshots or in a shared screen. Reloading the
  * page in another language would then lose the key, so the language switch only
- * stores the choice from here on.
+ * stores the choice from here on (if it does not already, since the retrieval).
  */
 function forgetKey(): void {
     history.replaceState(null, '', window.location.pathname);

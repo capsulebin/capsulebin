@@ -108,6 +108,16 @@ test.describe('in a German browser', () => {
 
         await page.goto('/de/');
         await expectGerman(page, 'Verschlüsselt teilen, ohne Konto');
+        // The legal links in the footer: German labels from the web build, the server's targets.
+        for (const [name, href] of [
+            ['Impressum', '/de/imprint'],
+            ['Datenschutz', '/de/privacy'],
+            ['Nutzungsbedingungen', '/de/terms'],
+        ] as const) {
+            await expect(
+                page.locator('footer').getByRole('link', { name, exact: true }),
+            ).toHaveAttribute('href', href);
+        }
         const { share, manage } = await create(
             page,
             { password, items: [{ type: 'plain', text: 'Geheimer Inhalt' }] },
@@ -236,6 +246,23 @@ test('an English browser moves a /de/ link to /en/ until German is chosen', asyn
     expect(guard.problems).toEqual([]);
 });
 
+test('on a filled create form the language switch only stores the choice', async ({ page }) => {
+    await page.goto('/en/');
+    const editor = page.locator('[data-item-text]');
+    await editor.fill('A draft worth keeping');
+    await page.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+
+    await page.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
+    await expect(page.locator('[data-language-notice]')).toHaveText(
+        catalogue('en')['shell.languageNextPage'] ?? '',
+    );
+    expect(await page.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
+    expect(await page.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(page.url()).pathname).toBe('/en/');
+    await expect(editor).toHaveValue('A draft worth keeping');
+});
+
+// On an empty create form the switch navigates.
 test('the language switch moves the start page to German', async ({ page }) => {
     await page.goto('/en/');
     const switcher = page.locator('[data-language-switch]');
@@ -280,4 +307,66 @@ test('on an opened capsule the language switch only stores the choice', async ({
     expect(await view.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
     expect(view.url()).toBe(opened);
     await expect(panel).toContainText('Still here');
+});
+
+test('while a burn capsule is retrieved the language switch only stores the choice', async ({
+    page,
+    context,
+}) => {
+    const { share } = await create(page, {
+        items: [{ type: 'plain', text: 'Shown once' }],
+        burn: true,
+    });
+    const view = await context.newPage();
+
+    // Hold the retrieve request until the language has been switched.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let reached = () => {};
+    const requested = new Promise<void>((resolve) => (reached = resolve));
+    await view.route('**/api/v1/pastes/*/retrieve', async (route) => {
+        reached();
+        await held;
+        await route.continue();
+    });
+
+    await view.goto(share);
+    await view.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+    await view.getByRole('button', { name: 'Yes, open and burn' }).click();
+    await requested;
+
+    await view.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
+    await expect(view.locator('[data-language-notice]')).toHaveText(
+        catalogue('en')['shell.languageNextPage'] ?? '',
+    );
+    release();
+
+    await expect(view.locator('.cb-item-panel')).toContainText('Shown once', { timeout: 30_000 });
+    expect(await view.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(await view.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
+});
+
+test('the language switch leaves no history entry with the key', async ({ page, context }) => {
+    const password = 'correct password';
+    const { share } = await create(page, {
+        password,
+        items: [{ type: 'plain', text: 'Behind a password' }],
+    });
+    const view = await context.newPage();
+    await view.goto(share);
+    await expect(view.locator('#pwd-input')).toBeVisible({ timeout: 30_000 });
+
+    // The fragment is still there, so the switch loads the page under /de/.
+    await view.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
+    await expect(view).toHaveURL(/\/de\/p\/.*#v1\./);
+    await expect(view.locator('#pwd-input')).toBeVisible({ timeout: 30_000 });
+    await view.fill('#pwd-input', password);
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-item-panel')).toContainText('Behind a password', {
+        timeout: 30_000,
+    });
+    expect(view.url()).not.toContain('#v1.');
+
+    await view.goBack();
+    expect(view.url()).not.toContain('#v1.');
 });

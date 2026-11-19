@@ -23,7 +23,7 @@ function tabs(): string[] {
 function type(text: string): void {
     const area = el<HTMLTextAreaElement>('item-text');
     area.value = text;
-    area.dispatchEvent(new Event('input'));
+    area.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
@@ -163,6 +163,85 @@ describe('create page item tabs', () => {
         add('plain');
         add('plain');
         expect(el('more').hidden).toBe(true);
+    });
+});
+
+describe('create page language switch', () => {
+    function chooseGerman(): void {
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="de"]')!.click();
+    }
+
+    function notice(): string | null | undefined {
+        return document.querySelector('[data-language-notice]')?.textContent;
+    }
+
+    afterEach(() => {
+        localStorage.clear();
+    });
+
+    // jsdom cannot navigate and location.replace cannot be spied on: the notice
+    // shows the switch's mode here, e2e/i18n.e2e.ts covers the navigation itself.
+    it('navigates on an empty form', () => {
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice once an item holds text', () => {
+        type('draft');
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe('The language applies from the next page on.');
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('draft');
+    });
+
+    it('only stores the choice once an item has a name', () => {
+        const name = el<HTMLInputElement>('item-name');
+        name.value = 'todo.txt';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        chooseGerman();
+        expect(notice()).toBe('The language applies from the next page on.');
+    });
+
+    // AC24 acceptance: "any item holds content (text, name or a file)".
+    it('only stores the choice once a file is chosen', async () => {
+        const input = el<HTMLInputElement>('item-file');
+        const file = new File([new Uint8Array([1, 2, 3])], 'data.bin');
+        Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+        input.dispatchEvent(new Event('change'));
+        await vi.waitFor(() => expect(tabs()).toEqual(['data.bin *']));
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe('The language applies from the next page on.');
+        expect(tabs()).toEqual(['data.bin *']);
+    });
+
+    it('only stores the choice once a file is dropped on the form', async () => {
+        const form = el<HTMLFormElement>('create-form');
+        const drop = new Event('drop', { bubbles: true, cancelable: true });
+        Object.defineProperty(drop, 'dataTransfer', {
+            value: { files: [new File(['x'], 'dropped.txt')], types: ['Files'] },
+        });
+        form.dispatchEvent(drop);
+        await vi.waitFor(() => expect(tabs()).toEqual(['dropped.txt *']));
+        chooseGerman();
+        expect(notice()).toBe('The language applies from the next page on.');
+    });
+
+    it('still navigates after only adding further empty items', () => {
+        add('code');
+        add('markdown');
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice in a German page too, with the German notice', async () => {
+        await loadPage('de');
+        type('Entwurf');
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!.click();
+        expect(localStorage.getItem('capsulebin.language')).toBe('en');
+        expect(notice()).toBeTruthy();
+        expect(notice()).not.toBe('The language applies from the next page on.');
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('Entwurf');
     });
 });
 

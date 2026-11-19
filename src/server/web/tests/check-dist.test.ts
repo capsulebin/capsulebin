@@ -104,6 +104,20 @@ describe('build output', () => {
         expect(problems).toContain('texts-de.js names the template-only key page.heading');
     });
 
+    it('counts a chunk as language-dependent through an import cycle', () => {
+        // cycle-b imports texts only through cycle-a, which is still being visited
+        // when cycle-b is decided.
+        const assets: Assets = { 'vendor-a.js': VENDOR };
+        for (const lang of ['en', 'de']) {
+            assets[`entry-${lang}.js`] = `import"./cycle-a-${lang}.js";import"./vendor-a.js";`;
+            assets[`cycle-a-${lang}.js`] =
+                `import"./cycle-b-${lang}.js";import"./texts-${lang}.js";`;
+            assets[`cycle-b-${lang}.js`] = `import"./cycle-a-${lang}.js";`;
+            assets[`texts-${lang}.js`] = GOOD[`texts-${lang}.js`] ?? '';
+        }
+        expect(checkDist(dist(assets), INPUT)).toEqual([]);
+    });
+
     it('finds a chunk without texts that was built once per language', () => {
         const problems = checkDist(
             dist({

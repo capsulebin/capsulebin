@@ -24,6 +24,14 @@ fn with_operator() -> Config {
     config
 }
 
+fn links(imprint: Option<&str>, privacy: Option<&str>, terms: Option<&str>) -> FooterLinks {
+    FooterLinks {
+        imprint: imprint.map(str::to_owned),
+        privacy: privacy.map(str::to_owned),
+        terms: terms.map(str::to_owned),
+    }
+}
+
 fn resolved(config: &Config) -> LegalPages {
     resolve(config, "en").expect("legal configuration must resolve")
 }
@@ -39,7 +47,7 @@ fn refused(config: &Config) -> String {
 fn nothing_configured_means_no_pages_and_no_links() {
     let pages = resolved(&Config::default());
 
-    assert_eq!(pages.footer, "");
+    assert_eq!(pages.footer, FooterLinks::default());
     assert!(pages.imprint.is_none() && pages.privacy.is_none() && pages.terms.is_none());
 }
 
@@ -47,10 +55,7 @@ fn nothing_configured_means_no_pages_and_no_links() {
 fn an_operator_brings_the_imprint_and_both_built_in_texts() {
     let pages = resolved(&with_operator());
 
-    assert_eq!(
-        pages.footer,
-        r#"<a href="/en/imprint">Imprint</a><a href="/en/privacy">Privacy</a><a href="/en/terms">Terms</a>"#
-    );
+    assert_eq!(pages.footer, links(Some("/en/imprint"), Some("/en/privacy"), Some("/en/terms")));
     let imprint = pages.imprint.expect("imprint");
     assert_eq!(imprint.title, "Imprint");
     assert!(imprint.html.contains("Example GmbH<br />"), "{}", imprint.html);
@@ -67,10 +72,7 @@ fn links_follow_the_language_of_the_shell() {
     config.legal.privacy = url("/privacy-notice");
     let pages = resolve(&config, "de").expect("legal configuration must resolve");
 
-    assert_eq!(
-        pages.footer,
-        r#"<a href="/de/imprint">Imprint</a><a href="/privacy-notice">Privacy</a><a href="/de/terms">Terms</a>"#
-    );
+    assert_eq!(pages.footer, links(Some("/de/imprint"), Some("/privacy-notice"), Some("/de/terms")));
     let terms = pages.terms.expect("terms").html;
     assert!(terms.starts_with(r#"<article class="cb-prose cb-legal" lang="en">"#), "{terms}");
     assert!(terms.contains(r#"href="/de/report""#), "{terms}");
@@ -170,8 +172,8 @@ fn urls_link_out_and_serve_no_page() {
     let pages = resolved(&config);
 
     assert!(pages.imprint.is_none() && pages.privacy.is_none());
-    assert!(pages.footer.contains(r#"<a href="https://operator.example/imprint">Imprint</a>"#));
-    assert!(pages.footer.contains(r#"<a href="https://operator.example/privacy">Privacy</a>"#));
+    assert_eq!(pages.footer.imprint.as_deref(), Some("https://operator.example/imprint"));
+    assert_eq!(pages.footer.privacy.as_deref(), Some("https://operator.example/privacy"));
     // The built-in terms point to the controller and the privacy notice where they are.
     let terms = pages.terms.expect("terms").html;
     assert!(terms.contains(r#"href="https://operator.example/privacy""#), "{terms}");
@@ -183,7 +185,7 @@ fn privacy_and_terms_of_their_own_need_no_operator() {
     config.legal.privacy = url("https://operator.example/privacy");
     let pages = resolved(&config);
 
-    assert_eq!(pages.footer, r#"<a href="https://operator.example/privacy">Privacy</a>"#);
+    assert_eq!(pages.footer, links(None, Some("https://operator.example/privacy"), None));
     assert!(pages.terms.is_none(), "built-in terms without an operator");
 }
 

@@ -164,33 +164,44 @@ pub fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
 
 /// The asset directory doubles as the shell source, so the tests do not depend on
 /// a frontend build having happened. Like the build, it has the shells of every
-/// known language under `<language>/`, each with the language list in its head.
+/// known language under `<language>/`, each with the language list in its head
+/// and the footer markers with the labels of its catalogue.
 pub fn write_shells(dir: &Path) {
     for language in capsulebin_server::config::KNOWN_LANGUAGES {
         let shells = dir.join(language);
         std::fs::create_dir_all(&shells).unwrap();
         let head = format!(r#"<!doctype html><html lang="{language}"><head>{LANGUAGES_META}"#);
+        let footer = format!("<footer>{}</footer>", legal_link_markers(language));
         for (file, marker) in [
             ("index.html", "create"),
             ("p.html", "view"),
             ("manage.html", "manage"),
             ("report.html", "report"),
         ] {
-            std::fs::write(
-                shells.join(file),
-                format!("{head}<title>{marker}</title></head><footer><!--capsulebin:legal-links--></footer>"),
-            )
-            .unwrap();
+            std::fs::write(shells.join(file), format!("{head}<title>{marker}</title></head>{footer}")).unwrap();
         }
         std::fs::write(
             shells.join("legal.html"),
             format!(
                 "{head}<title><!--capsulebin:legal-title--></title></head><header><!--capsulebin:legal-title--></header>\
-                 <main><!--capsulebin:legal-content--></main><footer><!--capsulebin:legal-links--></footer>"
+                 <main><!--capsulebin:legal-content--></main>{footer}"
             ),
         )
         .unwrap();
     }
+}
+
+/// The footer markers as the web build writes them into the shells of
+/// `language`: one per legal page, labelled from the catalogue.
+pub fn legal_link_markers(language: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("web/src/i18n/{language}.json"));
+    let catalogue: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    ["imprint", "privacy", "terms"]
+        .map(|page| {
+            let label = catalogue[format!("shell.{page}")].as_str().unwrap();
+            format!("<!--capsulebin:legal-link:{page}:{label}-->")
+        })
+        .concat()
 }
 
 /// A server whose asset directory has no shells, for the degraded readiness path.

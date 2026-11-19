@@ -156,7 +156,9 @@ Critical rules:
 - **Unknown keys are a startup error** — a typo must not silently disable a security setting.
 - **Every setting has an env equivalent:** `CAPSULEBIN__<TABLE>__<KEY>`.
 - **`server.public_url` is required, no default** — it appears in `problem+json` type URIs
-  and share links, so it must come from configuration, not a request header.
+  and share links, so it must come from configuration, not a request header. Its path must not
+  end in a known language code (`…/team/de`): links below it would be ambiguous with the language
+  prefix.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
   must not be an open write target.
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
@@ -324,8 +326,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language prefix, `Accept-Language` redirect of prefix-less paths, asset serving (embedded or from disk); puts the legal footer links into every shell and legal pages into `legal.html` |
-| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer links with the language prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
+| `src/api/assets.rs` | Page routes per language prefix, `Accept-Language` redirect of prefix-less paths, asset serving (embedded or from disk); turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` |
+| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer link targets with the language prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |

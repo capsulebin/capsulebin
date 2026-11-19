@@ -25,11 +25,16 @@ use crate::AppState;
 use crate::config::{DEFAULT_LANGUAGE, KNOWN_LANGUAGES};
 use crate::legal::{LegalPages, Which};
 
-/// Where the footer of every HTML shell takes the operator's legal links.
+/// Start of the footer marker of one legal link in every HTML shell:
+/// `<!--capsulebin:legal-link:<page>:<label>-->`, `<page>` as in
+/// [`Which::path`]. The web build writes the label from the catalogue of the
+/// shell's language, HTML-escaped, so it holds no `>` and cannot end the
+/// comment early; the server only decides whether the link appears and where
+/// it points.
 ///
 /// HTML comments, so that a shell served without substitution (the Vite dev
 /// server) still renders, just without the links.
-pub const LEGAL_LINKS_MARKER: &str = "<!--capsulebin:legal-links-->";
+pub const LEGAL_LINK_MARKER: &str = "<!--capsulebin:legal-link:";
 /// Where `legal.html` takes the page title (in `<title>` and the header).
 pub const LEGAL_TITLE_MARKER: &str = "<!--capsulebin:legal-title-->";
 /// Where `legal.html` takes the rendered text.
@@ -130,7 +135,7 @@ pub fn routes() -> Router<AppState> {
 /// `/p/{id}` does not depend on whether the id exists; the fragment with the
 /// key never reaches the server and stays in the browser.
 async fn redirect(headers: HeaderMap, uri: Uri) -> Response {
-    let language = negotiate(headers.get(header::ACCEPT_LANGUAGE));
+    let language = negotiate(headers.get_all(header::ACCEPT_LANGUAGE));
     found(&format!("/{language}{}{}", uri.path(), query(&uri)))
 }
 
@@ -154,14 +159,24 @@ fn found(location: &str) -> Response {
 }
 
 /// The language a request without a prefix is sent to: the known one
-/// `Accept-Language` weighs highest, otherwise the default. A missing,
+/// `Accept-Language` weighs highest, otherwise the default. Several field lines
+/// count as one comma-separated list (RFC 9110, section 5.3). A missing,
 /// malformed or overlong header is no error, just no preference.
-fn negotiate(accept_language: Option<&HeaderValue>) -> &'static str {
-    accept_language
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| value.len() <= MAX_ACCEPT_LANGUAGE_BYTES)
-        .and_then(|value| preferred(value, KNOWN_LANGUAGES))
-        .unwrap_or(DEFAULT_LANGUAGE)
+fn negotiate<'a>(field_lines: impl IntoIterator<Item = &'a HeaderValue>) -> &'static str {
+    let mut combined = String::new();
+    for line in field_lines {
+        let Ok(text) = line.to_str() else {
+            return DEFAULT_LANGUAGE;
+        };
+        if !combined.is_empty() {
+            combined.push(',');
+        }
+        combined.push_str(text);
+        if combined.len() > MAX_ACCEPT_LANGUAGE_BYTES {
+            return DEFAULT_LANGUAGE;
+        }
+    }
+    preferred(&combined, KNOWN_LANGUAGES).unwrap_or(DEFAULT_LANGUAGE)
 }
 
 /// The known language with the highest weight in an `Accept-Language` value
@@ -186,21 +201,35 @@ fn preferred(accept_language: &str, known: &[&'static str]) -> Option<&'static s
 
 /// One `Accept-Language` entry, `de-AT;q=0.8`, as its primary subtag and its
 /// weight in thousandths (`("de", 800)`). `None` if it is malformed or `*`.
+/// Strictly RFC 9110: a language range, optionally followed by exactly one
+/// `weight = OWS ";" OWS "q=" qvalue`; any other or further parameter makes
+/// the entry malformed.
 fn parse_entry(entry: &str) -> Option<(&str, u16)> {
-    let mut parts = entry.split(';');
-    let tag = parts.next()?.trim();
-    let primary = tag.split('-').next()?;
-    if primary.is_empty() || primary.len() > 8 || !primary.bytes().all(|byte| byte.is_ascii_alphabetic()) {
-        return None;
-    }
-    let mut weight = 1000;
-    for parameter in parts {
-        let (name, value) = parameter.split_once('=')?;
-        if name.trim().eq_ignore_ascii_case("q") {
-            weight = parse_weight(value.trim())?;
+    let (range, weight) = match entry.split_once(';') {
+        Some((range, weight)) => (range, Some(weight)),
+        None => (entry, None),
+    };
+    let primary = primary_subtag(range.trim())?;
+    let weight = match weight {
+        Some(weight) => {
+            let (name, value) = weight.trim().split_at_checked(2)?;
+            if !name.eq_ignore_ascii_case("q=") {
+                return None;
+            }
+            parse_weight(value)?
         }
-    }
+        None => 1000,
+    };
     Some((primary, weight))
+}
+
+/// The primary subtag of a language range (RFC 4647:
+/// `1*8ALPHA *("-" 1*8alphanum)`); `None` if `range` is not one.
+fn primary_subtag(range: &str) -> Option<&str> {
+    let subtag = |text: &str, allowed: fn(&u8) -> bool| !text.is_empty() && text.len() <= 8 && text.bytes().all(|byte| allowed(&byte));
+    let mut subtags = range.split('-');
+    let primary = subtags.next()?;
+    (subtag(primary, u8::is_ascii_alphabetic) && subtags.all(|rest| subtag(rest, u8::is_ascii_alphanumeric))).then_some(primary)
 }
 
 /// A `qvalue` (`0`, `0.5`, `1.000`) in thousandths; `None` if it is not one.
@@ -261,7 +290,32 @@ async fn legal(State(state): State<AppState>, language: &'static str, which: Whi
 /// shells are UTF-8; a lossy conversion only matters for a broken build, which
 /// `/health/ready` reports.
 fn render(bytes: Vec<u8>, legal: &LegalPages) -> String {
-    String::from_utf8_lossy(&bytes).replace(LEGAL_LINKS_MARKER, &legal.footer)
+    Which::ALL
+        .into_iter()
+        .fold(String::from_utf8_lossy(&bytes).into_owned(), |shell, which| {
+            with_legal_link(&shell, which, legal.footer.href(which))
+        })
+}
+
+/// Replaces every footer marker of `which` with a link to `href` labelled as
+/// the marker says, or removes it when the page is not configured. A marker
+/// without its end is left as it is.
+fn with_legal_link(shell: &str, which: Which, href: Option<&str>) -> String {
+    let start = format!("{LEGAL_LINK_MARKER}{}:", which.path());
+    let mut out = String::with_capacity(shell.len());
+    let mut rest = shell;
+    while let Some(at) = rest.find(&start) {
+        let after = &rest[at + start.len()..];
+        let Some(end) = after.find("-->") else { break };
+        out.push_str(&rest[..at]);
+        if let Some(href) = href {
+            // The label is already escaped by the web build.
+            out.push_str(&format!(r#"<a href="{}">{}</a>"#, crate::legal::escape(href), &after[..end]));
+        }
+        rest = &after[end + "-->".len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Static assets (JS, CSS, icons). No directory listing and no path traversal:
@@ -395,6 +449,7 @@ impl AssetSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legal::FooterLinks;
 
     #[test]
     fn every_route_maps_to_one_shell() {
@@ -406,13 +461,37 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_marker_is_replaced() {
+    fn the_footer_markers_become_links_or_disappear() {
         let legal = LegalPages {
-            footer: "<a>x</a>".to_owned(),
+            footer: FooterLinks {
+                imprint: Some("/de/imprint".to_owned()),
+                privacy: None,
+                terms: Some("https://operator.example/terms?a=1&b=2".to_owned()),
+            },
             ..LegalPages::default()
         };
-        let shell = format!("<head></head><footer>{LEGAL_LINKS_MARKER}</footer>").into_bytes();
-        assert_eq!(render(shell, &legal), "<head></head><footer><a>x</a></footer>");
+        let shell = "<footer><!--capsulebin:legal-link:imprint:Impressum-->\
+                     <!--capsulebin:legal-link:privacy:Datenschutz-->\
+                     <!--capsulebin:legal-link:terms:Nutzungs&amp;bedingungen--></footer>";
+        assert_eq!(
+            render(shell.as_bytes().to_vec(), &legal),
+            r#"<footer><a href="/de/imprint">Impressum</a><a href="https://operator.example/terms?a=1&amp;b=2">Nutzungs&amp;bedingungen</a></footer>"#
+        );
+    }
+
+    /// The dev server and a broken build: what is not a complete marker stays.
+    #[test]
+    fn shells_without_complete_markers_are_left_alone() {
+        let legal = LegalPages {
+            footer: FooterLinks {
+                imprint: Some("/en/imprint".to_owned()),
+                ..FooterLinks::default()
+            },
+            ..LegalPages::default()
+        };
+        for shell in ["<footer></footer>", "<footer><!--capsulebin:legal-link:imprint:Imprint</footer>"] {
+            assert_eq!(render(shell.as_bytes().to_vec(), &legal), shell);
+        }
     }
 
     #[test]
@@ -434,7 +513,9 @@ mod tests {
             ("de;q=0, en;q=0.1", Some("en")),
             ("de;q=0.000", None),
             ("de;q=1.0", Some("de")),
-            ("de ; q = 0.7", Some("de")),
+            ("de ; q=0.7 , en;q=0.6", Some("de")),
+            ("de;Q=0.7", Some("de")),
+            ("de-1996, en;q=0.5", Some("de")),
             ("fr, it", None),
             ("*", None),
             ("", None),
@@ -446,6 +527,21 @@ mod tests {
             ("123", None),
             ("x-klingon", None),
             ("deutsch-de", None),
+            // Not a language range: empty or overlong subtags, other characters.
+            ("de-", None),
+            ("-de", None),
+            ("de--AT", None),
+            ("de-abcdefghi", None),
+            ("de_AT", None),
+            ("d e", None),
+            // A weight is exactly one `q=qvalue`, without blanks around `=`.
+            ("de;q=0; q=1", None),
+            ("de;q=1;q=1", None),
+            ("de;level=1", None),
+            ("de;q=1;level=1", None),
+            ("de;q = 0.7", None),
+            ("de;", None),
+            ("de;q=", None),
         ] {
             assert_eq!(preferred(header, &offered), expected, "{header:?}");
         }
@@ -458,10 +554,28 @@ mod tests {
         assert_eq!(negotiate(None), "en");
         assert_eq!(negotiate(value("de").as_ref()), "de");
         assert_eq!(negotiate(value(";;;,,,q=").as_ref()), "en");
+        assert_eq!(negotiate(value("de-").as_ref()), "en");
+        assert_eq!(negotiate(value("de;q=0; q=1").as_ref()), "en");
         let overlong = format!("{}de", "x;q=0.1,".repeat(200));
         assert_eq!(negotiate(value(&overlong).as_ref()), "en");
         let not_text = HeaderValue::from_bytes(b"de\xff").ok();
         assert_eq!(negotiate(not_text.as_ref()), "en");
+    }
+
+    #[test]
+    fn several_field_lines_count_as_one_list() {
+        let lines = |texts: &[&str]| texts.iter().map(|text| HeaderValue::from_str(text).unwrap()).collect::<Vec<_>>();
+
+        assert_eq!(negotiate(&lines(&["en;q=0.5", "de"])), "de");
+        assert_eq!(negotiate(&lines(&["de;q=0.5", "en"])), "en");
+        assert_eq!(negotiate(&lines(&["de-", "fr"])), "en");
+        // The length cap applies to all lines together.
+        let half = format!("{}en;q=0.1", "x;q=0.1,".repeat(70));
+        assert_eq!(negotiate(&lines(&[&half, "de"])), "de");
+        assert_eq!(negotiate(&lines(&[&half, &half, "de"])), "en");
+        // A line that is not text spoils the whole header.
+        let not_text = HeaderValue::from_bytes(b"de\xff").unwrap();
+        assert_eq!(negotiate([&HeaderValue::from_static("de"), &not_text]), "en");
     }
 
     /// The template a shell is generated from, once per language, with its path.
@@ -471,17 +585,17 @@ mod tests {
         (path, source)
     }
 
-    /// The substitution only works if every shell has the marker in its footer.
+    /// The substitution only works if every shell has the markers in its
+    /// footer, each with its label from the catalogue.
     #[test]
-    fn every_shell_source_carries_the_legal_links_marker() {
+    fn every_shell_source_carries_the_legal_link_markers() {
         for shell in Shell::ALL {
             let (path, source) = template(shell);
-            assert_eq!(
-                source.matches(LEGAL_LINKS_MARKER).count(),
-                1,
-                "{} must contain the legal links marker exactly once",
-                path.display()
-            );
+            assert_eq!(source.matches(LEGAL_LINK_MARKER).count(), 3, "{}", path.display());
+            for which in Which::ALL {
+                let marker = format!("{LEGAL_LINK_MARKER}{0}:{{{{shell.{0}}}}}-->", which.path());
+                assert_eq!(source.matches(&marker).count(), 1, "{} must contain {marker} once", path.display());
+            }
         }
     }
 

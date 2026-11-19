@@ -13,6 +13,13 @@
  *   text and are HTML-escaped here, so a catalogue cannot bring markup or script
  *   into a page.
  *
+ * A catalogue text may also sit inside one of the server's marker comments: the
+ * footer's legal links are `<!--capsulebin:legal-link:<page>:{{shell.<page>}}-->`,
+ * which the server turns into a link or drops. Escaping leaves no `>`, so the text
+ * cannot end the comment; but it does not touch `-`, and the server ends the label
+ * at the first `-->`. So a text inside a comment must not contain `--` or end in
+ * `-` - the build fails otherwise.
+ *
  * The output is a pure function of templates and catalogues: no timestamps, files
  * in sorted order. That keeps the web build reproducible
  * (`scripts/reproducible-web.sh`).
@@ -83,20 +90,45 @@ function escapeHtml(text: string): string {
         .replaceAll("'", '&#39;');
 }
 
+/** Whether `offset` in `html` lies inside an HTML comment. */
+function insideComment(html: string, offset: number): boolean {
+    return html.lastIndexOf('<!--', offset) > html.lastIndexOf('-->', offset);
+}
+
+/**
+ * Whether `text` can sit inside a marker comment unchanged: with `--` or a trailing
+ * `-` it could end the comment early or be cut short by the server's `-->` search.
+ */
+export function fitsInComment(text: string): boolean {
+    return !text.includes('--') && !text.endsWith('-');
+}
+
 /**
  * Fills a template for one language. A placeholder without a catalogue entry is
  * an error rather than an empty string: a missing text must fail the build, not
- * ship as a blank button.
+ * ship as a blank button. So is a text inside a comment that does not fit there.
  */
 export function renderShell(template: string, lang: string, catalogue: Catalogue): string {
     const fromLanguage = languagePlaceholders(lang);
-    return template.replace(PLACEHOLDER, (_, key: string) => {
+    return template.replace(PLACEHOLDER, (placeholder, key: string, offset: number) => {
         const value = fromLanguage.get(key) ?? catalogue[key];
         if (value === undefined) {
-            throw new Error(`${lang}.json has no entry for {{${key}}}`);
+            throw new Error(`${lang}.json has no entry for ${placeholder}`);
+        }
+        if (insideComment(template, offset) && !fitsInComment(value)) {
+            throw new Error(
+                `${lang}.json: ${placeholder} sits inside a comment and must not contain "--" or end in "-"`,
+            );
         }
         return escapeHtml(value);
     });
+}
+
+/** The catalogue keys whose placeholders sit inside a comment in `template`. */
+export function keysInComments(template: string): string[] {
+    return [...template.matchAll(PLACEHOLDER)]
+        .filter((match) => insideComment(template, match.index))
+        .map((match) => match[1]!);
 }
 
 /** The shell `shell` in language `lang`, as the build produces it (before Vite). */

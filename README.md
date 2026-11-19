@@ -117,8 +117,10 @@ cargo run -p capsulebin-server -- --config capsulebin.dev.toml serve   # termina
 npm run dev -w @capsulebin/web                                         # terminal 2, :5173
 ```
 
-Vite proxies `/api` and `/health` to the server. Browsers treat `localhost` as a secure context, so
-Web Crypto is available there; production requires HTTPS.
+Open the dev server under a language prefix, <http://localhost:5173/en/> or
+<http://localhost:5173/de/>: only the real server redirects paths without one, the dev server
+answers them with `404`. Vite proxies `/api` and `/health` to the server. Browsers treat
+`localhost` as a secure context, so Web Crypto is available there; production requires HTTPS.
 
 `capsulebin.dev.toml` reads assets from `src/server/web/dist` rather than the binary, so an edited
 file takes effect without a rebuild. Without `server.asset_dir`, every build — release builds

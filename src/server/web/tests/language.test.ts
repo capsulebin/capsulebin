@@ -21,7 +21,7 @@ import {
     t,
     tn,
 } from '../src/language';
-import { mountLanguageSwitch } from '../src/pages/shell';
+import { languageFromNextPage, mountLanguageSwitch } from '../src/pages/shell';
 
 function setPage(lang: string, meta?: string): void {
     document.documentElement.lang = lang;
@@ -36,8 +36,15 @@ function setPage(lang: string, meta?: string): void {
 }
 
 function fakeLocation(path: string, search = '', hash = '') {
-    return { pathname: path, search, hash, assign: vi.fn() } as unknown as Location & {
+    return {
+        pathname: path,
+        search,
+        hash,
+        assign: vi.fn(),
+        replace: vi.fn(),
+    } as unknown as Location & {
         assign: ReturnType<typeof vi.fn>;
+        replace: ReturnType<typeof vi.fn>;
     };
 }
 
@@ -177,21 +184,30 @@ describe('choosing a language', () => {
         const location = fakeLocation('/en/report', '?id=x', '#frag');
         chooseLanguage('de', 'navigate', location);
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('de');
-        expect(location.assign).toHaveBeenCalledWith('/de/report?id=x#frag');
+        expect(location.replace).toHaveBeenCalledWith('/de/report?id=x#frag');
+    });
+
+    // An entry left behind would keep the key in its fragment after the page has
+    // removed it from its own, and "Back" would bring it back.
+    it('replaces the history entry instead of adding one', () => {
+        const location = fakeLocation('/en/p/abc', '', '#v1.key');
+        chooseLanguage('de', 'navigate', location);
+        expect(location.replace).toHaveBeenCalledTimes(1);
+        expect(location.assign).not.toHaveBeenCalled();
     });
 
     it('only stores in store mode', () => {
         const location = fakeLocation('/en/p/abc');
         chooseLanguage('de', 'store', location);
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('de');
-        expect(location.assign).not.toHaveBeenCalled();
+        expect(location.replace).not.toHaveBeenCalled();
     });
 
     it('does not reload for the language the page already has', () => {
         const location = fakeLocation('/en/');
         chooseLanguage('en', 'navigate', location);
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
-        expect(location.assign).not.toHaveBeenCalled();
+        expect(location.replace).not.toHaveBeenCalled();
     });
 });
 
@@ -228,5 +244,18 @@ describe('language switch', () => {
         buttons[1]!.click();
         expect(stored).toHaveBeenCalledWith('de');
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('de');
+    });
+
+    it('keeps a single notice when store-only mode is entered twice', () => {
+        const { container, handle, buttons } = mount('en de');
+        const parent = document.createElement('div');
+        parent.append(container);
+        const shell = { languageSwitch: handle };
+        languageFromNextPage(shell);
+        languageFromNextPage(shell);
+        buttons[1]!.click();
+        const notices = parent.querySelectorAll('[data-language-notice]');
+        expect(notices).toHaveLength(1);
+        expect(notices[0]!.textContent).toBe(t('shell.languageNextPage'));
     });
 });

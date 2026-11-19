@@ -93,6 +93,26 @@ describe('management page in German', () => {
         expect(notice.textContent).toBe(de['shell.languageNextPage']);
     });
 
+    it('only stores a language choice while the delete is running', async () => {
+        vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) =>
+            init?.method === 'DELETE'
+                ? new Promise<Response>(() => {})
+                : new Response(JSON.stringify(descriptor()), { status: 200 }),
+        );
+        await loadPage();
+
+        document.querySelector<HTMLButtonElement>('[data-delete-btn]')!.click();
+        await flush();
+        expect(window.location.hash).toBe(`#${SECRET}`);
+
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!.click();
+        expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
+        expect(window.location.pathname).toBe(`/de/manage/${ID}`);
+        expect(document.querySelector('[data-language-notice]')!.textContent).toBe(
+            de['shell.languageNextPage'],
+        );
+    });
+
     it('explains a link without a key', async () => {
         await loadPage('');
         expect(text('error-message')).toBe(de['link.noKey']);

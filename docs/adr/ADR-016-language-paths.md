@@ -41,10 +41,14 @@ is offered, and `en` is the default; the operator does not choose.
   language and shipped once under `/assets/`; a check on the build output enforces both. Numbers
   and dates follow the page language.
 - **A language switch** next to the theme toggle stores the choice and loads the same address
-  under the other prefix — except once a page has removed the key from its address, where it only
-  stores the choice.
+  under the other prefix, replacing the history entry — except once a page must not be reloaded
+  (a retrieval or deletion has started, or the create form holds a draft), where it only stores the
+  choice.
 - **`parseLink` accepts a known language segment** before `p`/`manage`, so a link copied from the
-  address bar works in the CLI.
+  address bar works in the CLI. To keep that unambiguous, `server.public_url` must not end in a
+  known language code (startup error).
+- **Footer link labels come from the catalogue** like every other shell text; the server only
+  decides per `[legal]` whether each link appears and where it points.
 
 ## Rejected
 
@@ -85,5 +89,7 @@ is offered, and `en` is the default; the operator does not choose.
 - The CLI, the API's `problem+json` texts and the legal texts stay English for now; the pages map
   error codes to their own texts instead of showing the API's. Operators cannot replace the
   catalogues.
-- A page that has removed its key cannot change language in place; the choice applies from the next
-  page.
+- A page that has started a retrieval or deletion, or holds a create draft, cannot change language
+  in place; the choice applies from the next page.
+- An instance cannot use a `public_url` whose path ends in `/en` or `/de` (or any later language
+  code); such a sub-path has to be renamed.

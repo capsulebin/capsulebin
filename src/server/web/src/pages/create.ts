@@ -6,7 +6,15 @@
  */
 
 import { MAX_ITEM_BYTES, MAX_ITEMS, Paste, PasteApi, generateUlid } from '@capsulebin/core';
-import { byAttr, byId, initShell, setValue, showTemplate, setText } from './shell';
+import {
+    byAttr,
+    byId,
+    initShell,
+    languageFromNextPage,
+    setValue,
+    showTemplate,
+    setText,
+} from './shell';
 import { apiErrorText } from './errors';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import { formatSize, t, type TextKey } from '../language';
@@ -129,6 +137,18 @@ function isItemEmpty(item: ItemState): boolean {
     return item.presentation === 'download' ? !item.fileBytes : item.text.trim().length === 0;
 }
 
+/** A draft is worth keeping once an item has content or a name the user gave it. */
+function hasDraft(): boolean {
+    return items.some((item) => !isItemEmpty(item) || item.nameEdited);
+}
+
+/** Reloading the page under another prefix would discard the draft: from the
+ *  first content on, the language switch only stores the choice. Stays so even
+ *  if the form is emptied again (and on the done page, which holds the links). */
+function keepDraftOnLanguageSwitch(): void {
+    if (hasDraft()) languageFromNextPage(shell);
+}
+
 function itemByteLength(item: ItemState): number {
     return item.presentation === 'download'
         ? (item.fileBytes?.length ?? 0)
@@ -163,6 +183,9 @@ function showEdit(): void {
     overflow = [];
 
     const form = byAttr<HTMLFormElement>('create-form');
+    // Bubbles up after the field handlers below have updated the items; added
+    // files and type changes go through render().
+    form.addEventListener('input', keepDraftOnLanguageSwitch);
 
     // Tabs: selection, removal and keyboard navigation (delegated, since the
     // tab list is re-rendered).
@@ -538,6 +561,7 @@ function refreshSizeMeter(): void {
 }
 
 function render(): void {
+    keepDraftOnLanguageSwitch();
     if (!getActive()) activeId = items[0]?.id ?? null;
     renderTabs();
     renderEditor(getActive());
@@ -786,5 +810,5 @@ async function encryptAndShare(
 
 // --- boot --------------------------------------------------------------------
 
-initShell();
+const shell = initShell();
 showEdit();

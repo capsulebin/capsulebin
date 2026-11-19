@@ -83,14 +83,10 @@ export function checkDist(distDir: string, { catalogues, templateOnlyKeys }: Dis
             .map(([, path = '']) => path.slice(path.lastIndexOf('/') + 1))
             .filter((name) => assets.has(name));
 
-    /** The JS a language's pages load, imports included. */
-    const reachable = (lang: string): string[] => {
-        const langDir = join(distDir, lang);
-        const pages = readdirSync(langDir).filter((name) => name.endsWith('.html'));
+    /** `names` and every chunk they import, directly or not, sorted. */
+    const closure = (names: readonly string[]): string[] => {
         const seen = new Set<string>();
-        const queue = pages.flatMap((page) =>
-            references(readFileSync(join(langDir, page), 'utf8')),
-        );
+        const queue = [...names];
         for (let name = queue.pop(); name !== undefined; name = queue.pop()) {
             if (seen.has(name)) continue;
             seen.add(name);
@@ -98,6 +94,19 @@ export function checkDist(distDir: string, { catalogues, templateOnlyKeys }: Dis
         }
         return [...seen].sort();
     };
+
+    /** The JS a language's pages load, imports included. */
+    const reachable = (lang: string): string[] => {
+        const langDir = join(distDir, lang);
+        const pages = readdirSync(langDir).filter((name) => name.endsWith('.html'));
+        return closure(
+            pages.flatMap((page) => references(readFileSync(join(langDir, page), 'utf8'))),
+        );
+    };
+
+    /** The chunks among `files` that carry no texts and import none that do. */
+    const languageFree = (files: readonly string[]): string[] =>
+        files.filter((file) => closure([file]).every((name) => !hasTexts(assets.get(name) ?? '')));
 
     const languages = Object.keys(catalogues).sort();
     const problems: string[] = [];
@@ -129,7 +138,7 @@ export function checkDist(distDir: string, { catalogues, templateOnlyKeys }: Dis
                 }
             }
         }
-        shared.set(lang, languageFree(files, assets, references, hasTexts));
+        shared.set(lang, languageFree(files));
     }
 
     // Template-only texts stay in the HTML.
@@ -162,24 +171,4 @@ export function checkDist(distDir: string, { catalogues, templateOnlyKeys }: Dis
     }
 
     return problems;
-}
-
-/** The chunks among `files` that carry no texts and import none that do. */
-function languageFree(
-    files: readonly string[],
-    assets: ReadonlyMap<string, string>,
-    references: (code: string) => string[],
-    hasTexts: (code: string) => boolean,
-): string[] {
-    const dependent = new Map<string, boolean>();
-    const visit = (file: string): boolean => {
-        const known = dependent.get(file);
-        if (known !== undefined) return known;
-        dependent.set(file, false); // cycles: decided by the other members
-        const code = assets.get(file) ?? '';
-        const result = hasTexts(code) || references(code).some(visit);
-        dependent.set(file, result);
-        return result;
-    };
-    return files.filter((file) => !visit(file));
 }

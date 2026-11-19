@@ -48,8 +48,8 @@ export interface LanguageSwitch {
      */
     storeOnly(onStored: (language: Language) => void): void;
     /**
-     * Adds an empty live region next to the switch and returns it, for a notice
-     * about the switch. It exists before its text changes, so the change is announced.
+     * The live region next to the switch for a notice about it, added empty on the
+     * first call. It exists before its text changes, so the change is announced.
      */
     addNotice(): HTMLElement;
 }
@@ -64,6 +64,7 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
     const offered = offeredLanguages();
     let mode: SwitchMode = 'navigate';
     let onStored: ((language: Language) => void) | null = null;
+    let notice: HTMLElement | null = null;
 
     container.replaceChildren(
         ...offered.map((language) => {
@@ -88,7 +89,8 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
             onStored = callback;
         },
         addNotice() {
-            const notice = document.createElement('span');
+            if (notice) return notice;
+            notice = document.createElement('span');
             notice.className = 'cb-status';
             notice.setAttribute('role', 'status');
             notice.dataset.languageNotice = '';
@@ -99,9 +101,10 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
 }
 
 /**
- * For pages that have removed the key from the address: from now on the switch
- * only stores the choice - loading the page under the new prefix would lose the
- * key - and says next to it that the choice applies from the next page on.
+ * For pages that must not be reloaded any more - a retrieval or deletion has
+ * started, or the key is gone from the address: from now on the switch only
+ * stores the choice and says next to it that the choice applies from the next
+ * page on. Calling it again changes nothing.
  */
 export function languageFromNextPage(shell: Shell): void {
     const { languageSwitch } = shell;

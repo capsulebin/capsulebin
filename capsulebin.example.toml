@@ -19,7 +19,9 @@ bind = "127.0.0.1:8080"
 # Required, no default. The externally reachable base URL, without a trailing
 # slash. It appears in problem+json "type" URIs and in generated share links, so
 # it is taken from configuration rather than from a request header - a Host header
-# is attacker-controlled.
+# is attacker-controlled. The path must not end in an interface language code
+# (exactly "en" or "de", e.g. https://example.org/team/de): links below it would be
+# ambiguous with the /<lang>/ prefix of the pages, so the server refuses to start.
 public_url = "https://paste.example"
 
 # Development only: serve assets from a directory instead of the embedded copy.

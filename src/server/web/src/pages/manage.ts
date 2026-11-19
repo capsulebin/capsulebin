@@ -92,6 +92,9 @@ async function startDelete(shell: Shell): Promise<void> {
 
     // 4. Show confirmation.
     showReady(descriptor, async () => {
+        // From here on reloading the page in another language would lose the key,
+        // or leave the delete running behind a page that never learns its outcome.
+        languageFromNextPage(shell);
         showDeleting();
 
         try {
@@ -105,7 +108,6 @@ async function startDelete(shell: Shell): Promise<void> {
 
         // Clear the fragment.
         history.replaceState(null, '', window.location.pathname);
-        languageFromNextPage(shell);
         showDone();
     });
 }

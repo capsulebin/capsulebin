@@ -197,6 +197,9 @@ async fn unprefixed_pages_are_redirected_by_accept_language() {
         ("/", Some("fr"), "/en/"),
         ("/", Some(";;; q=x, ,"), "/en/"),
         ("/", Some(overlong.as_str()), "/en/"),
+        // Not a language range, and a weight with a second parameter.
+        ("/", Some("de-"), "/en/"),
+        ("/", Some("de;q=0; q=1"), "/en/"),
         // `/<language>` without the slash.
         ("/de", Some("en"), "/de/"),
         ("/en?x=1", None, "/en/?x=1"),
@@ -217,6 +220,12 @@ async fn unprefixed_pages_are_redirected_by_accept_language() {
         .body(axum::body::Body::empty())
         .unwrap();
     assert_eq!(h.send(request).await.header("location"), Some("/en/"));
+
+    // Several field lines are one list: the later line may weigh higher.
+    let answer = h
+        .get_with_headers("/", &[("accept-language", "en;q=0.5"), ("accept-language", "de")])
+        .await;
+    assert_eq!(answer.header("location"), Some("/de/"));
 }
 
 /// A prefix that is not a known language is an unknown path: same status,
@@ -251,20 +260,45 @@ fn legal_configuration(config: &mut capsulebin_server::config::Config) {
     });
 }
 
+/// The labels are the shell's (from the catalogue of its language), the
+/// targets the server's: under the prefix for pages served here, the
+/// configured `url` for pages elsewhere.
 #[tokio::test]
 async fn every_shell_carries_the_configured_legal_links() {
     let h = harness_with("shell-legal", legal_configuration).await;
 
-    for &language in KNOWN_LANGUAGES {
+    for (language, [imprint, privacy, terms]) in [
+        ("en", ["Imprint", "Privacy", "Terms"]),
+        ("de", ["Impressum", "Datenschutz", "Nutzungsbedingungen"]),
+    ] {
         let mut paths: Vec<String> = pages(language).map(|(path, _)| path).into();
         paths.push(format!("/{language}/imprint"));
         for path in paths {
             let text = h.get(&path).await.text();
             let footer = format!(
-                r#"<footer><a href="/{language}/imprint">Imprint</a><a href="/{language}/privacy">Privacy</a><a href="https://operator.example/terms">Terms</a></footer>"#
+                r#"<footer><a href="/{language}/imprint">{imprint}</a><a href="/{language}/privacy">{privacy}</a><a href="https://operator.example/terms">{terms}</a></footer>"#
             );
             assert!(text.contains(&footer), "{path}: {text}");
         }
+    }
+}
+
+/// A page that is not configured has no link; the markers of the others are
+/// still replaced, under every prefix.
+#[tokio::test]
+async fn links_to_pages_that_are_not_configured_are_omitted() {
+    let h = harness_with("shell-legal-omitted", |config| {
+        config.legal.privacy = Some(capsulebin_server::config::LegalSection {
+            url: Some("https://operator.example/privacy".to_owned()),
+            ..Default::default()
+        });
+    })
+    .await;
+
+    for (language, privacy) in [("en", "Privacy"), ("de", "Datenschutz")] {
+        let text = h.get(&format!("/{language}/report")).await.text();
+        let footer = format!(r#"<footer><a href="https://operator.example/privacy">{privacy}</a></footer>"#);
+        assert!(text.contains(&footer), "/{language}/report: {text}");
     }
 }
 
