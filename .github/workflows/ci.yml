@@ -13,9 +13,9 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly, so that a new advisory against an unchanged lockfile or an
-    # approaching end of support still shows up. Only the audit and support jobs
-    # run on this trigger.
+    # Weekly, so that a new advisory against an unchanged lockfile or base image,
+    # or an approaching end of support, still shows up. Only the container,
+    # support and audit jobs run on this trigger.
     - cron: '17 4 * * 1'
   workflow_dispatch:
 
@@ -111,9 +111,12 @@ jobs:
           npm test -w @capsulebin/web
           npm test -w @capsulebin/cli
 
-      - name: Build
+      # Builds the web client twice from scratch and fails unless both are
+      # identical, so a tagged version's assets can be rebuilt and compared with
+      # what a server embeds. The second build is the one uploaded below.
+      - name: Build (web twice, compared)
         run: |
-          npm run build -w @capsulebin/web
+          ./scripts/reproducible-web.sh
           npm run build -w @capsulebin/cli
 
       - name: Upload web assets
@@ -279,9 +282,11 @@ jobs:
             src/server/web/test-results
           retention-days: 7
 
+  # Builds the image, scans it for known vulnerabilities and runs it. Runs on the
+  # weekly schedule too: the scan reads a fresh advisory database, so a new
+  # advisory against the base image fails the job without a code change.
   container:
     name: Container image
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -304,6 +309,31 @@ jobs:
           tags: capsulebin:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Grype, the scanner from the same project as syft, which writes the
+      # release SBOM. It fails on a high or critical vulnerability for which a
+      # fixed version exists in the Debian packages of the distroless base image;
+      # unfixable ones are reported without failing, since there is nothing to
+      # update to. The binary carries no crate list a scanner could read, so the
+      # Rust and npm dependencies stay with the audit job. The table lands in the
+      # job summary.
+      - name: Vulnerability scan
+        id: scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: capsulebin:ci
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          output-file: grype.txt
+
+      - name: Scan report
+        if: always() && steps.scan.outcome != 'skipped'
+        run: |
+          if [ -f grype.txt ]; then
+            { echo '### Vulnerability scan'; echo '```'; cat grype.txt; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
+            cat grype.txt
+          fi
 
       # The image as an operator runs it: environment only, a fresh volume, the
       # built-in health check. Healthy means assets, database and schema are

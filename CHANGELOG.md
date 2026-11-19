@@ -53,8 +53,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   ([ADR-013](docs/adr/ADR-013-abuse-reports-and-moderation.md)).
 - Subcommands `serve`, `check`, `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`,
   `reports` and `moderation`.
-- A container image: distroless without OpenSSL, non-root, configured by environment variables, with the database
-  on a `/data` volume and a health check that needs no shell or `curl`.
+- A container image: distroless without OpenSSL, non-root, configured by environment variables,
+  with the database on a `/data` volume and a health check that needs no shell or `curl`. Every
+  change and a weekly run scan it for known vulnerabilities in the base image.
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
 
@@ -68,6 +69,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Management page for deleting a capsule and checking its status; report page that strips the key
   from a pasted link.
 - Light and dark themes from design tokens, WCAG contrast verified by tests.
+- Reproducible assets: building the same source twice gives byte-identical files, checked on every
+  change, so the client a server embeds can be compared with a rebuild of the release tag.
 
 ### Command line client
 

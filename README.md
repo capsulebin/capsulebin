@@ -345,6 +345,7 @@ npm run format:check
 npm run check -w @capsulebin/core && npm test -w @capsulebin/core
 npm run check -w @capsulebin/web && npm test -w @capsulebin/web
 npm run check -w @capsulebin/cli && npm test -w @capsulebin/cli
+./scripts/reproducible-web.sh   # builds the web client twice, fails unless byte-identical
 ```
 
 The TypeScript side (`src/core`, `src/cli`, `src/server/web`) is formatted with Prettier, configured
