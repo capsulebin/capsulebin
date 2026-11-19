@@ -71,6 +71,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         },
         rate_limits: Default::default(),
         abuse: Default::default(),
+        legal: Default::default(),
     }
 }
 
@@ -151,8 +152,18 @@ pub fn write_shells(dir: &Path) {
         ("manage.html", "manage"),
         ("report.html", "report"),
     ] {
-        std::fs::write(dir.join(file), format!("<!doctype html><title>{marker}</title>")).unwrap();
+        std::fs::write(
+            dir.join(file),
+            format!("<!doctype html><title>{marker}</title><footer><!--capsulebin:legal-links--></footer>"),
+        )
+        .unwrap();
     }
+    std::fs::write(
+        dir.join("legal.html"),
+        "<!doctype html><title><!--capsulebin:legal-title--></title><header><!--capsulebin:legal-title--></header>\
+         <main><!--capsulebin:legal-content--></main><footer><!--capsulebin:legal-links--></footer>",
+    )
+    .unwrap();
 }
 
 /// A server whose asset directory is empty, for the degraded readiness path.

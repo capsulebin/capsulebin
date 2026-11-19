@@ -144,6 +144,12 @@ body {
     color: var(--cb-text-muted);
 }
 
+.cb-foot-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--cb-space-3);
+}
+
 /* --- Controls ---
  * Edges use --cb-border-strong: --cb-border only reaches 1.27:1, which is fine
  * for a divider but not for the outline of a control, where WCAG 1.4.11 asks

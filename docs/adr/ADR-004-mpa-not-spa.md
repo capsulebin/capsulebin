@@ -23,8 +23,9 @@ preview and source, and manages object URLs for downloads.
 | `GET /p/{id}` | `p.html` | Open |
 | `GET /manage/{id}` | `manage.html` | Delete capability |
 | `GET /report` | `report.html` | Report |
+| `GET /imprint`, `/privacy`, `/terms` | `legal.html` | Legal pages, filled in by the server (ADR-015) |
 
-Vite builds this through `rolldownOptions.input` with four entries. Shared code (`shell.ts`,
+Vite builds this through `rolldownOptions.input` with five entries. Shared code (`shell.ts`,
 `theme.ts`, styles) automatically ends up in a common chunk.
 
 **The server does not inspect the path id.** `GET /p/{id}` returns byte-identical HTML for every

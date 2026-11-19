@@ -28,6 +28,8 @@ pub struct Config {
     pub rate_limits: crate::api::rate_limit::RateLimitConfig,
     #[serde(default)]
     pub abuse: AbuseConfig,
+    #[serde(default)]
+    pub legal: LegalConfig,
 }
 
 fn default_bind() -> String {
@@ -523,4 +525,57 @@ impl AbuseConfig {
         }
         Ok(())
     }
+}
+
+/// The operator's legal pages: imprint, privacy notice and terms of use.
+///
+/// CapsuleBin serves them itself at `/imprint`, `/privacy` and `/terms`, from
+/// Markdown given inline (`text`) or in a file (`file`), or links to pages
+/// hosted elsewhere (`url`). The privacy notice and the terms have built-in
+/// defaults that describe what the software does with the configured retention
+/// and limits; they need an operator, because a privacy notice without a
+/// controller is worse than none. Without `[legal.operator]` and without
+/// explicit privacy or terms there are no legal pages and no footer links.
+///
+/// Resolved, read and rendered once at startup by [`crate::legal::resolve`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegalConfig {
+    /// Who runs the instance: the imprint (e.g. the German "Impressum").
+    #[serde(default)]
+    pub operator: Option<LegalSection>,
+    /// Who hosts it, if that is someone else: a second block in the imprint,
+    /// and named as processor in the built-in privacy notice.
+    #[serde(default)]
+    pub hosting: Option<LegalSection>,
+    /// Replaces or extends (`extra`) the built-in privacy notice.
+    #[serde(default)]
+    pub privacy: Option<LegalSection>,
+    /// Replaces or extends (`extra`) the built-in terms of use.
+    #[serde(default)]
+    pub terms: Option<LegalSection>,
+}
+
+/// One legal text. At most one of `text`, `file` and `url`; `extra` and
+/// `extra_file` add Markdown to a built-in text and are only valid without
+/// them. Which combinations a section accepts is checked by
+/// [`crate::legal::resolve`], which knows the section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegalSection {
+    /// Markdown, inline.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Markdown, read from this file at startup.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    /// A page hosted elsewhere; the footer links there.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Markdown appended to the built-in text, inline.
+    #[serde(default)]
+    pub extra: Option<String>,
+    /// Markdown appended to the built-in text, read from this file at startup.
+    #[serde(default)]
+    pub extra_file: Option<PathBuf>,
 }

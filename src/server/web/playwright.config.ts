@@ -56,6 +56,9 @@ export default defineConfig({
             CAPSULEBIN__SERVER__PUBLIC_URL: `http://127.0.0.1:${PORT}`,
             CAPSULEBIN__DATABASE__PATH: join(process.env.CAPSULEBIN_E2E_DATA, 'capsulebin.db'),
             CAPSULEBIN__CREATION__MODE: 'public',
+            // Exercised by legal.e2e.ts; privacy notice and terms are the built-in ones.
+            CAPSULEBIN__LEGAL__OPERATOR__TEXT: 'Example Operator GmbH  \nStreet 1, 12345 City',
+            CAPSULEBIN__LEGAL__HOSTING__TEXT: 'Example Hosting AG',
             CAPSULEBIN_LOG: 'warn',
         },
     },

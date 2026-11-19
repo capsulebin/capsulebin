@@ -45,6 +45,9 @@ tool for users and automation.
 
    [abuse]
    contact = "abuse@example.org"
+
+   [legal.operator]                       # the imprint; see "Legal pages"
+   file = "/etc/capsulebin/legal/operator.md"
    ```
 
 3. Verify before opening a port, then start:
@@ -179,7 +182,28 @@ client share the proxy's bucket.
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
 | `purge.*` | Leave enabled. Never-retrieved capsules go after 30 days, inactive ones after 90. |
 | `abuse.contact`, `abuse.report_retention` | Set a contact; keep closed reports no longer than needed (default 90 days). |
+| `legal.*` | A public instance in the EU usually needs an imprint and a privacy notice. Set `[legal.operator]`; see [Legal pages](#legal-pages). |
 | `database.synchronous` | `full` (default). Lower only if you accept losing acknowledged writes on power loss. |
+
+## Legal pages
+
+CapsuleBin serves an imprint, a privacy notice and terms of use at `/imprint`, `/privacy` and
+`/terms`, and links them from the footer of every page, once `[legal.operator]` is set:
+
+- **Imprint**: the operator's own Markdown (`text` or `file`), followed by a "Hosting" block from
+  `[legal.hosting]` if someone else hosts the instance.
+- **Privacy notice and terms**: built in, in English like the rest of the interface. The privacy
+  notice states what CapsuleBin processes and how long it keeps it, taken from the running
+  configuration (retention rules, report retention, whether limits use the client address), and
+  names the hosting provider as processor. What it cannot know - the reverse proxy's logs,
+  backups, a data protection officer - goes into `[legal.privacy] extra`. Either text can be
+  replaced entirely with `text`, `file` or `url`.
+
+The texts are read and rendered at startup, so `capsulebin check` reports a missing file, and a
+changed file takes effect on restart. In the container, mount them read-only, e.g.
+`-v ./legal:/etc/capsulebin/legal:ro` with `CAPSULEBIN__LEGAL__OPERATOR__FILE=/etc/capsulebin/legal/operator.md`.
+The built-in texts are a careful default, not legal advice: you are responsible for what your
+instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state.
 
 ## Health and logs
 

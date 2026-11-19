@@ -37,6 +37,7 @@ export default defineConfig({
                 p: resolve(import.meta.dirname, 'p.html'),
                 manage: resolve(import.meta.dirname, 'manage.html'),
                 report: resolve(import.meta.dirname, 'report.html'),
+                legal: resolve(import.meta.dirname, 'legal.html'),
             },
         },
     },

@@ -202,3 +202,40 @@ enabled = true
 # free text and contact details from the public - personal data. Open reports
 # stay until they are closed.
 report_retention = "90d"
+
+[legal]
+# The operator's legal pages: an imprint, a privacy notice and terms of use,
+# served by CapsuleBin at /imprint, /privacy and /terms and linked from the
+# footer of every page. An instance open to the public in the EU usually needs
+# at least an imprint and a privacy notice.
+#
+# Each text is Markdown, given inline (text = """...""") or read from a file at
+# startup (file = "..."), or a link to a page hosted elsewhere (url = "...").
+# Raw HTML in the Markdown is shown as text; links may point to http(s),
+# mailto, tel and paths on this host. Without [legal.operator] there are no
+# legal pages and no footer links (unless privacy or terms are set explicitly).
+# docs/privacy-notice.md describes the built-in texts.
+
+# Who runs the instance: name, address, contact, register entry - the imprint.
+# [legal.operator]
+# file = "/etc/capsulebin/legal/operator.md"
+
+# Who hosts it, if that is someone else: a second block in the imprint, and
+# named as processor (Art. 28 GDPR) in the built-in privacy notice.
+# [legal.hosting]
+# text = """Example Hosting Ltd., Server Street 2, 12345 City"""
+
+# Privacy notice. Without text, file or url, the built-in notice is used: it
+# describes what CapsuleBin processes, with the retention periods and limits
+# configured above. `extra` / `extra_file` add what it cannot know - the
+# reverse proxy's logs, backups, a data protection officer.
+# [legal.privacy]
+# extra = """
+# ## Web server logs
+# Our reverse proxy logs IP addresses for 7 days to fend off attacks.
+# """
+
+# Terms of use. Without text, file or url, the built-in rules of use are used;
+# `extra` / `extra_file` add to them.
+# [legal.terms]
+# url = "https://example.org/terms"

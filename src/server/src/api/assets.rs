@@ -16,6 +16,17 @@ use axum::{
 };
 
 use crate::AppState;
+use crate::legal::{LegalPages, Which};
+
+/// Where the footer of every HTML shell takes the operator's legal links.
+///
+/// HTML comments, so that a shell served without substitution (the Vite dev
+/// server) still renders, just without the links.
+pub const LEGAL_LINKS_MARKER: &str = "<!--capsulebin:legal-links-->";
+/// Where `legal.html` takes the page title (in `<title>` and the header).
+pub const LEGAL_TITLE_MARKER: &str = "<!--capsulebin:legal-title-->";
+/// Where `legal.html` takes the rendered text.
+pub const LEGAL_CONTENT_MARKER: &str = "<!--capsulebin:legal-content-->";
 
 /// Built frontend assets, embedded into the binary.
 ///
@@ -34,6 +45,8 @@ pub enum Shell {
     View,
     Manage,
     Report,
+    /// Imprint, privacy notice and terms: one shell, filled by the server.
+    Legal,
 }
 
 impl Shell {
@@ -43,6 +56,7 @@ impl Shell {
             Self::View => "p.html",
             Self::Manage => "manage.html",
             Self::Report => "report.html",
+            Self::Legal => "legal.html",
         }
     }
 }
@@ -53,6 +67,9 @@ pub fn routes() -> Router<AppState> {
         .route("/p/{id}", get(|s| shell(s, Shell::View)))
         .route("/manage/{id}", get(|s| shell(s, Shell::Manage)))
         .route("/report", get(|s| shell(s, Shell::Report)))
+        .route("/imprint", get(|s| legal(s, Which::Imprint)))
+        .route("/privacy", get(|s| legal(s, Which::Privacy)))
+        .route("/terms", get(|s| legal(s, Which::Terms)))
         .fallback(get(static_file))
 }
 
@@ -61,9 +78,33 @@ pub fn routes() -> Router<AppState> {
 /// exists.
 async fn shell(axum::extract::State(state): axum::extract::State<AppState>, which: Shell) -> Response {
     match state.assets.load(which.file()) {
-        Some(bytes) => html(bytes),
+        Some(bytes) => html(with_legal_links(bytes, &state.legal).into_bytes()),
         None => missing_frontend(which.file()),
     }
+}
+
+/// A legal page: the `legal.html` shell with the page put in. Not configured,
+/// or configured as a link elsewhere: the same `404` as any unknown path.
+async fn legal(axum::extract::State(state): axum::extract::State<AppState>, which: Which) -> Response {
+    let Some(page) = state.legal.page(which) else {
+        return not_found();
+    };
+    match state.assets.load(Shell::Legal.file()) {
+        Some(bytes) => html(
+            with_legal_links(bytes, &state.legal)
+                .replace(LEGAL_TITLE_MARKER, &crate::legal::escape(page.title))
+                .replace(LEGAL_CONTENT_MARKER, &page.html)
+                .into_bytes(),
+        ),
+        None => missing_frontend(Shell::Legal.file()),
+    }
+}
+
+/// Puts the legal links into a shell. The same for every request, so the shell
+/// still does not depend on the path id. The shells are UTF-8; a lossy
+/// conversion only matters for a broken build, which `/health/ready` reports.
+fn with_legal_links(bytes: Vec<u8>, legal: &LegalPages) -> String {
+    String::from_utf8_lossy(&bytes).replace(LEGAL_LINKS_MARKER, &legal.footer)
 }
 
 /// Static assets (JS, CSS, icons). No directory listing and no path traversal:
@@ -87,8 +128,12 @@ async fn static_file(axum::extract::State(state): axum::extract::State<AppState>
             response
         }
         // Unknown path: generic, with no hint about what does exist.
-        None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+        None => not_found(),
     }
+}
+
+fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 
 fn html(bytes: Vec<u8>) -> Response {
@@ -188,6 +233,40 @@ mod tests {
         assert_eq!(Shell::View.file(), "p.html");
         assert_eq!(Shell::Manage.file(), "manage.html");
         assert_eq!(Shell::Report.file(), "report.html");
+        assert_eq!(Shell::Legal.file(), "legal.html");
+    }
+
+    #[test]
+    fn the_footer_marker_is_replaced() {
+        let legal = LegalPages {
+            footer: "<a>x</a>".to_owned(),
+            ..LegalPages::default()
+        };
+        let shell = format!("<footer>{LEGAL_LINKS_MARKER}</footer>").into_bytes();
+        assert_eq!(with_legal_links(shell, &legal), "<footer><a>x</a></footer>");
+    }
+
+    /// The substitution only works if every shell has the marker in its footer.
+    #[test]
+    fn every_shell_source_carries_the_legal_links_marker() {
+        for shell in [Shell::Create, Shell::View, Shell::Manage, Shell::Report, Shell::Legal] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web").join(shell.file());
+            let source = std::fs::read_to_string(&path).unwrap_or_default();
+            assert_eq!(
+                source.matches(LEGAL_LINKS_MARKER).count(),
+                1,
+                "{} must contain the legal links marker exactly once",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_legal_shell_carries_its_title_and_content_markers() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/legal.html");
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(source.matches(LEGAL_TITLE_MARKER).count(), 2, "<title> and header");
+        assert_eq!(source.matches(LEGAL_CONTENT_MARKER).count(), 1);
     }
 
     #[test]

@@ -18,7 +18,10 @@ pub mod units;
 mod env;
 mod model;
 
-pub use model::{AbuseConfig, Config, CreationConfig, CreationMode, DatabaseConfig, PastesConfig, PurgeConfig, ServerConfig, Synchronous};
+pub use model::{
+    AbuseConfig, Config, CreationConfig, CreationMode, DatabaseConfig, LegalConfig, LegalSection, PastesConfig, PurgeConfig, ServerConfig,
+    Synchronous,
+};
 
 use std::path::{Path, PathBuf};
 
@@ -64,6 +67,8 @@ pub struct Resolved {
     pub creation_tokens: Vec<Verifier>,
     /// Largest accepted request body, including base64 overhead.
     pub max_body_bytes: usize,
+    /// The legal pages and footer links, read and rendered.
+    pub legal: crate::legal::LegalPages,
 }
 
 impl Config {
@@ -106,12 +111,14 @@ impl Config {
         self.abuse.validate()?;
         self.rate_limits.validate()?;
         let creation_tokens = self.creation.validate()?;
+        let legal = crate::legal::resolve(self)?;
         self.database.validate()?;
 
         Ok(Resolved {
             max_body_bytes: max_body_bytes(self.pastes.max_plaintext_size),
             config: self.clone(),
             creation_tokens,
+            legal,
         })
     }
 }

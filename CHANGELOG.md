@@ -58,6 +58,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   change and a weekly run scan it for known vulnerabilities in the base image.
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
+- Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an
+  imprint from the operator's Markdown with an optional hosting provider block, and a privacy
+  notice and terms of use with built-in texts filled in from the configuration;
+  each replaceable by own text, a file or a link, and linked from every page's footer.
 
 ### Web client
 

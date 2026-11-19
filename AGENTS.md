@@ -29,11 +29,12 @@ capsulebin/
 │                         (no DOM, no build step; shared by web client and CLI)
 ├── migrations/         SQLite migrations (0001–0003), embedded into server binary
 ├── docs/
-│   ├── adr/            14 Architecture Decision Records (see below)
+│   ├── adr/            15 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
 │   ├── crypto-profile.md        Binding crypto specification (primitives, derivation, verifiers)
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
+│   ├── privacy-notice.md        What an instance processes; template for the operator's notice
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
 │                         reproducible-web.sh — builds the web client twice and compares;
@@ -149,6 +150,11 @@ Critical rules:
   and share links, so it must come from configuration, not a request header.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
   must not be an open write target.
+- **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
+  startup without raw HTML or images and with links limited to http(s), mailto, tel and local
+  paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
+  privacy notice and terms (`legal/defaults.rs`) describe what the server stores and
+  logs: change them together with any such behaviour.
 
 ### Retention (purge)
 
@@ -251,7 +257,7 @@ npm run e2e -w @capsulebin/web
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, hostile Markdown and a capsule at the size limit, failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -271,6 +277,7 @@ npm run e2e -w @capsulebin/web
 | 012 | No OpenAPI document | Contract = capsule format, crypto profile, golden vectors; if ever needed, generate from `wire.rs` |
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
+| 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts filled in from the configuration; restricted Markdown rendered at startup; code still only from the binary |
 
 ## Source code map
 
@@ -300,7 +307,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Asset serving (embedded or from disk) |
+| `src/api/assets.rs` | Asset serving (embedded or from disk); puts the legal footer links into every shell and legal pages into `legal.html` |
+| `src/legal.rs` | `[legal]` resolution: imprint, privacy notice, terms; footer links (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |
@@ -338,6 +346,7 @@ npm run e2e -w @capsulebin/web
 | `src/pages/item-tabs.ts` | Shared item tab behaviour (keyboard, reveal) for create and view |
 | `src/pages/shell.ts` | Page shell (theme, layout) |
 | `src/pages/report.ts` | Abuse report form (strips the fragment, only the id is sent) |
+| `src/pages/legal.ts` | Legal pages: shell only, the server renders the text (ADR-015) |
 | `src/render-markdown.ts` | Markdown rendering (marked + DOMPurify) |
 | `src/render-code.ts` | Code rendering (highlight.js) |
 | `src/theme.ts` | Theme switching |
@@ -346,7 +355,7 @@ npm run e2e -w @capsulebin/web
 | `src/styles/base.css` | Base styles |
 | `src/styles/code.css` | Code block styles |
 | `src/styles/prose.css` | Prose/typography styles |
-| `*.html` | Entry points: `index.html` (create), `p.html` (view), `manage.html`, `report.html` |
+| `*.html` | Entry points: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
 
 ### CLI (`src/cli/`)
 
