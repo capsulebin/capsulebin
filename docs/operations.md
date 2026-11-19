@@ -100,7 +100,7 @@ Releases publish `ghcr.io/capsulebin/capsulebin:<version>` (also tagged `<major>
 `<major>` and `latest`) for `linux/amd64` and `linux/arm64`; how to verify its signature is in the
 [README](../README.md#installation). The `Dockerfile` at the repository root builds the same image
 locally: it builds the web client, embeds it into the binary and copies the result into a
-distroless image — no shell, no package manager, user `65532`. It is configured through
+distroless image without OpenSSL — no shell, no package manager, user `65532`. It is configured through
 environment variables only and keeps the database on the `/data` volume.
 
 ```sh
