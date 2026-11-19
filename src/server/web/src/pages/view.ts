@@ -27,11 +27,10 @@ import {
     derivePasswordKey,
     fromBase64url,
     type PublicHeader,
-    formatExpiry,
-    formatSize,
     pasteIdFromInput,
 } from '@capsulebin/core';
-import { byAttr, initShell } from './shell';
+import { formatExpiry, formatSize, localPath, t, tn } from '../language';
+import { byAttr, initShell, languageFromNextPage } from './shell';
 import { openCapsule, type PasswordRetry } from './open-capsule';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import {
@@ -193,69 +192,55 @@ class CbViewPage extends LitElement {
 
     #renderLoading() {
         return html`
-            <h1 class="cb-h1">Opening capsule&hellip;</h1>
-            <p class="cb-lede">
-                The key is in the fragment of this address and does not leave your browser.
-            </p>
+            <h1 class="cb-h1">${t('view.opening')}</h1>
+            <p class="cb-lede">${t('view.openingLede')}</p>
         `;
     }
 
     #renderDecrypting() {
         return html`
-            <h1 class="cb-h1">Decrypting&hellip;</h1>
+            <h1 class="cb-h1">${t('view.decrypting')}</h1>
             <div class="cb-spinner"></div>
-            <p class="cb-lede cb-pulse">
-                Decrypting in your browser. The server cannot read this content.
-            </p>
+            <p class="cb-lede cb-pulse">${t('view.decryptingLede')}</p>
         `;
     }
 
     #renderBurned() {
         return html`
-            <h1 class="cb-h1">Already retrieved</h1>
-            <p class="cb-lede">
-                This capsule was set to delete after its first retrieval and has already been
-                opened. The content is no longer available.
-            </p>
-            <p><a href="/" class="cb-btn">Create your own capsule</a></p>
+            <h1 class="cb-h1">${t('view.burned')}</h1>
+            <p class="cb-lede">${t('view.burnedLede')}</p>
+            <p><a href=${localPath('/')} class="cb-btn">${t('view.createOwn')}</a></p>
         `;
     }
 
     #renderBurnWarning() {
         return html`
-            <h1 class="cb-h1">This capsule can only be opened once</h1>
-            <p class="cb-lede">
-                The sender chose to delete this capsule after its first retrieval. Opening it now
-                will permanently remove it from the server.
-            </p>
+            <h1 class="cb-h1">${t('view.burnWarning')}</h1>
+            <p class="cb-lede">${t('view.burnWarningLede')}</p>
             <div class="cb-callout cb-callout-danger">
-                <strong>This cannot be undone.</strong>
-                After opening, the content will no longer be available — not for you, not for anyone
-                else.
+                <strong>${t('view.cannotUndo')}</strong>
+                ${t('view.burnWarningDetail')}
             </div>
             <p>
                 <button type="button" class="cb-btn" @click=${() => this.#confirmBurn()}>
-                    Yes, open and burn
+                    ${t('view.burnConfirm')}
                 </button>
-                <a href="/" class="cb-btn cb-btn-ghost">Cancel</a>
+                <a href=${localPath('/')} class="cb-btn cb-btn-ghost">${t('view.cancel')}</a>
             </p>
         `;
     }
 
     #renderPasswordPrompt() {
         return html`
-            <h1 class="cb-h1">This capsule is password protected</h1>
-            <p class="cb-lede">
-                The sender protected this capsule with a password. Enter it below to decrypt the
-                content. The password is never sent to the server.
-            </p>
+            <h1 class="cb-h1">${t('view.passwordTitle')}</h1>
+            <p class="cb-lede">${t('view.passwordLede')}</p>
             <form class="cb-form" @submit=${(e: SubmitEvent) => this.#handlePasswordSubmit(e)}>
-                <label class="cb-label" for="pwd-input">Password</label>
+                <label class="cb-label" for="pwd-input">${t('view.password')}</label>
                 <input
                     type="password"
                     id="pwd-input"
                     class="cb-input"
-                    placeholder="Enter the password"
+                    placeholder=${t('view.passwordPlaceholder')}
                     autocomplete="off"
                     required
                     .disabled=${this.passwordBusy}
@@ -266,7 +251,7 @@ class CbViewPage extends LitElement {
                     <p class="cb-lede cb-pulse">${this.kdfProgressLabel}</p>
                 </div>
                 <button type="submit" class="cb-btn" .disabled=${this.passwordBusy}>
-                    Decrypt capsule
+                    ${t('view.decrypt')}
                 </button>
             </form>
         `;
@@ -274,11 +259,9 @@ class CbViewPage extends LitElement {
 
     #renderError() {
         return html`
-            <h1 class="cb-h1">Not available</h1>
-            <p class="cb-lede">
-                ${this.errorMessage || 'This capsule does not exist, has expired, or the link is incomplete.'}
-            </p>
-            <p><a href="/" class="cb-btn">Create your own capsule</a></p>
+            <h1 class="cb-h1">${t('view.unavailable')}</h1>
+            <p class="cb-lede">${this.errorMessage || t('view.unavailableLede')}</p>
+            <p><a href=${localPath('/')} class="cb-btn">${t('view.createOwn')}</a></p>
         `;
     }
 
@@ -290,15 +273,15 @@ class CbViewPage extends LitElement {
 
         const totalBytes = items.reduce((sum, item) => sum + (item.bytes?.length ?? 0), 0);
         const statusParts: string[] = [];
-        if (multi) statusParts.push(`${items.length} items`);
-        statusParts.push(`${formatSize(totalBytes)} total`);
+        if (multi) statusParts.push(tn('view.itemCount', items.length));
+        statusParts.push(t('view.totalSize', { size: formatSize(totalBytes) }));
         statusParts.push(formatExpiry(this.expiresAt));
 
         return html`
             ${
                 this.capsuleTitle
                     ? html`<h1 class="cb-h1">${this.capsuleTitle}</h1>`
-                    : html`<h1 class="cb-sr-only">Capsule</h1>`
+                    : html`<h1 class="cb-sr-only">${t('view.capsule')}</h1>`
             }
             ${
                 active
@@ -333,7 +316,7 @@ class CbViewPage extends LitElement {
                 <div
                     class="cb-itemtabs"
                     role="tablist"
-                    aria-label="Items in this capsule"
+                    aria-label=${t('view.items')}
                     @keydown=${(e: KeyboardEvent) => this.#onTabKey(e)}
                 >
                     ${items.map(
@@ -373,7 +356,7 @@ class CbViewPage extends LitElement {
                             }
                         }}
                     >
-                        ☰ ${this.overflow.length} more
+                        ${t('items.more', { count: this.overflow.length })}
                     </button>
                     <div
                         id="cb-more-menu"
@@ -443,20 +426,20 @@ class CbViewPage extends LitElement {
                     ${
                         isMarkdown
                             ? html`
-                              <span class="cb-segmented" role="group" aria-label="Markdown view">
+                              <span class="cb-segmented" role="group" aria-label=${t('view.markdownView')}>
                                   <button
                                       type="button"
                                       aria-pressed=${source ? 'false' : 'true'}
                                       @click=${() => this.#setSource(index, false)}
                                   >
-                                      Preview
+                                      ${t('view.preview')}
                                   </button>
                                   <button
                                       type="button"
                                       aria-pressed=${source ? 'true' : 'false'}
                                       @click=${() => this.#setSource(index, true)}
                                   >
-                                      Source
+                                      ${t('view.source')}
                                   </button>
                               </span>
                           `
@@ -471,7 +454,7 @@ class CbViewPage extends LitElement {
                                   class="cb-btn-secondary cb-btn-sm"
                                   @click=${() => this.#copy(item, index)}
                               >
-                                  ${copied ? 'Copied' : 'Copy'}
+                                  ${t(copied ? 'view.copied' : 'view.copy')}
                               </button>
                           `
                     }
@@ -480,10 +463,10 @@ class CbViewPage extends LitElement {
                         class="cb-btn-secondary cb-btn-sm"
                         @click=${() => downloadItem(item, index)}
                     >
-                        Download
+                        ${t('view.download')}
                     </button>
                 </span>
-                <span class="cb-sr-only" aria-live="polite">${copied ? 'Copied to clipboard' : ''}</span>
+                <span class="cb-sr-only" aria-live="polite">${copied ? t('view.copiedToClipboard') : ''}</span>
             </div>
         `;
     }
@@ -594,13 +577,13 @@ class CbViewPage extends LitElement {
         const { pwdSalt, iterations } = this.#pwdContext;
 
         this.passwordBusy = true;
-        this.kdfProgressLabel = `Deriving key… ${iterations.toLocaleString()} iterations`;
+        this.kdfProgressLabel = tn('view.derivingKey', iterations);
 
         try {
             const pwdKey = await derivePasswordKey(password, pwdSalt, iterations);
             this.#resolvePassword?.(pwdKey);
         } catch {
-            this.passwordError = 'Something went wrong. Please try again.';
+            this.passwordError = t('error.generic');
         } finally {
             this.passwordBusy = false;
         }
@@ -645,34 +628,33 @@ class CbViewPage extends LitElement {
 /** The prompt's message after the server refused a password, empty on the first ask. */
 function passwordRetryMessage(retry: PasswordRetry | undefined): string {
     if (!retry) return '';
-    if (retry.reason === 'rejected') {
-        return 'Wrong password, or the capsule is no longer available.';
-    }
+    if (retry.reason === 'rejected') return t('view.wrongPassword');
     const wait = retry.retryAfter;
-    return wait
-        ? `Too many attempts. Try again in ${wait} second${wait === 1 ? '' : 's'}.`
-        : 'Too many attempts. Try again in a moment.';
+    return wait ? tn('view.tooManyAttemptsFor', wait) : t('view.tooManyAttempts');
 }
 
 /**
  * Removes the key (the fragment) from the address bar and the current history
  * entry, once the link has served its purpose or cannot work any more - so it
- * does not linger on screen, in screenshots or in a shared screen.
+ * does not linger on screen, in screenshots or in a shared screen. Reloading the
+ * page in another language would then lose the key, so the language switch only
+ * stores the choice from here on.
  */
 function forgetKey(): void {
     history.replaceState(null, '', window.location.pathname);
+    languageFromNextPage(shell);
 }
-
-customElements.define('cb-view-page', CbViewPage);
 
 // --- boot --------------------------------------------------------------------
 
-initShell();
+const shell = initShell();
+customElements.define('cb-view-page', CbViewPage);
 
 // Point the footer's report link at this capsule (`/report?id=…`): only the id
 // from the path, never anything from the fragment.
 {
     const id = pasteIdFromInput(window.location.pathname);
-    const link = document.querySelector<HTMLAnchorElement>('a[href="/report"]');
-    if (id && link) link.href = `/report?id=${id}`;
+    const report = localPath('/report');
+    const link = document.querySelector<HTMLAnchorElement>(`a[href="${report}"]`);
+    if (id && link) link.href = `${report}?id=${id}`;
 }

@@ -1,8 +1,12 @@
 /**
  * Share and management links.
  *
- *   share:   <base>/p/<id>#v1.<base64url link secret>
- *   manage:  <base>/manage/<id>#v1.<base64url delete secret>
+ *   share:   <base>[/<lang>]/p/<id>#v1.<base64url link secret>
+ *   manage:  <base>[/<lang>]/manage/<id>#v1.<base64url delete secret>
+ *
+ * The optional language segment is one of the known language codes; the server
+ * serves every page under such a prefix, so a link copied from the address bar
+ * carries one. Any other segment stays part of the base (a sub-path).
  *
  * The fragment never reaches the server: browsers strip it from requests, and
  * every consumer of a parsed link sends only the id (and a derived capability)
@@ -11,6 +15,7 @@
  */
 
 import { fromBase64url } from './helpers/bytes';
+import { isKnownLanguage } from './languages';
 import { FRAGMENT_PREFIX } from './public_header';
 
 /** Length of a paste id: 16 random bytes, base64url without padding. */
@@ -26,7 +31,10 @@ const PATH_SEGMENT: Record<LinkKind, string> = { share: 'p', manage: 'manage' };
 
 export interface ParsedLink {
     kind: LinkKind;
-    /** Everything before `/p/<id>` or `/manage/<id>` — the server's base URL. */
+    /**
+     * Everything before `/p/<id>` or `/manage/<id>`, without a language
+     * segment — the server's base URL.
+     */
     base: string;
     id: string;
     /** The decoded 32-byte secret from the fragment. Never send this anywhere. */
@@ -87,7 +95,11 @@ export function parseLink(link: string, kind: LinkKind): ParsedLink {
     }
 
     const secret = parseFragment(url.hash);
-    const basePath = segments.slice(0, -2).join('/');
+    const baseSegments = segments.slice(0, -2);
+    if (isKnownLanguage(baseSegments.at(-1) ?? '')) {
+        baseSegments.pop();
+    }
+    const basePath = baseSegments.join('/');
     return { kind, base: `${url.origin}${basePath}`, id, secret };
 }
 

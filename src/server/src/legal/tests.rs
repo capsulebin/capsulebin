@@ -25,11 +25,11 @@ fn with_operator() -> Config {
 }
 
 fn resolved(config: &Config) -> LegalPages {
-    resolve(config).expect("legal configuration must resolve")
+    resolve(config, "en").expect("legal configuration must resolve")
 }
 
 fn refused(config: &Config) -> String {
-    match resolve(config) {
+    match resolve(config, "en") {
         Ok(_) => panic!("configuration was accepted"),
         Err(error) => error.to_string(),
     }
@@ -49,13 +49,50 @@ fn an_operator_brings_the_imprint_and_both_built_in_texts() {
 
     assert_eq!(
         pages.footer,
-        r#"<a href="/imprint">Imprint</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a>"#
+        r#"<a href="/en/imprint">Imprint</a><a href="/en/privacy">Privacy</a><a href="/en/terms">Terms</a>"#
     );
     let imprint = pages.imprint.expect("imprint");
     assert_eq!(imprint.title, "Imprint");
     assert!(imprint.html.contains("Example GmbH<br />"), "{}", imprint.html);
     assert!(pages.privacy.expect("privacy").html.contains("<h2>Controller</h2>"));
     assert!(pages.terms.expect("terms").html.contains("<h2>What you may not share</h2>"));
+}
+
+/// Links to pages served here carry the prefix of the shell they are shown in;
+/// links elsewhere stay as configured. The text itself stays English, marked as
+/// such inside a shell of another language.
+#[test]
+fn links_follow_the_language_of_the_shell() {
+    let mut config = with_operator();
+    config.legal.privacy = url("/privacy-notice");
+    let pages = resolve(&config, "de").expect("legal configuration must resolve");
+
+    assert_eq!(
+        pages.footer,
+        r#"<a href="/de/imprint">Imprint</a><a href="/privacy-notice">Privacy</a><a href="/de/terms">Terms</a>"#
+    );
+    let terms = pages.terms.expect("terms").html;
+    assert!(terms.starts_with(r#"<article class="cb-prose cb-legal" lang="en">"#), "{terms}");
+    assert!(terms.contains(r#"href="/de/report""#), "{terms}");
+    assert!(pages.imprint.expect("imprint").html.contains(r#" lang="en">"#));
+
+    let english = resolved(&config).terms.expect("terms").html;
+    assert!(english.starts_with(r#"<article class="cb-prose cb-legal">"#), "{english}");
+    assert!(english.contains(r#"href="/en/report""#), "{english}");
+}
+
+#[test]
+fn the_built_in_privacy_notice_links_its_imprint_under_the_prefix() {
+    let privacy = resolve(&with_operator(), "de").expect("resolve").privacy.expect("privacy").html;
+    assert!(privacy.contains(r#"href="/de/imprint""#), "{privacy}");
+}
+
+/// AC18: what the browser keeps is named, key by key.
+#[test]
+fn the_built_in_privacy_notice_names_what_the_browser_stores() {
+    let privacy = resolved(&with_operator()).privacy.expect("privacy").html;
+    assert!(privacy.contains("<code>capsulebin.theme</code>"), "{privacy}");
+    assert!(privacy.contains("<code>capsulebin.language</code>"), "{privacy}");
 }
 
 #[test]
@@ -236,7 +273,7 @@ fn refuses_combinations_that_cannot_be_meant() {
     for (name, adjust) in cases {
         let mut config = with_operator();
         adjust(&mut config);
-        assert!(resolve(&config).is_err(), "{name} accepted");
+        assert!(resolve(&config, "en").is_err(), "{name} accepted");
     }
 
     // extra without operator: the built-in text it extends would have no controller.
@@ -266,7 +303,7 @@ fn refuses_urls_that_run_script_or_leave_the_site_unnoticed() {
     ] {
         let mut config = Config::default();
         config.legal.privacy = url(href);
-        assert!(resolve(&config).is_err(), "{href:?} accepted");
+        assert!(resolve(&config, "en").is_err(), "{href:?} accepted");
     }
 
     for href in [
@@ -276,7 +313,7 @@ fn refuses_urls_that_run_script_or_leave_the_site_unnoticed() {
     ] {
         let mut config = Config::default();
         config.legal.privacy = url(href);
-        assert!(resolve(&config).is_ok(), "{href:?} refused");
+        assert!(resolve(&config, "en").is_ok(), "{href:?} refused");
     }
 }
 
@@ -287,7 +324,7 @@ fn durations_read_naturally() {
     let mut config = with_operator();
     config.purge.retrieval_timestamp_granularity = crate::config::units::HumanDuration::parse("1h").expect("duration");
     config.purge.inactive_after = crate::config::units::HumanDuration::parse("1d").expect("duration");
-    let facts = Facts::from_config(&config, Some("/imprint".to_owned()), false);
+    let facts = Facts::from_config(&config, "/en", Some("/en/imprint".to_owned()), false);
 
     let privacy = defaults::privacy(&facts, None);
     assert!(privacy.contains("rounded to 1 hour."), "{privacy}");

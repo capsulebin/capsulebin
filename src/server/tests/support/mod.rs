@@ -72,6 +72,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
+        i18n: Default::default(),
     }
 }
 
@@ -144,33 +145,41 @@ pub async fn harness_from_dump(name: &str, dump: &'static str, now: i64) -> Harn
 }
 
 /// The asset directory doubles as the shell source, so the tests do not depend on
-/// a frontend build having happened.
+/// a frontend build having happened. Like the build, it has the shells of every
+/// known language under `<language>/`, whichever the configuration offers.
 pub fn write_shells(dir: &Path) {
-    for (file, marker) in [
-        ("index.html", "create"),
-        ("p.html", "view"),
-        ("manage.html", "manage"),
-        ("report.html", "report"),
-    ] {
+    for language in capsulebin_server::config::KNOWN_LANGUAGES {
+        let shells = dir.join(language);
+        std::fs::create_dir_all(&shells).unwrap();
+        let head = format!(r#"<!doctype html><html lang="{language}"><head><!--capsulebin:languages-->"#);
+        for (file, marker) in [
+            ("index.html", "create"),
+            ("p.html", "view"),
+            ("manage.html", "manage"),
+            ("report.html", "report"),
+        ] {
+            std::fs::write(
+                shells.join(file),
+                format!("{head}<title>{marker}</title></head><footer><!--capsulebin:legal-links--></footer>"),
+            )
+            .unwrap();
+        }
         std::fs::write(
-            dir.join(file),
-            format!("<!doctype html><title>{marker}</title><footer><!--capsulebin:legal-links--></footer>"),
+            shells.join("legal.html"),
+            format!(
+                "{head}<title><!--capsulebin:legal-title--></title></head><header><!--capsulebin:legal-title--></header>\
+                 <main><!--capsulebin:legal-content--></main><footer><!--capsulebin:legal-links--></footer>"
+            ),
         )
         .unwrap();
     }
-    std::fs::write(
-        dir.join("legal.html"),
-        "<!doctype html><title><!--capsulebin:legal-title--></title><header><!--capsulebin:legal-title--></header>\
-         <main><!--capsulebin:legal-content--></main><footer><!--capsulebin:legal-links--></footer>",
-    )
-    .unwrap();
 }
 
-/// A server whose asset directory is empty, for the degraded readiness path.
+/// A server whose asset directory has no shells, for the degraded readiness path.
 pub async fn harness_without_assets(name: &str) -> Harness {
     let harness = harness_with_mode(name, CreationMode::Token).await;
-    for file in ["index.html", "p.html", "manage.html", "report.html"] {
-        let _ = std::fs::remove_file(harness.dir.join(file));
+    for language in capsulebin_server::config::KNOWN_LANGUAGES {
+        let _ = std::fs::remove_dir_all(harness.dir.join(language));
     }
     harness
 }
@@ -230,6 +239,11 @@ impl Answer {
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
+
+    /// A response header as text, if present.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|value| value.to_str().ok())
+    }
 }
 
 impl Harness {
@@ -244,7 +258,15 @@ impl Harness {
     }
 
     pub async fn get(&self, path: &str) -> Answer {
-        self.send(Request::builder().uri(path).body(Body::empty()).unwrap()).await
+        self.get_with_headers(path, &[]).await
+    }
+
+    pub async fn get_with_headers(&self, path: &str, headers: &[(&str, &str)]) -> Answer {
+        let mut builder = Request::builder().uri(path);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        self.send(builder.body(Body::empty()).unwrap()).await
     }
 
     /// The descriptor of `id` (base64url), with the harness's describe token.

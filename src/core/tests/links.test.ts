@@ -24,6 +24,36 @@ describe('parseLink', () => {
         expect(link.base).toBe('https://example.org/paste');
     });
 
+    it.each([
+        [`https://x.example/de/p/${ID}#v1.${SECRET}`, 'share', 'https://x.example'],
+        [`https://x.example/en/manage/${ID}#v1.${SECRET}`, 'manage', 'https://x.example'],
+        [`https://x.example/sub/de/manage/${ID}#v1.${SECRET}`, 'manage', 'https://x.example/sub'],
+        [`http://127.0.0.1:8081/de/p/${ID}#v1.${SECRET}`, 'share', 'http://127.0.0.1:8081'],
+    ] as const)('drops the language segment from the base of %s', (input, kind, base) => {
+        const link = parseLink(input, kind);
+        expect(link.base).toBe(base);
+        expect(link.id).toBe(ID);
+        expect(link.secret).toHaveLength(32);
+    });
+
+    it.each([
+        // Not a known language: a sub-path that happens to have two letters.
+        [`https://x.example/cb/p/${ID}#v1.${SECRET}`, 'https://x.example/cb'],
+        // Codes are matched exactly; anything else is a sub-path.
+        [`https://x.example/DE/p/${ID}#v1.${SECRET}`, 'https://x.example/DE'],
+        [`https://x.example/de-AT/p/${ID}#v1.${SECRET}`, 'https://x.example/de-AT'],
+        // Only the segment right before `p` is a language; an earlier one is a sub-path.
+        [`https://x.example/de/sub/p/${ID}#v1.${SECRET}`, 'https://x.example/de/sub'],
+    ])('keeps %s in the base', (input, base) => {
+        expect(parseLink(input, 'share').base).toBe(base);
+    });
+
+    it('rejects a language prefix without a page segment', () => {
+        expect(() => parseLink(`https://x.example/de/${ID}#v1.${SECRET}`, 'share')).toThrow(
+            LinkError,
+        );
+    });
+
     it('rejects a management link where a share link is expected, and vice versa', () => {
         expect(() => parseLink(`https://x.test/manage/${ID}#v1.${SECRET}`, 'share')).toThrow(
             LinkError,
@@ -71,6 +101,8 @@ describe('pasteIdFromInput', () => {
         [`https://paste.example/p/${ID}`, ID],
         [`https://paste.example/p/${ID}#v1.${SECRET}`, ID],
         [`https://paste.example/manage/${ID}/`, ID],
+        [`https://paste.example/de/p/${ID}#v1.${SECRET}`, ID],
+        [`https://paste.example/sub/en/manage/${ID}`, ID],
         ['https://paste.example/p/short', null],
         ['', null],
         // An id-shaped fragment is never picked up.

@@ -16,13 +16,15 @@
 
 import {
     type CapsuleItem,
-    LinkError,
     openPaste,
     PasteApi,
     parseFragment,
     isPasteId,
     type PublicHeader,
 } from '@capsulebin/core';
+
+import { t } from '../language';
+import { linkErrorText } from './errors';
 
 /**
  * Why the password prompt is shown again. The server answers a wrong password
@@ -71,13 +73,13 @@ export async function openCapsule(hooks: OpenCapsuleHooks): Promise<OpenCapsuleO
     let linkSecret: Uint8Array;
     try {
         linkSecret = parseFragment(window.location.hash);
-    } catch (err) {
-        return { kind: 'error', message: linkMessage(err), final: false };
+    } catch {
+        return { kind: 'error', message: linkErrorText(window.location.hash), final: false };
     }
 
     const id = window.location.pathname.split('/').at(-1) ?? '';
     if (!isPasteId(id)) {
-        return { kind: 'error', message: 'Invalid capsule identifier.', final: false };
+        return { kind: 'error', message: t('link.invalidId'), final: false };
     }
 
     // 2. Descriptor → (burn, password) → reveal → decrypt → decode, in core.
@@ -130,17 +132,11 @@ export async function openCapsule(hooks: OpenCapsuleHooks): Promise<OpenCapsuleO
         case 'decrypt_failed':
             return {
                 kind: 'error',
-                message:
-                    'Decryption failed. The content may have been modified or the key is wrong.',
+                message: t('view.decryptFailed'),
                 final: true,
             };
         case 'invalid_capsule':
-            return { kind: 'error', message: outcome.message, final: true };
+            // Core's message is English and names format details; the page says it plainly.
+            return { kind: 'error', message: t('view.invalidCapsule'), final: true };
     }
-}
-
-function linkMessage(err: unknown): string {
-    if (!(err instanceof LinkError)) return 'The link could not be read.';
-    const text = err.message;
-    return text.charAt(0).toUpperCase() + text.slice(1) + '.';
 }

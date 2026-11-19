@@ -4,11 +4,9 @@
  * ends up in the capsule.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const html = readFileSync(resolve(__dirname, '../index.html'), 'utf8');
+import { shellFor } from '../scripts/shells';
 
 function el<T extends HTMLElement>(attr: string): T {
     return document.querySelector<T>(`[data-${attr}]`)!;
@@ -28,14 +26,15 @@ function type(text: string): void {
     area.dispatchEvent(new Event('input'));
 }
 
-function add(kind: 'plain' | 'code' | 'markdown'): void {
+function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
     el<HTMLButtonElement>('item-add').click();
     document.querySelector<HTMLButtonElement>(`[data-add-type="${kind}"]`)!.click();
 }
 
-async function loadPage(): Promise<void> {
+async function loadPage(lang: 'en' | 'de' = 'en'): Promise<void> {
+    document.documentElement.lang = lang;
     document.documentElement.innerHTML = new DOMParser().parseFromString(
-        html,
+        shellFor('index', lang),
         'text/html',
     ).documentElement.innerHTML;
     vi.resetModules();
@@ -173,5 +172,34 @@ describe('create page title', () => {
         expect(title).not.toBeNull();
         expect(title.required).toBe(false);
         expect(title.maxLength).toBe(200);
+    });
+});
+
+describe('create page in German', () => {
+    beforeEach(async () => {
+        await loadPage('de');
+    });
+
+    it('counts sizes and items in German', () => {
+        type('x');
+        expect(el('size-meter').textContent).toBe('1 B von 9,9 MiB');
+        add('plain');
+        expect(el('size-meter').textContent).toBe('2 von 16 Elementen · 1 B von 9,9 MiB');
+    });
+
+    it('labels the item controls in German', () => {
+        add('code');
+        expect(el<HTMLTextAreaElement>('item-text').placeholder).toBe('Code einfügen…');
+        expect(document.querySelector('[role="tab"] .cb-itemtab-kind')!.textContent).toBe('Code');
+
+        type('fn main() {}');
+        add('download');
+        const remove = document.querySelector<HTMLButtonElement>('[data-remove-id]')!;
+        expect(remove.getAttribute('aria-label')).toBe('snippet.txt entfernen');
+        expect(el<HTMLInputElement>('item-name').placeholder).toBe('Dateiname');
+        expect(el('item-drop-label').textContent).toBe(
+            'Datei hierher oder irgendwo auf dieses Formular ziehen',
+        );
+        expect(tabs()).toEqual(['snippet.txt', 'Datei *']);
     });
 });

@@ -203,11 +203,27 @@ enabled = true
 # stay until they are closed.
 report_retention = "90d"
 
+[i18n]
+# Interface languages. Every page is served once per offered language, under
+# its prefix (/en/, /de/); a path without a prefix - such as a share link -
+# is redirected (302) to the language the browser prefers (Accept-Language),
+# or to default_language if it prefers none of them. A prefix that is not
+# offered is an unknown path. Known languages: en, de.
+#
+# As an environment variable, the list uses TOML array syntax:
+# CAPSULEBIN__I18N__LANGUAGES='["en", "de"]'
+default_language = "en"
+
+# Offered languages, in the order the language switcher lists them. Must
+# contain default_language.
+languages = ["en", "de"]
+
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
-# served by CapsuleBin at /imprint, /privacy and /terms and linked from the
-# footer of every page. An instance open to the public in the EU usually needs
-# at least an imprint and a privacy notice.
+# served by CapsuleBin at /<language>/imprint, /privacy and /terms and linked
+# from the footer of every page; the texts are English under every prefix. An
+# instance open to the public in the EU usually needs at least an imprint and a
+# privacy notice.
 #
 # Each text is Markdown, given inline (text = """...""") or read from a file at
 # startup (file = "..."), or a link to a page hosted elsewhere (url = "...").

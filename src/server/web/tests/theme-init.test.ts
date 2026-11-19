@@ -58,16 +58,6 @@ describe('HTML shells', () => {
         return readFileSync(fileURLToPath(new URL(`../${name}`, import.meta.url)), 'utf8');
     }
 
-    /**
-     * The interface is English. Declaring the wrong language makes screen readers
-     * pick the wrong pronunciation, so this is an accessibility assertion rather
-     * than a style one. If localisation arrives later, this test is the place that
-     * has to change deliberately.
-     */
-    it.each(shells)('%s declares lang="en"', (name) => {
-        expect(shell(name)).toMatch(/<html lang="en">/);
-    });
-
     it.each(shells)('%s loads theme-init.js blocking in the head', (name) => {
         const html = shell(name);
         const head = html.slice(0, html.indexOf('</head>'));

@@ -8,17 +8,102 @@
 import '../styles/tokens.css';
 import '../styles/base.css';
 
+import {
+    type Language,
+    type SwitchMode,
+    chooseLanguage,
+    endonym,
+    offeredLanguages,
+    pageLanguage,
+    t,
+} from '../language';
 import { initTheme, mountThemeToggle } from '../theme';
 
 // --- boot --------------------------------------------------------------------
 
-export function initShell(): void {
+export interface Shell {
+    /** The language switch in the header, if the page has one. */
+    languageSwitch: LanguageSwitch | null;
+}
+
+export function initShell(): Shell {
     // theme-init.js has already set the attribute before the paint; this call keeps
     // the state consistent in case that script was blocked.
     initTheme();
 
     const toggle = document.querySelector<HTMLButtonElement>('[data-theme-toggle]');
     if (toggle) mountThemeToggle(toggle);
+
+    const languages = document.querySelector<HTMLElement>('[data-language-switch]');
+    return { languageSwitch: languages ? mountLanguageSwitch(languages) : null };
+}
+
+// --- language switch ---------------------------------------------------------
+
+export interface LanguageSwitch {
+    /**
+     * From now on a choice is only stored, not applied by loading the page under
+     * the new prefix; `onStored` runs after each choice (to tell the user it applies
+     * from the next page on). For pages whose fragment is already gone.
+     */
+    storeOnly(onStored: (language: Language) => void): void;
+}
+
+/**
+ * Fills `container` with one button per offered language, named in that language,
+ * the page language marked with `aria-current`. With a single language there is
+ * nothing to choose and the switch stays hidden.
+ */
+export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
+    const current = pageLanguage();
+    const offered = offeredLanguages();
+    let mode: SwitchMode = 'navigate';
+    let onStored: ((language: Language) => void) | null = null;
+
+    container.replaceChildren(
+        ...offered.map((language) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.lang = language;
+            button.dataset.language = language;
+            button.textContent = endonym(language);
+            if (language === current) button.setAttribute('aria-current', 'true');
+            button.addEventListener('click', () => {
+                chooseLanguage(language, mode);
+                onStored?.(language);
+            });
+            return button;
+        }),
+    );
+    container.hidden = offered.length < 2;
+
+    return {
+        storeOnly(callback) {
+            mode = 'store';
+            onStored = callback;
+        },
+    };
+}
+
+/**
+ * For pages that have removed the key from the address: from now on the switch
+ * only stores the choice - loading the page under the new prefix would lose the
+ * key - and says next to it that the choice applies from the next page on.
+ */
+export function languageFromNextPage(shell: Shell): void {
+    const container = document.querySelector<HTMLElement>('[data-language-switch]');
+    if (!shell.languageSwitch || !container) return;
+
+    // A live region exists before its text changes, so the change is announced.
+    const notice = document.createElement('span');
+    notice.className = 'cb-status';
+    notice.setAttribute('role', 'status');
+    notice.dataset.languageNotice = '';
+    container.before(notice);
+
+    shell.languageSwitch.storeOnly(() => {
+        notice.textContent = t('shell.languageNextPage');
+    });
 }
 
 // --- DOM helpers -------------------------------------------------------------

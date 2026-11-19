@@ -13,6 +13,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { Capsule, CapsuleError, type CapsuleItem, MAX_ITEMS } from '../src/capsule';
 import { fromBase64url, toBase64url } from '../src/helpers/bytes';
+import { KNOWN_LANGUAGES } from '../src/languages';
 import { LinkError, parseLink, pasteIdFromInput } from '../src/links';
 import { PublicHeader } from '../src/public_header';
 
@@ -224,12 +225,16 @@ describe('links', () => {
     it('find the id in any share link built from one', () => {
         const id = fc.stringMatching(/^[A-Za-z0-9_-]{22}$/);
         const secret = fc.uint8Array({ minLength: 32, maxLength: 32 });
+        const subPath = fc.constantFrom('', '/sub', '/cb', '/a/b');
+        const language = fc.constantFrom('', ...KNOWN_LANGUAGES.map((code) => `/${code}`));
         fc.assert(
-            fc.property(id, secret, (pasteId, key) => {
-                const link = `https://paste.example/p/${pasteId}#v1.${toBase64url(key)}`;
+            fc.property(id, secret, subPath, language, (pasteId, key, sub, lang) => {
+                const base = `https://paste.example${sub}`;
+                const link = `${base}${lang}/p/${pasteId}#v1.${toBase64url(key)}`;
                 expect(pasteIdFromInput(link)).toBe(pasteId);
                 const parsed = parseLink(link, 'share');
                 expect(parsed.id).toBe(pasteId);
+                expect(parsed.base).toBe(base);
                 expect(Array.from(parsed.secret)).toEqual(Array.from(key));
             }),
             RUNS,

@@ -108,6 +108,18 @@ describe('put → get → delete', () => {
         expect(await run(['get', created.share_url], testIo())).toBe(3);
     });
 
+    it('accepts links with a language prefix, as copied from the address bar', async () => {
+        const created = await putText('hallo');
+        const withPrefix = (url: string) => url.replace(`${SERVER}/`, `${SERVER}/de/`);
+
+        const io = testIo();
+        expect(await run(['get', withPrefix(created.share_url)], io), io.err()).toBe(0);
+        expect(io.out()).toBe('hallo');
+
+        expect(await run(['delete', withPrefix(created.delete_url)], testIo())).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+    });
+
     it('packs several files into one capsule and writes them back to a directory', async () => {
         await writeFile(join(cwd, 'notes.md'), '# Notes\n');
         await writeFile(join(cwd, 'main.rs'), 'fn main() {}\n');

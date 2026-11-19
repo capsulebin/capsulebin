@@ -30,6 +30,8 @@ pub struct Config {
     pub abuse: AbuseConfig,
     #[serde(default)]
     pub legal: LegalConfig,
+    #[serde(default)]
+    pub i18n: I18nConfig,
 }
 
 fn default_bind() -> String {
@@ -578,4 +580,77 @@ pub struct LegalSection {
     /// Markdown appended to the built-in text, read from this file at startup.
     #[serde(default)]
     pub extra_file: Option<PathBuf>,
+}
+
+/// Interface languages the server knows: a shell is built for each of them
+/// (`src/server/web/src/i18n/<code>.json`). The same list lives in
+/// `@capsulebin/core` (`languages.ts`); a test keeps the three in step.
+pub const KNOWN_LANGUAGES: &[&str] = &["en", "de"];
+
+fn default_language() -> String {
+    "en".to_owned()
+}
+
+fn default_languages() -> Vec<String> {
+    KNOWN_LANGUAGES.iter().map(|code| (*code).to_owned()).collect()
+}
+
+/// Which interface languages the instance offers, each under its path prefix
+/// (`/en/`, `/de/`), and which one a request without a usable
+/// `Accept-Language` is sent to.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct I18nConfig {
+    #[serde(default = "default_language")]
+    pub default_language: String,
+    /// Offered languages, in the order the language switcher lists them.
+    #[serde(default = "default_languages")]
+    pub languages: Vec<String>,
+}
+
+impl Default for I18nConfig {
+    fn default() -> Self {
+        Self {
+            default_language: default_language(),
+            languages: default_languages(),
+        }
+    }
+}
+
+impl I18nConfig {
+    /// The offered languages in configuration order, as entries of
+    /// [`KNOWN_LANGUAGES`], and the default among them.
+    pub(super) fn validate(&self) -> Result<(Vec<&'static str>, &'static str), ConfigError> {
+        let invalid = |message: String| ConfigError::Invalid(message);
+
+        if self.languages.is_empty() {
+            return Err(invalid("i18n.languages must name at least one language".to_owned()));
+        }
+        let mut offered: Vec<&'static str> = Vec::with_capacity(self.languages.len());
+        for code in &self.languages {
+            let known = known_language(code).ok_or_else(|| {
+                invalid(format!(
+                    "i18n.languages contains {code:?}, which is not a known language ({})",
+                    KNOWN_LANGUAGES.join(", ")
+                ))
+            })?;
+            if offered.contains(&known) {
+                return Err(invalid(format!("i18n.languages contains {code:?} more than once")));
+            }
+            offered.push(known);
+        }
+        let default = offered.iter().copied().find(|code| *code == self.default_language).ok_or_else(|| {
+            invalid(format!(
+                "i18n.default_language {:?} is not one of i18n.languages ({})",
+                self.default_language,
+                self.languages.join(", ")
+            ))
+        })?;
+        Ok((offered, default))
+    }
+}
+
+/// The entry of [`KNOWN_LANGUAGES`] equal to `code`.
+fn known_language(code: &str) -> Option<&'static str> {
+    KNOWN_LANGUAGES.iter().copied().find(|known| *known == code)
 }

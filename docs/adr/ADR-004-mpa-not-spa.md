@@ -28,6 +28,24 @@ preview and source, and manages object URLs for downloads.
 Vite builds this through `rolldownOptions.input` with five entries. Shared code (`shell.ts`,
 `theme.ts`, styles) automatically ends up in a common chunk.
 
+**Amendment (ADR-016):** every route above exists once per offered interface language, under its
+prefix, served from a shell generated for that language:
+
+| Route | Document |
+| --- | --- |
+| `GET /{lang}/` | `dist/{lang}/index.html` |
+| `GET /{lang}/p/{id}` | `dist/{lang}/p.html` |
+| `GET /{lang}/manage/{id}` | `dist/{lang}/manage.html` |
+| `GET /{lang}/report` | `dist/{lang}/report.html` |
+| `GET /{lang}/imprint`, `/privacy`, `/terms` | `dist/{lang}/legal.html` |
+| `GET /{lang}` | `302` to `/{lang}/` |
+| `GET /`, `/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms` | `302` to the same path under the language from `Accept-Language` |
+
+Vite's inputs are the generated shells (five per language); the bundles under `/assets/` are shared
+by all languages. The byte-identity rule below holds for `GET /{lang}/p/{id}` and for the redirect
+from `/p/{id}`; `view_shell_is_identical_for_every_id` and the acceptance script check the
+prefixed path.
+
 **The server does not inspect the path id.** `GET /p/{id}` returns byte-identical HTML for every
 syntactically valid id. This is a security property, not convenience: a link scanner cannot infer
 from status code, length or content whether the capsule exists, and it does not burn a one-time
@@ -77,7 +95,10 @@ Pages without meaningful state may stay plain DOM code.
 - Switching between views is a real page load. With four views and no shared state that costs
   nothing.
 - A new route needs an entry in three places: `vite.config.ts`, the server route, and `Shell` in
-  `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the mapping down.
+  `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the mapping down. Since
+  ADR-016: `SHELLS` in `scripts/shells.ts` (which feeds `vite.config.ts`, including the dev
+  server's routes), the per-language routes and `UNPREFIXED_PAGES` in `api/assets.rs`, and
+  `Shell`.
 - Each document loads its own entry bundle, which keeps the shells small — the create page loads no
   Markdown renderer, the view page no editor.
 - `lit` is a runtime dependency of `@capsulebin/web` and part of the dependency review (`npm audit`)

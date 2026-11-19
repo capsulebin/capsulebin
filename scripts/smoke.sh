@@ -55,6 +55,50 @@ json_field() {
   sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"
 }
 
+# check_headers <route> [curl arguments]: the security headers every response
+# carries, whatever its status.
+check_headers() {
+  local route="$1"
+  shift
+  local headers
+  headers="$(curl -sS -D - -o /dev/null "$@" "${BASE}${route}" | tr -d '\r' | tr 'A-Z' 'a-z')"
+
+  expect_header() {
+    grep -qi "^$1: $2\$" <<<"${headers}" ||
+      fail "${route}: header '$1' is missing or differs (expected: $2)"
+  }
+
+  expect_header "referrer-policy" "no-referrer"
+  expect_header "x-content-type-options" "nosniff"
+  expect_header "x-frame-options" "deny"
+  expect_header "x-robots-tag" "noindex, nofollow, noarchive"
+  expect_header "permissions-policy" "camera=(), microphone=(), geolocation=()"
+
+  grep -qi '^x-request-id: [0-9a-z]\{26\}$' <<<"${headers}" ||
+    fail "${route}: missing or malformed request id"
+
+  local csp
+  csp="$(grep -i '^content-security-policy:' <<<"${headers}")" ||
+    fail "${route}: no Content-Security-Policy"
+
+  for directive in \
+    "default-src 'none'" \
+    "script-src 'self'" \
+    "style-src 'self'" \
+    "object-src 'none'" \
+    "base-uri 'none'" \
+    "frame-ancestors 'none'" \
+    "require-trusted-types-for 'script'"; do
+    grep -qF "${directive}" <<<"${csp}" || fail "${route}: CSP without \"${directive}\""
+  done
+
+  for forbidden in "unsafe-inline" "unsafe-eval" "http://" "https://" "*"; do
+    if grep -qF "${forbidden}" <<<"${csp}"; then
+      fail "${route}: CSP contains \"${forbidden}\""
+    fi
+  done
+}
+
 # --- configuration -----------------------------------------------------------
 #
 # Supplied through the environment rather than a file, so the run also exercises
@@ -74,6 +118,10 @@ export CAPSULEBIN__SERVER__BIND="127.0.0.1:${PORT}"
 export CAPSULEBIN__DATABASE__PATH="${WORKDIR}/capsulebin.db"
 export CAPSULEBIN__CREATION__MODE="token"
 export CAPSULEBIN__CREATION__TOKEN_HASHES="[\"${TOKEN_HASH}\"]"
+# An operator, so that all three legal pages exist: the imprint from this text,
+# privacy notice and terms built in.
+LEGAL_MARKER="Smoke Operator, Example Street 1"
+export CAPSULEBIN__LEGAL__OPERATOR__TEXT="${LEGAL_MARKER}"
 
 # Must stay unset, otherwise the run would not prove the assets are embedded.
 unset CAPSULEBIN__SERVER__ASSET_DIR
@@ -135,24 +183,66 @@ echo "ok  healthcheck"
 
 VALID_ID="2pS3xQ7Rk9mNpLz4AbCdEA"
 
-for route in "/" "/p/${VALID_ID}" "/manage/${VALID_ID}" "/report"; do
-  body="$(curl -fsS "${BASE}${route}")" || fail "${route} unreachable"
-  grep -q "CapsuleBin" <<<"${body}" || fail "${route} does not serve a CapsuleBin document"
-  if grep -qE '(src|href)="https?://' <<<"${body}"; then
-    fail "${route} references an external resource"
-  fi
-  echo "ok  ${route}"
+# Every page exists once per offered language (both by default), under its
+# prefix and in its language, with the offered languages for the head script and
+# the legal links of its own prefix in the footer.
+for lang in en de; do
+  for route in "/${lang}/" "/${lang}/p/${VALID_ID}" "/${lang}/manage/${VALID_ID}" "/${lang}/report" \
+    "/${lang}/imprint" "/${lang}/privacy" "/${lang}/terms"; do
+    headers="$(curl -fsS -D - -o "${WORKDIR}/shell.html" "${BASE}${route}" | tr -d '\r')" ||
+      fail "${route} unreachable"
+    grep -qi '^content-type: text/html; charset=utf-8$' <<<"${headers}" || fail "${route} is not served as HTML"
+    grep -qi '^cache-control: no-store$' <<<"${headers}" || fail "${route} may be cached"
+    grep -q "<html lang=\"${lang}\">" "${WORKDIR}/shell.html" || fail "${route} is not a shell in '${lang}'"
+    grep -q '<meta name="capsulebin-languages" content="en de" data-default="en">' "${WORKDIR}/shell.html" ||
+      fail "${route} does not carry the offered languages"
+    grep -q "href=\"/${lang}/imprint\"" "${WORKDIR}/shell.html" || fail "${route} lacks the footer link to /${lang}/imprint"
+    if grep -qE '(src|href)="https?://' "${WORKDIR}/shell.html"; then
+      fail "${route} references an external resource"
+    fi
+    check_headers "${route}"
+    echo "ok  ${route}"
+  done
+  grep -q "${LEGAL_MARKER}" <<<"$(curl -fsS "${BASE}/${lang}/imprint")" ||
+    fail "/${lang}/imprint does not show the configured text"
+done
+
+# A page path without a prefix - above all a share link - is redirected by
+# Accept-Language, to the default without one. The path is only copied, so the
+# key in the fragment stays in the browser.
+for route in "/" "/p/${VALID_ID}"; do
+  for accept in "" "en-US,en;q=0.9" "de-DE,de;q=0.9,en;q=0.5"; do
+    args=()
+    expected="en"
+    if [ -n "${accept}" ]; then
+      args=(-H "accept-language: ${accept}")
+      [[ "${accept}" == de* ]] && expected="de"
+    fi
+    headers="$(curl -sS -D - -o /dev/null "${args[@]}" "${BASE}${route}" | tr -d '\r')"
+    grep -q '^HTTP/[0-9.]* 302' <<<"${headers}" || fail "${route} (${accept:-no Accept-Language}) is not a 302"
+    grep -qi "^location: /${expected}${route}\$" <<<"${headers}" ||
+      fail "${route} (${accept:-no Accept-Language}) does not redirect to /${expected}${route}"
+    grep -qi '^vary: accept-language$' <<<"${headers}" || fail "${route}: redirect without Vary: Accept-Language"
+    grep -qi '^cache-control: no-store$' <<<"${headers}" || fail "${route}: the redirect may be cached"
+    check_headers "${route}" "${args[@]}"
+  done
+  echo "ok  ${route} redirects by Accept-Language"
 done
 
 # The view shell must not depend on the id, so a scanner cannot tell existing from
 # absent.
-a="$(curl -fsS "${BASE}/p/${VALID_ID}")"
-b="$(curl -fsS "${BASE}/p/AAAAAAAAAAAAAAAAAAAAAA")"
-[ "${a}" = "${b}" ] || fail "the view shell differs by paste id"
+for lang in en de; do
+  a="$(curl -fsS "${BASE}/${lang}/p/${VALID_ID}")"
+  b="$(curl -fsS "${BASE}/${lang}/p/AAAAAAAAAAAAAAAAAAAAAA")"
+  [ "${a}" = "${b}" ] || fail "the ${lang} view shell differs by paste id"
+done
 echo "ok  view shell is id independent"
 
-curl -fsS -o /dev/null "${BASE}/theme-init.js" || fail "/theme-init.js missing from the binary"
-echo "ok  /theme-init.js"
+for script in language-init.js theme-init.js; do
+  headers="$(curl -fsS -D - -o /dev/null "${BASE}/${script}" | tr -d '\r')" || fail "/${script} missing from the binary"
+  grep -qi '^content-type: text/javascript' <<<"${headers}" || fail "/${script} is not served as JavaScript"
+  echo "ok  /${script}"
+done
 
 # --- API: a full lifecycle ---------------------------------------------------
 
@@ -539,57 +629,20 @@ grep -q '^ok: 0 capsule(s) removed' <<<"${PRUNED}" || fail "prune is not idempot
 echo "ok  prune is idempotent"
 
 # --- security headers on every response --------------------------------------
+#
+# The pages and redirects are checked above, together with their content.
 
-check_headers() {
-  local route="$1"
-  local headers
-  headers="$(curl -sS -D - -o /dev/null "${BASE}${route}" | tr -d '\r' | tr 'A-Z' 'a-z')"
-
-  expect_header() {
-    grep -qi "^$1: $2\$" <<<"${headers}" ||
-      fail "${route}: header '$1' is missing or differs (expected: $2)"
-  }
-
-  expect_header "referrer-policy" "no-referrer"
-  expect_header "x-content-type-options" "nosniff"
-  expect_header "x-frame-options" "deny"
-  expect_header "x-robots-tag" "noindex, nofollow, noarchive"
-  expect_header "permissions-policy" "camera=(), microphone=(), geolocation=()"
-
-  grep -qi '^x-request-id: [0-9a-z]\{26\}$' <<<"${headers}" ||
-    fail "${route}: missing or malformed request id"
-
-  local csp
-  csp="$(grep -i '^content-security-policy:' <<<"${headers}")" ||
-    fail "${route}: no Content-Security-Policy"
-
-  for directive in \
-    "default-src 'none'" \
-    "script-src 'self'" \
-    "style-src 'self'" \
-    "object-src 'none'" \
-    "base-uri 'none'" \
-    "frame-ancestors 'none'" \
-    "require-trusted-types-for 'script'"; do
-    grep -qF "${directive}" <<<"${csp}" || fail "${route}: CSP without \"${directive}\""
-  done
-
-  for forbidden in "unsafe-inline" "unsafe-eval" "http://" "https://" "*"; do
-    if grep -qF "${forbidden}" <<<"${csp}"; then
-      fail "${route}: CSP contains \"${forbidden}\""
-    fi
-  done
-}
-
-for route in "/" "/p/${VALID_ID}" "/report" "/health/live" "/does-not-exist" \
-  "/api/v1/pastes/AAAAAAAAAAAAAAAAAAAAAA"; do
+for route in "/health/live" "/does-not-exist" "/api/v1/pastes/AAAAAAAAAAAAAAAAAAAAAA"; do
   check_headers "${route}"
   echo "ok  headers on ${route}"
 done
 
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/does-not-exist")"
-[ "${CODE}" = "404" ] || fail "unknown path returned ${CODE} instead of 404"
-echo "ok  unknown path is 404"
+# A prefix that is not offered and a shell file by name are unknown paths too.
+for route in "/does-not-exist" "/fr/" "/en/index.html"; do
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}${route}")"
+  [ "${CODE}" = "404" ] || fail "${route} returned ${CODE} instead of 404"
+done
+echo "ok  unknown paths, prefixes and shell files are 404"
 
 # --- rate limits over a real socket ------------------------------------------
 #

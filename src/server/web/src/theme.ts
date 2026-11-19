@@ -11,6 +11,8 @@
  * application, not just this module.
  */
 
+import { type TextKey, t } from './language';
+
 const STORAGE_KEY = 'capsulebin.theme';
 
 export type ThemeChoice = 'light' | 'dark' | 'auto';
@@ -73,10 +75,10 @@ export function initTheme(): void {
     applyChoice(readChoice());
 }
 
-const LABEL: Record<ThemeChoice, string> = {
-    light: 'Theme: light',
-    dark: 'Theme: dark',
-    auto: 'Theme: automatic',
+const LABEL: Record<ThemeChoice, TextKey> = {
+    light: 'theme.light',
+    dark: 'theme.dark',
+    auto: 'theme.auto',
 };
 
 /**
@@ -92,7 +94,7 @@ export function mountThemeToggle(button: HTMLButtonElement): void {
 
     const render = (choice: ThemeChoice): void => {
         button.dataset.theme = choice;
-        button.setAttribute('aria-label', LABEL[choice]);
+        button.setAttribute('aria-label', t(LABEL[choice]));
         button.textContent = choice === 'auto' ? '◐' : choice === 'light' ? '☀' : '☾';
     };
 

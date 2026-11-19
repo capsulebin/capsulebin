@@ -16,7 +16,7 @@ const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 
 /** Opens the create page with a single, empty file item. */
 async function openFileItem(page: Page): Promise<void> {
-    await page.goto('/');
+    await page.goto('/en/');
     await expect(page.locator('[data-create-form]')).toBeVisible();
     await page.selectOption('#create-item-type', 'download');
 }
@@ -83,7 +83,7 @@ test('a file over the absolute limit is refused before it is read', async ({ pag
     const dialog = page.waitForEvent('dialog');
     const choosing = chooseFile(page, 'huge.bin', Buffer.alloc(MAX_CAPSULE_BYTES + 1));
     const alert = await dialog;
-    expect(alert.message()).toBe('huge.bin exceeds the 10 MiB limit.');
+    expect(alert.message()).toBe(`huge.bin exceeds the ${formatSize(MAX_CAPSULE_BYTES)} limit.`);
     await alert.dismiss();
     await choosing;
 

@@ -28,7 +28,12 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 /// Longest accepted `url`.
 const MAX_URL_BYTES: usize = 2048;
 
-/// Everything the legal routes and the footer need, rendered.
+/// The language of the legal texts: the built-in ones are English, and the
+/// operator's text for a page is served under every language prefix.
+const TEXT_LANGUAGE: &str = "en";
+
+/// Everything the legal routes and the footer of one interface language need,
+/// rendered.
 #[derive(Debug, Clone, Default)]
 pub struct LegalPages {
     /// The footer links as HTML, empty when there are none.
@@ -43,7 +48,8 @@ pub struct LegalPages {
 pub struct Page {
     /// Plain text, for `<title>` and the header.
     pub title: &'static str,
-    /// The `<article>` with heading and rendered text.
+    /// The `<article>` with heading and rendered text; it carries `lang` when
+    /// the text is not in the language of the shell it is served in.
     pub html: String,
 }
 
@@ -72,10 +78,14 @@ enum Target {
     Elsewhere(String),
 }
 
-/// Reads, checks and renders the legal pages. Called by `Config::validate`, so
-/// `capsulebin check` reports a missing file or a bad combination too.
-pub fn resolve(config: &Config) -> Result<LegalPages, ConfigError> {
+/// Reads, checks and renders the legal pages for the shells of `language`:
+/// links to the pages served here carry its prefix (`/de/privacy`). Called by
+/// `Config::validate` for every offered language, so `capsulebin check`
+/// reports a missing file or a bad combination too.
+pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigError> {
     let legal = &config.legal;
+    let prefix = format!("/{language}");
+    let page = |title: &'static str, markdown: &str| page(title, markdown, language);
 
     if legal.hosting.is_some() && legal.operator.is_none() {
         return Err(invalid("legal.hosting needs legal.operator: the imprint names the operator first"));
@@ -116,27 +126,34 @@ pub fn resolve(config: &Config) -> Result<LegalPages, ConfigError> {
     };
 
     let imprint_href = match &imprint {
-        Target::Here(_) => Some("/imprint".to_owned()),
+        Target::Here(_) => Some(format!("{prefix}/imprint")),
         Target::Elsewhere(url) => Some(url.clone()),
         Target::None => None,
     };
-    let mut facts = defaults::Facts::from_config(config, imprint_href, legal.hosting.is_some());
+    let mut facts = defaults::Facts::from_config(config, &prefix, imprint_href, legal.hosting.is_some());
 
-    let privacy = document(legal.privacy.as_ref(), "privacy", "Privacy notice", &facts, defaults::privacy)?;
+    let privacy = document(
+        legal.privacy.as_ref(),
+        "privacy",
+        "Privacy notice",
+        &facts,
+        defaults::privacy,
+        &page,
+    )?;
     if let Target::Elsewhere(url) = &privacy {
         facts.privacy_href.clone_from(url);
     }
-    let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms)?;
+    let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms, &page)?;
 
     let footer = [
-        ("Imprint", "/imprint", &imprint),
-        ("Privacy", "/privacy", &privacy),
-        ("Terms", "/terms", &terms),
+        ("Imprint", "imprint", &imprint),
+        ("Privacy", "privacy", &privacy),
+        ("Terms", "terms", &terms),
     ]
     .into_iter()
     .filter_map(|(label, path, target)| match target {
         Target::None => None,
-        Target::Here(_) => Some(link(path, label)),
+        Target::Here(_) => Some(link(&format!("{prefix}/{path}"), label)),
         Target::Elsewhere(url) => Some(link(url, label)),
     })
     .collect();
@@ -161,6 +178,7 @@ fn document(
     title: &'static str,
     facts: &defaults::Facts,
     built_in: fn(&defaults::Facts, Option<&str>) -> String,
+    page: &dyn Fn(&'static str, &str) -> Page,
 ) -> Result<Target, ConfigError> {
     let section_or_default = section.cloned().unwrap_or_default();
     match source(&section_or_default, key, true)? {
@@ -278,11 +296,18 @@ fn is_acceptable_url(url: &str) -> bool {
     absolute || local_path
 }
 
-fn page(title: &'static str, markdown: &str) -> Page {
+/// A page for the shell of `language`. The `lang` attribute lets a screen
+/// reader pronounce an English text in a German shell as English.
+fn page(title: &'static str, markdown: &str, language: &str) -> Page {
+    let lang = if language == TEXT_LANGUAGE {
+        String::new()
+    } else {
+        format!(r#" lang="{TEXT_LANGUAGE}""#)
+    };
     Page {
         title,
         html: format!(
-            r#"<article class="cb-prose cb-legal"><h1>{}</h1>{}</article>"#,
+            r#"<article class="cb-prose cb-legal"{lang}><h1>{}</h1>{}</article>"#,
             escape(title),
             render_markdown(markdown)
         ),

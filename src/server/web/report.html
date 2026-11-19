@@ -1,17 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}">
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="robots" content="noindex, nofollow, noarchive" />
         <meta name="referrer" content="no-referrer" />
-        <title>Report content · CapsuleBin</title>
+        <title>{{shell.reportContent}} · CapsuleBin</title>
+        <!--capsulebin:languages-->
+        <script src="/language-init.js"></script>
         <script src="/theme-init.js"></script>
         <script type="module" src="/src/pages/report.ts"></script>
     </head>
     <body>
         <header class="cb-head">
-            <a class="cb-logo" href="/">
+            <a class="cb-logo" href="/{{lang}}/">
                 <svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true">
                     <path
                         d="M9 1.2 16.4 5.4v9.2L9 18.8 1.6 14.6V5.4L9 1.2Z"
@@ -26,46 +28,44 @@
                 </svg>
                 CapsuleBin
             </a>
-            <span class="cb-claim">Report content</span>
-            <button
-                type="button"
-                class="cb-btn-icon cb-push"
-                data-theme-toggle
-                aria-label="Switch theme"
-            >
-                ◐
-            </button>
+            <span class="cb-claim">{{shell.reportContent}}</span>
+            <span class="cb-push cb-head-tools">
+                <nav
+                    class="cb-segmented cb-lang"
+                    aria-label="{{shell.language}}"
+                    data-language-switch
+                    hidden
+                ></nav>
+                <button
+                    type="button"
+                    class="cb-btn-icon"
+                    data-theme-toggle
+                    aria-label="{{theme.switch}}"
+                >
+                    ◐
+                </button>
+            </span>
         </header>
 
         <main class="cb-main" data-report-root></main>
 
         <noscript>
             <div class="cb-main">
-                <h1 class="cb-h1">Report content</h1>
-                <p class="cb-lede">
-                    The report form needs JavaScript. You can also reach the operator at the address
-                    given in the site notice.
-                </p>
+                <h1 class="cb-h1">{{shell.reportContent}}</h1>
+                <p class="cb-lede">{{report.noscript}}</p>
             </div>
         </noscript>
 
         <template id="tmpl-form">
-            <h1 class="cb-h1">Report content</h1>
+            <h1 class="cb-h1">{{shell.reportContent}}</h1>
             <div class="cb-callout">
-                <strong>Send the paste id only, never the full link.</strong>
-                <p class="cb-lede">
-                    Everything after the <code>#</code> in a link is the decryption key. This form
-                    strips it before sending and refuses text that contains one. Do not include it
-                    in screenshots either.
-                </p>
+                <strong>{{report.idOnly}}</strong>
+                <p class="cb-lede">{{report.keyBefore}} <code>#</code> {{report.keyAfter}}</p>
             </div>
-            <p class="cb-lede">
-                Content on this service is encrypted; the operator cannot read it and does not need
-                to. A report lets the operator block or remove the capsule by its id.
-            </p>
+            <p class="cb-lede">{{report.lede}}</p>
             <form class="cb-form" data-report-form novalidate>
                 <div>
-                    <label class="cb-label" for="report-paste">Link or paste id</label>
+                    <label class="cb-label" for="report-paste">{{report.paste}}</label>
                     <input
                         type="text"
                         id="report-paste"
@@ -75,29 +75,27 @@
                         required
                         data-report-paste
                     />
-                    <span class="cb-label-note">The part after # is removed before sending.</span>
+                    <span class="cb-label-note">{{report.pasteNote}}</span>
                 </div>
                 <div>
-                    <label class="cb-label" for="report-reason">Reason</label>
+                    <label class="cb-label" for="report-reason">{{report.reason}}</label>
                     <select
                         id="report-reason"
                         class="cb-input cb-select"
                         required
                         data-report-reason
                     >
-                        <option value="illegal_content">Illegal content</option>
-                        <option value="malware">Malware</option>
-                        <option value="phishing">Phishing or fraud</option>
-                        <option value="spam">Spam</option>
-                        <option value="personal_data">
-                            Personal data published without consent
-                        </option>
-                        <option value="copyright">Copyright infringement</option>
-                        <option value="other">Other</option>
+                        <option value="illegal_content">{{report.reason.illegal_content}}</option>
+                        <option value="malware">{{report.reason.malware}}</option>
+                        <option value="phishing">{{report.reason.phishing}}</option>
+                        <option value="spam">{{report.reason.spam}}</option>
+                        <option value="personal_data">{{report.reason.personal_data}}</option>
+                        <option value="copyright">{{report.reason.copyright}}</option>
+                        <option value="other">{{report.reason.other}}</option>
                     </select>
                 </div>
                 <div>
-                    <label class="cb-label" for="report-description">What is wrong with it?</label>
+                    <label class="cb-label" for="report-description">{{report.description}}</label>
                     <textarea
                         id="report-description"
                         class="cb-input cb-textarea"
@@ -107,7 +105,7 @@
                     ></textarea>
                 </div>
                 <div>
-                    <label class="cb-label" for="report-contact">Your contact (optional)</label>
+                    <label class="cb-label" for="report-contact">{{report.contact}}</label>
                     <input
                         type="text"
                         id="report-contact"
@@ -116,37 +114,34 @@
                         autocomplete="email"
                         data-report-contact
                     />
-                    <span class="cb-label-note">Only if you want to hear back.</span>
+                    <span class="cb-label-note">{{report.contactNote}}</span>
                 </div>
                 <p class="cb-error" data-report-error hidden></p>
                 <div class="cb-form-actions">
-                    <button type="submit" class="cb-btn" data-report-submit>Send report</button>
+                    <button type="submit" class="cb-btn" data-report-submit>
+                        {{report.submit}}
+                    </button>
                 </div>
             </form>
             <p class="cb-lede" data-report-contact-note hidden>
-                You can also write to <span data-report-contact-address></span>.
+                {{report.writeBefore}}
+                <span data-report-contact-address></span>{{report.writeAfter}}
             </p>
         </template>
 
         <template id="tmpl-sent">
-            <h1 class="cb-h1">Report received</h1>
-            <p class="cb-lede">
-                Thank you. The operator reviews reports and can block or remove a capsule without
-                decrypting it.
-            </p>
-            <p><a href="/" class="cb-btn">Back to CapsuleBin</a></p>
+            <h1 class="cb-h1">{{report.sent}}</h1>
+            <p class="cb-lede">{{report.sentLede}}</p>
+            <p><a href="/{{lang}}/" class="cb-btn">{{report.back}}</a></p>
         </template>
 
         <template id="tmpl-disabled">
-            <h1 class="cb-h1">Reports are not accepted here</h1>
-            <p class="cb-lede" data-disabled-message>
-                This instance does not accept reports through this form. Please use the address
-                given in the site notice.
-            </p>
+            <h1 class="cb-h1">{{report.disabled}}</h1>
+            <p class="cb-lede" data-disabled-message>{{report.disabledLede}}</p>
         </template>
 
         <footer class="cb-foot">
-            <span>Reports are handled without decrypting anything.</span>
+            <span>{{report.footer}}</span>
             <span class="cb-push cb-foot-links"><!--capsulebin:legal-links--></span>
         </footer>
     </body>

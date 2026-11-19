@@ -9,7 +9,7 @@ import { installGuard } from './guard';
 test('the guard records CSP, Trusted Types and XSS canary violations', async ({ context }) => {
     const guard = await installGuard(context);
     const page = await context.newPage();
-    await page.goto('/');
+    await page.goto('/en/');
     await expect(page.locator('[data-create-form]')).toBeVisible();
 
     await page.evaluate(() => {
