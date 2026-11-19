@@ -155,8 +155,18 @@ test('too many wrong passwords are throttled with a wait', async ({ page, contex
         return response.status();
     };
 
-    for (let i = 0; i < 10; i += 1) expect(await attempt()).toBe(404);
-    expect(await attempt()).toBe(429);
+    // The bucket refills one attempt every 6 seconds, and each attempt runs
+    // PBKDF2 in the browser first, so a slow engine can earn an extra attempt
+    // or two on the way: count rejections until the limit answers instead of
+    // expecting the 429 at exactly the eleventh.
+    const rejected: number[] = [];
+    let status = await attempt();
+    while (status === 404 && rejected.length < 20) {
+        rejected.push(status);
+        status = await attempt();
+    }
+    expect(status).toBe(429);
+    expect(rejected.length).toBeGreaterThanOrEqual(10);
     await expect(view.locator('.cb-error')).toHaveText(
         /^Too many attempts\. Try again in \d+ seconds?\.$/,
     );
