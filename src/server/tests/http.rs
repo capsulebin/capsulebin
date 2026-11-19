@@ -53,6 +53,58 @@ async fn health_ready_needs_every_shell_of_every_language() {
 
 const SOME_ID: &str = "2pS3xQ7Rk9mNpLz4AbCdEA";
 
+const MISSING_FRONTEND: &str = "Frontend assets are missing. In development, run `npm run build` in src/server/web/ first.";
+
+/// The asset directory is for development: a rebuilt shell is served without a
+/// restart, and a missing one is reported on the page as on `/health/ready`.
+#[tokio::test]
+async fn the_asset_directory_is_read_on_every_request() {
+    let h = harness("shell-directory-live").await;
+    let path = format!("/de/p/{SOME_ID}");
+    assert!(h.get(&path).await.text().contains("<title>view</title>"));
+
+    std::fs::write(h.dir.join("de/p.html"), "<title>rebuilt %%capsulebin:prefix%%</title>").unwrap();
+    assert_eq!(h.get(&path).await.text(), "<title>rebuilt /de</title>");
+
+    std::fs::remove_file(h.dir.join("de/p.html")).unwrap();
+    let answer = h.get(&path).await;
+    assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(answer.text(), MISSING_FRONTEND);
+}
+
+/// The embedded shells are filled once at startup. With a web build in the
+/// binary every page is complete and the same for every id; without one every
+/// page is the missing-frontend answer and the server is not ready.
+#[tokio::test]
+async fn embedded_shells_are_served_filled_or_reported_missing() {
+    let h = harness_with_embedded_assets("shell-embedded").await;
+    let built = h.get("/health/ready").await.json()["assets"] == "ok";
+
+    for (language, prefix) in [("en", ""), ("de", "/de")] {
+        for (path, _) in pages(prefix) {
+            let answer = h.get(&path).await;
+            if !built {
+                assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR, "{path}");
+                assert_eq!(answer.text(), MISSING_FRONTEND, "{path}");
+                continue;
+            }
+            assert_eq!(answer.status, StatusCode::OK, "{path}");
+            let text = answer.text();
+            assert!(text.contains(&format!(r#"<html lang="{language}""#)), "{path}");
+            assert!(text.contains(r#"data-default="en""#), "{path}");
+            for left in ["%%capsulebin:", "<!--capsulebin:"] {
+                assert!(!text.contains(left), "{path} still contains {left}");
+            }
+        }
+        if built {
+            let one = h.get(&format!("{prefix}/p/{SOME_ID}")).await;
+            let other = h.get(&format!("{prefix}/p/AAAAAAAAAAAAAAAAAAAAAA")).await;
+            assert_eq!(one.body, other.body);
+            assert_eq!(stable_headers(&one), stable_headers(&other));
+        }
+    }
+}
+
 /// The page paths under `prefix` (`""` or `/de`), each with the shell it must
 /// be served with.
 fn pages(prefix: &str) -> [(String, &'static str); 4] {

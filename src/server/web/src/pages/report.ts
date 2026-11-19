@@ -11,7 +11,14 @@
 
 import { pasteIdFromInput } from '@capsulebin/core';
 import { t, type TextKey } from '../language';
-import { byAttr, initShell, setText, showTemplate } from './shell';
+import {
+    byAttr,
+    initShell,
+    languageFromNextPage,
+    setText,
+    showTemplate,
+    type Shell,
+} from './shell';
 
 const ROOT = 'data-report-root';
 
@@ -107,7 +114,7 @@ async function submit(event: SubmitEvent): Promise<void> {
     }
 }
 
-async function start(): Promise<void> {
+async function start(shell: Shell): Promise<void> {
     const policy = await loadPolicy();
     if (!policy.enabled) {
         showTemplate('tmpl-disabled', ROOT);
@@ -126,10 +133,14 @@ async function start(): Promise<void> {
         byAttr('report-contact-note').hidden = false;
     }
 
-    byAttr<HTMLFormElement>('report-form').addEventListener('submit', (event) => {
+    const form = byAttr<HTMLFormElement>('report-form');
+    form.addEventListener('submit', (event) => {
         void submit(event as SubmitEvent);
     });
+    // Reloading the page under another prefix would discard a started report, and
+    // nothing of it is kept in the browser: from the first edit on, the language
+    // switch only stores the choice.
+    form.addEventListener('input', () => languageFromNextPage(shell));
 }
 
-initShell();
-void start();
+void start(initShell());

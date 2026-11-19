@@ -15,7 +15,7 @@
  */
 
 import { fromBase64url } from './helpers/bytes';
-import { isKnownLanguage } from './languages';
+import { isKnownLanguage, type Language } from './languages';
 import { FRAGMENT_PREFIX } from './public_header';
 
 /** Length of a paste id: 16 random bytes, base64url without padding. */
@@ -70,15 +70,7 @@ export function pasteIdFromInput(input: string): string | null {
  * user-presentable message on any malformation; never contacts a server.
  */
 export function parseLink(link: string, kind: LinkKind): ParsedLink {
-    let url: URL;
-    try {
-        url = new URL(link);
-    } catch {
-        throw new LinkError('not a valid URL');
-    }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-        throw new LinkError('the link must be an http(s) URL');
-    }
+    const url = parseHttpUrl(link, 'the link must be an http(s) URL');
 
     const segments = url.pathname.split('/');
     const id = segments.at(-1) ?? '';
@@ -101,6 +93,38 @@ export function parseLink(link: string, kind: LinkKind): ParsedLink {
     }
     const basePath = baseSegments.join('/');
     return { kind, base: `${url.origin}${basePath}`, id, secret };
+}
+
+/**
+ * The known language code a server base URL ends in, or `null`. Links below
+ * such a base would be ambiguous: {@link parseLink} takes the code for the
+ * language segment and drops it, so a capability would go to the shortened
+ * base. Clients refuse to create links for it, and the server refuses it as
+ * `server.public_url` by the same rule (`trailing_language` in
+ * `config/model.rs`; both are checked against
+ * `tests/fixtures/base-language.json`).
+ *
+ * The rule: the path as the WHATWG URL parser normalizes it (dot segments
+ * resolved, also percent-encoded ones), its last non-empty segment, compared
+ * exactly. Throws {@link LinkError} if `base` is not an http(s) URL.
+ */
+export function trailingLanguage(base: string): Language | null {
+    const url = parseHttpUrl(base, 'the server must be an http(s) URL');
+    const last = url.pathname.split('/').filter(Boolean).at(-1) ?? '';
+    return isKnownLanguage(last) ? last : null;
+}
+
+function parseHttpUrl(text: string, notHttp: string): URL {
+    let url: URL;
+    try {
+        url = new URL(text);
+    } catch {
+        throw new LinkError('not a valid URL');
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new LinkError(notHttp);
+    }
+    return url;
 }
 
 /**

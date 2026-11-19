@@ -106,6 +106,69 @@ fn rejects_public_url_ending_in_a_language_code() {
     }
 }
 
+/// The server and the clients decide by one rule which base URL ends in a
+/// language code; the vectors are shared with `@capsulebin/core`.
+#[test]
+fn trailing_language_matches_the_vectors_shared_with_the_clients() {
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        vectors: Vec<Vector>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        base: String,
+        language: Option<String>,
+    }
+
+    let json = include_str!("../../../core/tests/fixtures/base-language.json");
+    let fixture: Fixture = serde_json::from_str(json).expect("fixture parses");
+    assert!(!fixture.vectors.is_empty());
+
+    for Vector { base, language } in fixture.vectors {
+        let url = url::Url::parse(&base).expect("vector base parses");
+        assert_eq!(model::trailing_language(&url), language.as_deref(), "base {base:?}");
+    }
+}
+
+/// Text with an http(s) prefix that no URL parser accepts is refused at
+/// startup instead of passing every later check unexamined.
+#[test]
+fn rejects_unparseable_public_url() {
+    let dir = tempdir("unparseable-url");
+
+    for bad in ["https://exa mple.org/team/de", "https://", "http://example.org:port"] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("not a valid URL"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
+/// A base that only ends in a language code once the URL parser of a client
+/// has resolved its dot segments is refused like one that plainly does.
+#[test]
+fn rejects_public_url_normalized_to_a_language_code() {
+    let dir = tempdir("language-url-normalized");
+
+    for bad in [
+        "https://example.org/team/de/.",
+        "https://example.org/team/x/../de",
+        "https://example.org/team/%2e/de",
+        "https://example.org/team/de/x/%2E%2e",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("language"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
 /// Only an exact known code is a language segment, as in `parseLink`.
 #[test]
 fn accepts_public_url_with_a_segment_that_is_not_a_language_code() {

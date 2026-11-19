@@ -216,6 +216,9 @@ export function pathInLanguage(language: Language, location: Location = window.l
  * - `store` only stores it, for pages that must not be reloaded: once a capsule
  *   is being retrieved or deleted (a burned capsule would be gone on the new
  *   page) and once the fragment has been removed (the key would be lost).
+ *
+ * Returns whether the page is being left: the old document stays visible and
+ * usable until the new one arrives, and must not start anything in that time.
  */
 export type SwitchMode = 'navigate' | 'store';
 
@@ -223,9 +226,9 @@ export function chooseLanguage(
     language: Language,
     mode: SwitchMode,
     location: Location = window.location,
-): void {
+): boolean {
     storeLanguage(language);
-    if (mode === 'navigate' && language !== pageLanguage()) {
-        location.replace(pathInLanguage(language, location));
-    }
+    if (mode !== 'navigate' || language === pageLanguage()) return false;
+    location.replace(pathInLanguage(language, location));
+    return true;
 }

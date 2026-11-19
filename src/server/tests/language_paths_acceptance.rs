@@ -418,3 +418,61 @@ async fn ac3_the_redirect_never_leaves_the_host() {
         }
     }
 }
+
+/// AC2 + AC3: only the page paths exist under a language prefix. The API, the
+/// health endpoints and static files have none - neither under the prefix of
+/// another language (no page) nor under the default language's (no redirect) -
+/// and a page path with a missing or surplus segment is no page. A shell file
+/// stays unreachable however its name is spelled. All of it is the generic 404.
+#[tokio::test]
+async fn ac2_ac3_only_page_paths_exist_under_a_language_prefix() {
+    for (default, _) in LAYOUTS {
+        let h = harness_with_default_language(&format!("acc-prefix-pages-only-{default}"), default).await;
+        std::fs::write(h.dir.join("language-init.js"), "/* head script */").unwrap();
+        let unknown = h.get("/does-not-exist").await;
+        assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+        // Without a prefix they are there.
+        assert_eq!(h.get("/language-init.js").await.status, StatusCode::OK);
+        assert_eq!(h.get("/health/live").await.status, StatusCode::OK);
+        assert_eq!(h.get("/api/v1/reports").await.status, StatusCode::OK);
+
+        for &language in KNOWN_LANGUAGES {
+            for rest in [
+                "/language-init.js",
+                "/health/live",
+                "/health/ready",
+                "/api/v1/reports",
+                "/assets/index.js",
+                "/p",
+                "/p/",
+                "/p/2pS3xQ7Rk9mNpLz4AbCdEA/extra",
+                "/manage",
+                "/manage/",
+                "/report/",
+                "/report/2pS3xQ7Rk9mNpLz4AbCdEA",
+                "/legal",
+                "/index",
+                "/index.html/",
+                "/index%2Ehtml",
+                "/index.htm%6C",
+                "/index.html;x",
+                "/index.html.",
+                "//index.html",
+            ] {
+                let path = format!("/{language}{rest}");
+                let answer = h.get(&path).await;
+                assert_eq!(answer.status, unknown.status, "{path} (default {default})");
+                assert_eq!(answer.body, unknown.body, "{path} (default {default})");
+                assert_eq!(answer.header("location"), None, "{path} (default {default})");
+            }
+        }
+
+        // A second prefix is no page and no redirect either.
+        for path in ["/en/de/", "/de/en/", "/de/de/p/2pS3xQ7Rk9mNpLz4AbCdEA", "/en/en/report"] {
+            let answer = h.get(path).await;
+            assert_eq!(answer.status, unknown.status, "{path} (default {default})");
+            assert_eq!(answer.body, unknown.body, "{path} (default {default})");
+        }
+    }
+}

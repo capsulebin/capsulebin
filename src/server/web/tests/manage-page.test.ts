@@ -116,6 +116,28 @@ describe('management page in German', () => {
         );
     });
 
+    // The other order: the old document stays usable until the new one arrives.
+    it('does not delete once the language switch is loading the page', async () => {
+        const methods: string[] = [];
+        vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+            methods.push(init?.method ?? 'GET');
+            return new Response(JSON.stringify(descriptor()), { status: 200 });
+        });
+        await loadPage();
+        const button = document.querySelector<HTMLButtonElement>('[data-delete-btn]')!;
+
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!.click();
+        expect(button.disabled).toBe(true);
+
+        // Even a click that still gets through starts nothing.
+        button.disabled = false;
+        button.click();
+        await flush();
+        expect(methods).not.toContain('DELETE');
+        expect(document.querySelector('[data-delete-btn]')).toBe(button);
+        expect(document.querySelector('[data-language-notice]')).toBeNull();
+    });
+
     it('explains a link without a key', async () => {
         await loadPage('');
         expect(text('error-message')).toBe(de['link.noKey']);

@@ -44,6 +44,9 @@ tower-http = { version = "0.7", features = ["limit", "set-header", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = "3"
+# Already in the build through sqlx. Used for the path of `server.public_url`
+# as every client's URL parser normalizes it.
+url = "2"
 # Property-based tests for the parsers that read request data (dev only).
 proptest = { version = "1", default-features = false, features = ["std"] }
 

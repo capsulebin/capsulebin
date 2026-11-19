@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isPasteId, LinkError, parseFragment, parseLink, pasteIdFromInput } from '../src/links';
+import {
+    isPasteId,
+    LinkError,
+    parseFragment,
+    parseLink,
+    pasteIdFromInput,
+    trailingLanguage,
+} from '../src/links';
+import fixture from './fixtures/base-language.json' with { type: 'json' };
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const SECRET = 'A'.repeat(43); // 32 zero-ish bytes in base64url
@@ -71,6 +79,25 @@ describe('parseLink', () => {
         ['short secret', `https://x.test/p/${ID}#v1.AAAA`],
     ])('rejects %s', (_label, link) => {
         expect(() => parseLink(link, 'share')).toThrow(LinkError);
+    });
+});
+
+describe('trailingLanguage', () => {
+    it.each(fixture.vectors)('finds $language at the end of $base', ({ base, language }) => {
+        expect(trailingLanguage(base)).toBe(language);
+    });
+
+    // The reason for the rule: a link below such a base loses the code to
+    // `parseLink`, so its capability would go to the shortened base.
+    it.each(fixture.vectors)('agrees with parseLink about $base', ({ base, language }) => {
+        const url = new URL(base);
+        const withoutSlashes = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+        const parsed = parseLink(`${withoutSlashes}/manage/${ID}#v1.${SECRET}`, 'manage');
+        expect(parsed.base === withoutSlashes).toBe(language === null);
+    });
+
+    it.each(['example.org/de', 'ftp://example.org/de', 'https://'])('rejects %s', (base) => {
+        expect(() => trailingLanguage(base)).toThrow(LinkError);
     });
 });
 

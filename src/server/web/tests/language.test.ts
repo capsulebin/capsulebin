@@ -25,7 +25,7 @@ import {
     type Language,
 } from '../src/language';
 import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
-import { languageFromNextPage, mountLanguageSwitch } from '../src/pages/shell';
+import { isLeavingPage, languageFromNextPage, mountLanguageSwitch } from '../src/pages/shell';
 import { setPageLanguage } from './page-language';
 
 /** `meta` is the content of the languages meta, `fallback` its `data-default`. */
@@ -274,6 +274,12 @@ describe('choosing a language', () => {
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
         expect(location.replace).not.toHaveBeenCalled();
     });
+
+    it('says whether the page is being left', () => {
+        expect(chooseLanguage('de', 'navigate', fakeLocation('/'))).toBe(true);
+        expect(chooseLanguage('de', 'store', fakeLocation('/'))).toBe(false);
+        expect(chooseLanguage('en', 'navigate', fakeLocation('/'))).toBe(false);
+    });
 });
 
 describe('language switch', () => {
@@ -342,6 +348,40 @@ describe('language switch', () => {
             expect(notice.lang).toBe(chosen);
         },
     );
+
+    // The old document stays on screen until the new one arrives.
+    it('is leaving and disables the page controls once a choice loads the page', async () => {
+        const main = document.createElement('main');
+        main.innerHTML = '<button></button><input /><select></select><textarea></textarea>';
+        document.body.append(main);
+        const { handle, buttons } = await mount('en de');
+        const controls = [...main.children] as HTMLButtonElement[];
+
+        // The page's own language: nothing is loaded.
+        buttons[0]!.click();
+        expect(handle.isLeaving()).toBe(false);
+        expect(isLeavingPage({ languageSwitch: handle })).toBe(false);
+        expect(controls.map((control) => control.disabled)).toEqual([false, false, false, false]);
+
+        buttons[1]!.click();
+        expect(handle.isLeaving()).toBe(true);
+        expect(isLeavingPage({ languageSwitch: handle })).toBe(true);
+        expect(controls.map((control) => control.disabled)).toEqual([true, true, true, true]);
+        // The switch itself stays usable.
+        expect(buttons.map((button) => button.disabled)).toEqual([false, false]);
+        main.remove();
+    });
+
+    it('is not leaving in store-only mode', async () => {
+        const { handle, buttons } = await mount('en de');
+        languageFromNextPage({ languageSwitch: handle });
+        buttons[1]!.click();
+        expect(handle.isLeaving()).toBe(false);
+    });
+
+    it('is not leaving on a page without a switch', () => {
+        expect(isLeavingPage({ languageSwitch: null })).toBe(false);
+    });
 
     it('follows each further choice with the notice', async () => {
         const { container, handle, buttons } = await mount('en de');

@@ -182,7 +182,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
-| `server.public_url` | The address users reach, without a trailing slash. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup): a link below it could not be told apart from the `/de/` language prefix. |
+| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -239,7 +239,8 @@ and English is under `/en/`.
   the previous default under its prefix.
 - Any other prefix is an unknown path (`404`).
 - `server.public_url` must not end in a language code (see
-  [Settings that matter](#settings-that-matter)).
+  [Settings that matter](#settings-that-matter)); the CLI's `put` refuses such a `--server` by
+  the same rule. For an existing instance with such an address see [Upgrades](#upgrades).
 - The footer link labels follow the page language; the CLI, the API's error texts and the legal
   texts stay English.
 
@@ -297,6 +298,26 @@ Migrations only move forward. To roll back, restore the backup from step 1 with 
 
 The test suite upgrades a database written by 1.0 on every change: a released migration cannot
 change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable.
+
+#### A `public_url` whose path ends in a language code
+
+An instance whose `server.public_url` has a path ending in an interface language code
+(`https://example.org/team/de`, `…/team/en`) no longer starts. The same holds when the path only
+ends in a code once its dot segments are resolved, as every client's URL parser does
+(`…/team/de/.`, `…/team/x/../de`). `capsulebin --config … check` reports it, naming
+`server.public_url`, so step 3 above fails before the service is started.
+
+Share and management links already issued under such a base are ambiguous: the CLI reads the
+language code in them as the language prefix of a page and drops it, so `get` and `delete` would
+address the base without it (`https://example.org/team` instead of `https://example.org/team/de`).
+Do not use these links with the CLI.
+
+What to do:
+
+1. Move the instance to a base path that does not end in a language code
+   (`https://example.org/team/paste`, or a host of its own) and set `server.public_url` to it.
+2. Links handed out under the old base keep pointing there. Whether and how they are mapped to
+   the new base is up to the operator; CapsuleBin does not do it.
 
 ### Retention
 

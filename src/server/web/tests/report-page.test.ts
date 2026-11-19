@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import de from '../src/i18n/de.json';
 import en from '../src/i18n/en.json';
+import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
+import { LANGUAGE_STORAGE_KEY } from '../src/language';
 import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
@@ -118,6 +120,33 @@ describe('report page', () => {
         await submit();
         expect(field('report-error').textContent).toMatch(/too many reports/i);
     });
+
+    // Like a draft on the create page; the prefilled id alone is no started report.
+    it.each(['report-paste', 'report-reason', 'report-description', 'report-contact'])(
+        'keeps a started report on a language choice: first edit of %s',
+        async (attr) => {
+            localStorage.clear();
+            sessionStorage.clear();
+            await loadPage(`?id=${ID}`, 'de');
+            expect(document.querySelector('[data-language-notice]')).toBeNull();
+
+            field<HTMLTextAreaElement>('report-description').value = 'phishing page';
+            field(attr).dispatchEvent(new Event('input', { bubbles: true }));
+            document
+                .querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!
+                .click();
+
+            expect(window.location.pathname + window.location.search).toBe(`/de/report?id=${ID}`);
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe('phishing page');
+            expect(field<HTMLTextAreaElement>('report-description').disabled).toBe(false);
+            const notice = document.querySelector('[data-language-notice]')!;
+            expect(notice.textContent).toBe(LANGUAGE_NEXT_PAGE.en);
+            expect(notice.getAttribute('lang')).toBe('en');
+            // Only the choice is stored, nothing of the report.
+            expect(Object.keys(localStorage)).toEqual([LANGUAGE_STORAGE_KEY]);
+            expect(sessionStorage).toHaveLength(0);
+        },
+    );
 
     it('shows the contact address and the disabled state', async () => {
         stubServer({ enabled: true, contact: 'abuse@paste.example' });

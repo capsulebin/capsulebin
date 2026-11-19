@@ -150,8 +150,13 @@ impl ServerConfig {
             )));
         }
 
+        // The prefix alone lets text through that no client can use as a URL.
+        let Ok(url) = url::Url::parse(public_url) else {
+            return Err(invalid(format!("server.public_url is not a valid URL, got {public_url:?}")));
+        };
+
         // Checked before the trailing slash, so ".../de/" is told the real reason.
-        if let Some(language) = trailing_language(public_url) {
+        if let Some(language) = trailing_language(&url) {
             return Err(invalid(format!(
                 "server.public_url must not end in the language code {language:?}: links below it \
                  would be ambiguous with the /{language}/ language prefix of the pages"
@@ -167,15 +172,16 @@ impl ServerConfig {
     }
 }
 
-/// The known language code the path of an absolute `public_url` ends in, if
-/// any. Only the last non-empty path segment counts, compared exactly as
-/// `parseLink` in `@capsulebin/core` does when it drops a language segment
-/// before `p`/`manage`: `/DE`, `/de-at` or `/deutsch` are not language codes.
-fn trailing_language(public_url: &str) -> Option<&'static str> {
-    let after_scheme = public_url.split_once("://").map_or(public_url, |(_, rest)| rest);
-    let without_query = after_scheme.split(['?', '#']).next().unwrap_or_default();
-    let (_, path) = without_query.split_once('/')?;
-    let last = path.trim_end_matches('/').rsplit('/').next().unwrap_or_default();
+/// The known language code the path of the parsed `public_url` ends in, if
+/// any. The same rule as `trailingLanguage` in `@capsulebin/core`, which the
+/// CLI applies to `put --server` (both are checked against
+/// `src/core/tests/fixtures/base-language.json`): the path as the WHATWG URL
+/// parser normalizes it - a link built on `/team/de/.` reaches every client as
+/// `/team/de/...` -, its last non-empty segment, compared exactly as
+/// `parseLink` does when it drops a language segment before `p`/`manage`.
+/// `/DE`, `/de-at` or `/deutsch` are not language codes.
+pub(super) fn trailing_language(public_url: &url::Url) -> Option<&'static str> {
+    let last = public_url.path_segments()?.rfind(|segment| !segment.is_empty())?;
     KNOWN_LANGUAGES.iter().copied().find(|&language| language == last)
 }
 

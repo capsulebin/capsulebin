@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { posix, resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
 import {
@@ -44,11 +44,24 @@ function languageShells(): Plugin {
         new RegExp(`^/${GENERATED_DIR}/([^/]+)/`).exec(path)?.[1] ?? null;
     /**
      * Paths that would otherwise get a raw template (`{{lang}}` unfilled): the
-     * bare prefix (`/de`) and the templates themselves.
+     * bare prefix (`/de`) and whatever Vite's HTML fallback resolves to a
+     * template - its name with or without `.html` (`/p`, `/p.html`), also
+     * percent-encoded or behind dot segments. The name decides, not the
+     * directory, so the same holds under any prefix (`/de/p.html`); only the
+     * generated shells keep these names.
      */
-    const wouldServeTemplate = (path: string): boolean =>
-        catalogueLanguages().some((lang) => path === `/${lang}`) ||
-        SHELLS.some((shell) => path === `/${shell}.html`);
+    const wouldServeTemplate = (pathname: string): boolean => {
+        let path: string;
+        try {
+            path = posix.normalize(decodeURIComponent(pathname));
+        } catch {
+            return false;
+        }
+        if (catalogueLanguages().some((lang) => path === `/${lang}`)) return true;
+        if (path.startsWith(`/${GENERATED_DIR}/`)) return false;
+        const name = path.endsWith('/') ? 'index' : posix.basename(path.toLowerCase(), '.html');
+        return SHELLS.some((shell) => shell === name);
+    };
 
     return {
         name: 'capsulebin-language-shells',

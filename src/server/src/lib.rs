@@ -120,7 +120,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api::health::routes())
         .merge(api::pastes::routes())
         .merge(api::reports::routes())
-        .merge(api::assets::routes(state.default_language))
+        .merge(api::assets::routes(&state))
         // `.layer()` wraps, so the *later* call runs *first*: the client IP is
         // resolved before the rate limiter reads it. In the opposite order every
         // client shared one bucket (`tests/rate_limits.rs` pins this down).

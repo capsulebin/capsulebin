@@ -13,9 +13,14 @@
 //! bytes for **every** syntactically valid id and trigger no retrieval, and so
 //! does the redirect. A link scanner following the URL therefore neither burns
 //! a one-time paste nor learns from the response whether the id exists.
+//!
+//! Nothing in a page depends on the request, so the pages of the embedded
+//! assets are put together once, when the routes are built, and served from
+//! memory. Only the directory mode reads its shells on every request.
 
 use axum::{
     Router,
+    body::Bytes,
     extract::State,
     http::{HeaderValue, StatusCode, Uri, header},
     response::{IntoResponse, Response},
@@ -123,12 +128,23 @@ impl LegalByLanguage {
     }
 }
 
-pub fn routes(default_language: &'static str) -> Router<AppState> {
+pub fn routes(state: &AppState) -> Router<AppState> {
+    let default_language = state.default_language;
     let mut router = Router::new();
     for &language in KNOWN_LANGUAGES {
         let prefix = language_prefix(default_language, language);
         for (path, which) in PAGES {
-            router = router.route(&format!("{prefix}{path}"), get(move |s| page(s, language, which)));
+            // The embedded assets cannot change while the server runs.
+            let prepared = match *state.assets {
+                AssetSource::Embedded => Some(Document::build(state, language, which)),
+                AssetSource::Directory(_) => None,
+            };
+            router = router.route(
+                &format!("{prefix}{path}"),
+                get(move |State(state): State<AppState>| async move {
+                    prepared.unwrap_or_else(|| Document::build(&state, language, which)).into_response()
+                }),
+            );
         }
         if language == default_language {
             // The default language has no prefix: `/en/p/{id}` is `/p/{id}`.
@@ -179,41 +195,64 @@ fn found(location: &str) -> Response {
     response
 }
 
-/// Serves a page in `language`. The path id is deliberately **not** inspected:
-/// reading it would be the first step towards a response that depends on
-/// whether it exists.
-///
-/// A legal page is the `legal.html` shell with the page put in. Not configured,
-/// or configured as a link elsewhere: the same `404` as any unknown path.
-async fn page(State(state): State<AppState>, language: &'static str, which: Page) -> Response {
-    let Some(legal) = state.legal.get(language) else {
-        return not_found();
-    };
-    let (shell, legal_page) = match which {
-        Page::Shell(shell) => (shell, None),
-        Page::Legal(which) => match legal.page(which) {
-            Some(page) => (Shell::Legal, Some(page)),
-            None => return not_found(),
-        },
-    };
-    let file = shell.file_for(language);
-    let Some(bytes) = state.assets.load(&file) else {
-        return missing_frontend(&file);
-    };
-    let mut document = render(bytes, legal, language, state.default_language);
-    // After the tokens, so that the operator's text is put in as it is.
-    if let Some(page) = legal_page {
-        document = document
-            .replace(LEGAL_TITLE_MARKER, &crate::legal::escape(page.title))
-            .replace(LEGAL_CONTENT_MARKER, &page.html);
+/// What a page route answers with: the same for every request, whatever the
+/// path id.
+#[derive(Clone)]
+enum Document {
+    Html(Bytes),
+    /// A legal page that is not configured, or configured as a link elsewhere:
+    /// the same `404` as any unknown path.
+    NotFound,
+    /// The shell file that is not in the build output.
+    Missing(String),
+}
+
+impl Document {
+    /// Puts a page in `language` together. The path id is deliberately **not**
+    /// an input: reading it would be the first step towards a response that
+    /// depends on whether it exists.
+    ///
+    /// A legal page is the `legal.html` shell with the page put in.
+    fn build(state: &AppState, language: &str, which: Page) -> Self {
+        let Some(legal) = state.legal.get(language) else {
+            return Self::NotFound;
+        };
+        let (shell, legal_page) = match which {
+            Page::Shell(shell) => (shell, None),
+            Page::Legal(which) => match legal.page(which) {
+                Some(page) => (Shell::Legal, Some(page)),
+                None => return Self::NotFound,
+            },
+        };
+        let file = shell.file_for(language);
+        let Some(bytes) = state.assets.load(&file) else {
+            return Self::Missing(file);
+        };
+        let mut document = render(bytes, legal, language, state.default_language);
+        // After the tokens, so that the operator's text is put in as it is.
+        if let Some(page) = legal_page {
+            document = document
+                .replace(LEGAL_TITLE_MARKER, &crate::legal::escape(page.title))
+                .replace(LEGAL_CONTENT_MARKER, &page.html);
+        }
+        Self::Html(document.into())
     }
-    html(document.into_bytes())
+}
+
+impl IntoResponse for Document {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Html(bytes) => html(bytes),
+            Self::NotFound => not_found(),
+            Self::Missing(file) => missing_frontend(&file),
+        }
+    }
 }
 
 /// Fills in what a shell of `language` leaves to the server: the prefix of its
 /// internal links, the default language and the legal links. All fixed at
-/// startup and the same for every request, so the shell still does not depend
-/// on the path id. The shells are UTF-8; a lossy conversion only matters for a
+/// startup and the same for every request, so the shell does not depend on the
+/// path id. The shells are UTF-8; a lossy conversion only matters for a
 /// broken build, which `/health/ready` reports.
 fn render(bytes: Vec<u8>, legal: &LegalPages, language: &str, default_language: &str) -> String {
     let shell = String::from_utf8_lossy(&bytes)
@@ -278,7 +317,7 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 
-fn html(bytes: Vec<u8>) -> Response {
+fn html(bytes: Bytes) -> Response {
     let mut response = (StatusCode::OK, bytes).into_response();
     response
         .headers_mut()

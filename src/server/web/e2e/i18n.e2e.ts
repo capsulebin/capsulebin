@@ -425,6 +425,103 @@ test('while a burn capsule is retrieved the language switch only stores the choi
     expect(await view.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
 });
 
+// The other order of the same click: confirmed first, then the switch at once.
+test('right after the burn confirmation the language switch only stores the choice', async ({
+    page,
+    context,
+}) => {
+    const { share } = await create(page, {
+        items: [{ type: 'plain', text: 'Confirmed first' }],
+        burn: true,
+    });
+    const view = await context.newPage();
+    await view.goto(share);
+    const opened = new URL(view.url()).pathname;
+    await view.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+
+    await view.getByRole('button', { name: 'Yes, open and burn' }).click();
+    await view.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
+
+    await expect(view.locator('[data-language-notice]')).toHaveText(
+        catalogue('de')['shell.languageNextPage'] ?? '',
+    );
+    await expect(view.locator('.cb-item-panel')).toContainText('Confirmed first', {
+        timeout: 30_000,
+    });
+    expect(await view.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(view.url()).pathname).toBe(opened);
+    await expect(view.locator('html')).toHaveAttribute('lang', 'en');
+});
+
+// The old document stays on screen until the German one arrives. Confirming the
+// burn there would retrieve the capsule behind a page that is about to go, and
+// the German page would find it gone.
+test('once the language switch is loading the page a burn capsule cannot be opened', async ({
+    page,
+    context,
+}) => {
+    const { share } = await create(page, {
+        items: [{ type: 'plain', text: 'Not burned unseen' }],
+        burn: true,
+    });
+    const view = await context.newPage();
+    const retrieves: string[] = [];
+    view.on('request', (request) => {
+        if (request.url().endsWith('/retrieve')) retrieves.push(request.url());
+    });
+
+    // The German page takes its time, and Playwright cannot look into the old
+    // document while it waits for the new one: the old document itself tries the
+    // confirmation, and notes for the next one what it saw.
+    await view.route('**/de/p/*', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await route.continue();
+    });
+
+    await view.goto(share);
+    const confirm = view.getByRole('button', { name: 'Yes, open and burn' });
+    await expect(confirm).toBeVisible({ timeout: 30_000 });
+    await confirm.evaluate((button: HTMLButtonElement) => {
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="de"]')?.click();
+        setTimeout(() => {
+            sessionStorage.setItem('confirmWasDisabled', String(button.disabled));
+            // Even a click that still gets through starts nothing.
+            button.disabled = false;
+            button.click();
+        }, 300);
+    });
+
+    // The capsule is still there, on the German page.
+    await expect(view).toHaveURL(/\/de\/p\/.*#v1\./);
+    await expect(view.locator('html')).toHaveAttribute('lang', 'de');
+    expect(await view.evaluate(() => sessionStorage.getItem('confirmWasDisabled'))).toBe('true');
+    expect(retrieves).toEqual([]);
+    await view.getByRole('button', { name: catalogue('de')['view.burnConfirm'] ?? '' }).click();
+    await expect(view.locator('.cb-item-panel')).toContainText('Not burned unseen', {
+        timeout: 30_000,
+    });
+    expect(retrieves).toHaveLength(1);
+});
+
+// A started report is a draft like a filled create form; nothing of it is stored.
+test('on a started report the language switch only stores the choice', async ({ page }) => {
+    await page.goto('/report');
+    const description = page.locator('[data-report-description]');
+    await description.fill('A report worth keeping');
+    await page.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+
+    await page.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
+    await expect(page.locator('[data-language-notice]')).toHaveText(
+        catalogue('de')['shell.languageNextPage'] ?? '',
+    );
+    expect(await page.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(page.url()).pathname).toBe('/report');
+    await expect(description).toHaveValue('A report worth keeping');
+    expect(
+        await page.evaluate(() => [Object.keys(localStorage), Object.keys(sessionStorage)]),
+    ).toEqual([['capsulebin.language'], []]);
+});
+
 test('the language switch leaves no history entry with the key', async ({ page, context }) => {
     const password = 'correct password';
     const { share } = await create(page, {
@@ -448,4 +545,55 @@ test('the language switch leaves no history entry with the key', async ({ page, 
 
     await view.goBack();
     expect(view.url()).not.toContain('#v1.');
+});
+
+// AC13 on the management page: while the delete key is still in the fragment the
+// switch loads the page in the other language and the key goes along, so the
+// capsule can still be deleted there; once it is deleted and the fragment is
+// gone, the switch only stores the choice and says so in the chosen language.
+test('on the management page the language switch keeps the key, and only stores after the delete', async ({
+    page,
+    context,
+}) => {
+    const { share, manage } = await create(page, {
+        items: [{ type: 'plain', text: 'Managed in two languages' }],
+    });
+    const { id, fragment } = parts(manage);
+    expect(fragment).toMatch(/^#v1\./);
+
+    const managePage = await context.newPage();
+    managePage.on('dialog', (dialog) => void dialog.accept());
+    await managePage.goto(manage);
+    await expect(managePage.locator('[data-delete-btn]')).toBeVisible({ timeout: 30_000 });
+    const switcher = managePage.locator('[data-language-switch]');
+
+    await switcher.getByRole('button', { name: 'Deutsch' }).click();
+    await expect(managePage.locator('html')).toHaveAttribute('lang', 'de');
+    expect(new URL(managePage.url()).pathname).toBe(`/de/manage/${id}`);
+    expect(new URL(managePage.url()).hash).toBe(fragment);
+    expect(await managePage.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
+
+    // The key arrived with the page: the delete works from the German page.
+    await expect(managePage.locator('[data-delete-btn]')).toBeVisible({ timeout: 30_000 });
+    await managePage.click('[data-delete-btn]');
+    await expect(managePage.locator('body')).toContainText(
+        catalogue('de')['manage.deletedLede'] ?? '',
+        { timeout: 30_000 },
+    );
+    expect(new URL(managePage.url()).hash).toBe('');
+
+    await managePage.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+    await switcher.getByRole('button', { name: 'English' }).click();
+    const notice = managePage.locator('[data-language-notice]');
+    await expect(notice).toHaveText(catalogue('en')['shell.languageNextPage'] ?? '');
+    await expect(notice).toHaveAttribute('lang', 'en');
+    expect(await managePage.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('en');
+    expect(await managePage.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(managePage.url()).pathname).toBe(`/de/manage/${id}`);
+    await expect(managePage.locator('html')).toHaveAttribute('lang', 'de');
+
+    // The capsule is really gone.
+    const view = await context.newPage();
+    await view.goto(share);
+    await expect(view.locator('h1')).toHaveText('Not available', { timeout: 30_000 });
 });

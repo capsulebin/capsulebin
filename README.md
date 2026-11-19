@@ -155,6 +155,9 @@ node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
   else retrieved concurrently, `5` undecryptable, `6` rejected by the server (token, size,
   expiry, rate limit), `7` unreachable or server error, `8` needs a password or burn
   confirmation. `capsulebin --help` lists all options.
+- **`put` refuses a server URL whose path ends in an interface language code**
+  (`https://example.org/team/de`, exit code `2`): links below it could not be told apart from the
+  `/de/` language prefix of the pages. The server refuses the same address as `public_url`.
 - **Retries are safe.** `put` seals once and re-sends the identical request on network errors,
   `429` and `5xx`; the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.

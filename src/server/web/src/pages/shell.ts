@@ -52,6 +52,11 @@ export interface LanguageSwitch {
      * first call. It exists before its text changes, so the change is announced.
      */
     addNotice(): HTMLElement;
+    /**
+     * Whether a choice is loading the page in another language. The old document
+     * stays on screen until the new one arrives; nothing may be started from it.
+     */
+    isLeaving(): boolean;
 }
 
 /**
@@ -65,6 +70,7 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
     let mode: SwitchMode = 'navigate';
     let onStored: ((language: Language) => void) | null = null;
     let notice: HTMLElement | null = null;
+    let leaving = false;
 
     container.replaceChildren(
         ...offered.map((language) => {
@@ -75,7 +81,10 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
             button.textContent = endonym(language);
             if (language === current) button.setAttribute('aria-current', 'true');
             button.addEventListener('click', () => {
-                chooseLanguage(language, mode);
+                if (chooseLanguage(language, mode)) {
+                    leaving = true;
+                    disablePageControls();
+                }
                 onStored?.(language);
             });
             return button;
@@ -97,7 +106,26 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
             container.before(notice);
             return notice;
         },
+        isLeaving: () => leaving,
     };
+}
+
+/** Shows that the page is on its way out: nothing in its content can be used any more. */
+function disablePageControls(): void {
+    const controls = document.querySelectorAll<
+        HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+    >('main :is(button, input, select, textarea)');
+    for (const control of controls) control.disabled = true;
+}
+
+/**
+ * Whether the language switch is loading this page in another language. A page
+ * asks before it retrieves or deletes a capsule: a request sent from the old
+ * document could burn the capsule there, with its answer shown nowhere. The
+ * other order is covered by {@link languageFromNextPage}.
+ */
+export function isLeavingPage(shell: Shell): boolean {
+    return shell.languageSwitch?.isLeaving() ?? false;
 }
 
 /**

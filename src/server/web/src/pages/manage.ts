@@ -19,6 +19,7 @@ import { apiErrorText, linkErrorText } from './errors';
 import {
     byAttr,
     initShell,
+    isLeavingPage,
     languageFromNextPage,
     setText,
     showTemplate,
@@ -92,6 +93,9 @@ async function startDelete(shell: Shell): Promise<void> {
 
     // 4. Show confirmation.
     showReady(descriptor, async () => {
+        // The switch is loading this page in another language: the delete would
+        // run behind a page that never shows its outcome.
+        if (isLeavingPage(shell)) return;
         // From here on reloading the page in another language would lose the key,
         // or leave the delete running behind a page that never learns its outcome.
         languageFromNextPage(shell);

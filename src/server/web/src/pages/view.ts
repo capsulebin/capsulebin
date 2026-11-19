@@ -30,7 +30,7 @@ import {
     pasteIdFromInput,
 } from '@capsulebin/core';
 import { formatExpiry, formatSize, localPath, t, tn } from '../language';
-import { byAttr, initShell, languageFromNextPage } from './shell';
+import { byAttr, initShell, isLeavingPage, languageFromNextPage } from './shell';
 import { openCapsule, type PasswordRetry } from './open-capsule';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import {
@@ -521,6 +521,7 @@ class CbViewPage extends LitElement {
     }
 
     #confirmBurn(): void {
+        if (!startOpening()) return;
         this.#resolveBurnConfirm?.();
         this.#resolveBurnConfirm = null;
     }
@@ -572,7 +573,7 @@ class CbViewPage extends LitElement {
         const form = e.currentTarget as HTMLFormElement;
         const input = form.querySelector<HTMLInputElement>('#pwd-input')!;
         const password = input.value;
-        if (!password || !this.#pwdContext) return;
+        if (!password || !this.#pwdContext || !startOpening()) return;
 
         const { pwdSalt, iterations } = this.#pwdContext;
 
@@ -634,6 +635,19 @@ function passwordRetryMessage(retry: PasswordRetry | undefined): string {
     if (retry.reason === 'rejected') return t('view.wrongPassword');
     const wait = retry.retryAfter;
     return wait ? tn('view.tooManyAttemptsFor', wait) : t('view.tooManyAttempts');
+}
+
+/**
+ * The user's go-ahead for the retrieval (burn confirmation, password): refused
+ * while the language switch is loading this page in another language - the
+ * capsule would be burned here and shown nowhere. Otherwise the switch only
+ * stores the choice from this click on, not only from the request that follows
+ * the key derivation.
+ */
+function startOpening(): boolean {
+    if (isLeavingPage(shell)) return false;
+    languageFromNextPage(shell);
+    return true;
 }
 
 /**

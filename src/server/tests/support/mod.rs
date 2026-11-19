@@ -242,9 +242,19 @@ pub async fn harness_with_mode(name: &str, mode: CreationMode) -> Harness {
     harness_with(name, |config| config.creation.mode = mode).await
 }
 
+/// A server on the assets embedded into this build instead of an asset
+/// directory: the shells of the web build, or none if it has not run.
+pub async fn harness_with_embedded_assets(name: &str) -> Harness {
+    harness_on(name, |_| {}, |_| AssetSource::Embedded).await
+}
+
 /// A token-mode harness with one configuration change applied, for tests about a
 /// specific setting.
 pub async fn harness_with(name: &str, adjust: impl FnOnce(&mut Config)) -> Harness {
+    harness_on(name, adjust, |dir| AssetSource::Directory(dir.to_path_buf())).await
+}
+
+async fn harness_on(name: &str, adjust: impl FnOnce(&mut Config), assets: impl FnOnce(&Path) -> AssetSource) -> Harness {
     let dir = tempdir(name);
 
     write_shells(&dir);
@@ -259,12 +269,7 @@ pub async fn harness_with(name: &str, adjust: impl FnOnce(&mut Config)) -> Harne
     let pool = capsulebin_server::db::connect(&resolved.config.database).await.expect("connect");
 
     let clock = FixedClock::at(START);
-    let state = AppState::new(
-        &resolved,
-        pool.clone(),
-        AssetSource::Directory(dir.clone()),
-        Arc::new(clock.clone()),
-    );
+    let state = AppState::new(&resolved, pool.clone(), assets(&dir), Arc::new(clock.clone()));
 
     Harness {
         app: router(state),

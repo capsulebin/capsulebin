@@ -50,12 +50,15 @@ language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the Engli
   make no page larger. Numbers and dates follow the page language.
 - **A language switch** next to the theme toggle stores the choice and loads the same address in
   the chosen language, replacing the history entry — except once a page must not be reloaded (a
-  retrieval or deletion has started, or the create form holds any input), where it only stores
-  the choice and says so **in the chosen language**. That notice is the one text every page holds
-  in every language.
+  retrieval or deletion has started, or the create or report form holds any input), where it only
+  stores the choice and says so **in the chosen language**. That notice is the one text every page
+  holds in every language. The other way round, a page the switch is already loading in another
+  language starts no retrieval or deletion.
 - **`parseLink` accepts a known language segment** before `p`/`manage`, so a link copied from the
-  address bar works in the CLI. To keep that unambiguous, `server.public_url` must not end in a
-  known language code (startup error).
+  address bar works in the CLI. To keep that unambiguous, no link is created on a base whose path
+  ends in a known language code: the server refuses it as `server.public_url` (startup error) and
+  the CLI's `put` as `--server`. Both apply one rule — the last non-empty segment of the path as a
+  URL parser normalizes it, compared exactly — and are tested against the same vectors.
 - **Footer link labels come from the catalogue** like every other shell text; the server only
   decides per `[legal]` whether each link appears and where it points.
 
@@ -112,7 +115,9 @@ language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the Engli
 - The CLI, the API's `problem+json` texts and the legal texts stay English for now; the pages map
   error codes to their own texts instead of showing the API's. Operators cannot replace the
   catalogues.
-- A page that has started a retrieval or deletion, or holds a create draft, cannot change language
-  in place; the choice applies from the next page.
+- A page that has started a retrieval or deletion, or holds a create draft or a started report,
+  cannot change language in place; the choice applies from the next page.
 - An instance cannot use a `public_url` whose path ends in `/en` or `/de` (or any later language
-  code); such a sub-path has to be renamed.
+  code), also not through dot segments (`/team/de/.`); such a sub-path has to be renamed. Links
+  issued under such a base before are read by the CLI as carrying a language segment (see the
+  upgrade note in `docs/operations.md`).

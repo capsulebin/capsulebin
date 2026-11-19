@@ -330,6 +330,26 @@ describe('errors and output', () => {
         expect(io.err()).toContain('CAPSULEBIN_SERVER');
     });
 
+    // Links below such a base would lose the code to the link parser: `delete`
+    // would send the delete secret to the base without it.
+    it.each([
+        'https://paste.example/team/de',
+        'https://paste.example/team/de/',
+        'https://paste.example/team/de/.',
+        'https://paste.example/team/x/../de',
+        'https://paste.example/team/%2e/en',
+    ])('refuses the server %s, which ends in a language code', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base], io)).toBe(2);
+        expect(io.err()).toContain('--server must not end in the language code');
+        expect(server.requests).toHaveLength(0);
+
+        const fromEnv = testIo({ stdin: 'x', env: { CAPSULEBIN_SERVER: base } });
+        expect(await run(['put'], fromEnv)).toBe(2);
+        expect(fromEnv.err()).toContain('language code');
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('does not dump a binary single item onto a terminal', async () => {
         await writeFile(join(cwd, 'img.bin'), new Uint8Array([0, 159, 146, 150]));
         const put = testIo();

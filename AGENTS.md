@@ -160,8 +160,10 @@ Critical rules:
 - **Every setting has an env equivalent:** `CAPSULEBIN__<TABLE>__<KEY>`.
 - **`server.public_url` is required, no default** — it appears in `problem+json` type URIs
   and share links, so it must come from configuration, not a request header. Its path must not
-  end in a known language code (`…/team/de`): links below it would be ambiguous with the language
-  prefix.
+  end in a known language code (`…/team/de`, also after dot segments are resolved: `…/team/de/.`):
+  links below it would be ambiguous with the language prefix. CLI `put` refuses such a `--server`
+  by the same rule (`trailing_language` in `config/model.rs`, `trailingLanguage` in core
+  `links.ts`), kept equal by the shared vectors `src/core/tests/fixtures/base-language.json`.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
   must not be an open write target.
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
@@ -330,7 +332,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded or from disk); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`, turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` |
+| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`, turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` |
 | `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
@@ -351,7 +353,7 @@ npm run e2e -w @capsulebin/web
 | `src/paste.ts` | High-level create/retrieve/delete operations |
 | `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`) |
 | `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI) |
-| `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`) |
+| `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in |
 | `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
 | `src/public_header.ts` | Protocol constants, public header type and its canonical serialization |
 | `src/helpers/bytes.ts` | Byte array utilities (base64url, hex, concatenation) |
@@ -368,7 +370,7 @@ npm run e2e -w @capsulebin/web
 | `src/pages/open-capsule.ts` | Password prompt + decrypt flow |
 | `src/pages/render-items.ts` | Item rendering dispatch |
 | `src/pages/item-tabs.ts` | Shared item tab behaviour (keyboard, reveal) for create and view |
-| `src/pages/shell.ts` | Page shell (theme, layout, language switch) |
+| `src/pages/shell.ts` | Page shell (theme, layout, language switch; `languageFromNextPage`/`isLeavingPage` keep the switch and a retrieval, deletion or draft from interfering) |
 | `src/pages/errors.ts` | Catalogue error texts by HTTP status and problem `code` |
 | `src/pages/report.ts` | Abuse report form (strips the fragment, only the id is sent) |
 | `src/pages/legal.ts` | Legal pages: shell only, the server renders the text (ADR-015) |
@@ -382,7 +384,7 @@ npm run e2e -w @capsulebin/web
 | `src/i18n/language-next-page.ts` | The switch's "applies from the next page" notice in every language (shown in the chosen language) |
 | `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
 | `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix and default language |
-| `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en` and fills the tokens |
+| `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
 | `public/language-init.js` | Head script: moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
 | `src/styles/tokens.css` | Design tokens |
@@ -396,7 +398,7 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
-| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code |
+| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL ending in a language code |
 | `src/commands/{put,get,delete}.ts` | The three commands |
 | `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping |
 | `src/items.ts` | Presentation/language inference for input files |
