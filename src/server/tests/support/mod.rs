@@ -105,6 +105,43 @@ pub async fn harness_with_plaintext_limit(name: &str, max_plaintext_size: capsul
     }
 }
 
+/// A server on a database restored from an SQL dump of an earlier release, with
+/// the clock at `now`. The dump is loaded before the server connects, so the
+/// connect applies this build's migrations on top of it, as an upgrade does.
+pub async fn harness_from_dump(name: &str, dump: &'static str, now: i64) -> Harness {
+    let dir = tempdir(name);
+    write_shells(&dir);
+
+    let config = config(&dir, CreationMode::Token, capsulebin_server::config::units::ByteSize(64 * 1024));
+    let resolved = config.validate().expect("test configuration must be valid");
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&resolved.config.database.path)
+        .create_if_missing(true);
+    let seed = sqlx::SqlitePool::connect_with(options).await.expect("open the database to seed");
+    sqlx::raw_sql(dump).execute(&seed).await.expect("load the dump");
+    seed.close().await;
+
+    let pool = capsulebin_server::db::connect(&resolved.config.database)
+        .await
+        .expect("the migrations must apply to the dumped database");
+
+    let clock = FixedClock::at(now);
+    let state = AppState::new(
+        &resolved,
+        pool.clone(),
+        AssetSource::Directory(dir.clone()),
+        Arc::new(clock.clone()),
+    );
+
+    Harness {
+        app: router(state),
+        clock,
+        dir,
+        pool,
+    }
+}
+
 /// The asset directory doubles as the shell source, so the tests do not depend on
 /// a frontend build having happened.
 pub fn write_shells(dir: &Path) {

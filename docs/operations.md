@@ -231,6 +231,9 @@ yourself.
 
 Migrations only move forward. To roll back, restore the backup from step 1 with the old binary.
 
+The test suite upgrades a database written by 1.0 on every change: a released migration cannot
+change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable.
+
 ### Retention
 
 The purge job runs at start and then daily; `capsulebin prune` applies it once on demand (for
