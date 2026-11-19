@@ -36,6 +36,7 @@ capsulebin/
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
+│                         reproducible-web.sh — builds the web client twice and compares;
 │                         support-windows.mjs — Node.js/Debian end-of-support check
 ├── .github/            CI and release workflows (GitHub Actions), Dependabot configuration
 ├── Dockerfile          Container image: web build → release binary → distroless, non-root, /data
@@ -222,6 +223,7 @@ npm run format:check
 npm run check -w @capsulebin/core && npm test -w @capsulebin/core
 npm run check -w @capsulebin/web && npm test -w @capsulebin/web
 npm run check -w @capsulebin/cli && npm test -w @capsulebin/cli
+./scripts/reproducible-web.sh   # two web builds, byte-identical
 
 # Acceptance (release binary + smoke test, incl. CLI put/get/delete)
 npm run build -w @capsulebin/web && npm run build -w @capsulebin/cli
@@ -368,16 +370,23 @@ including the acceptance run against a release binary. Dependency advisories are
 `.github/workflows/ci.yml` runs all of this on every pull request and on `main` in eight jobs —
 `Rust`, `TypeScript` (on the Node.js version in `.node-version`), `TypeScript (Node 26)` (the tests
 on the newest LTS), `Acceptance (release binary)`, `Browser (Chromium, Firefox, WebKit)` (the
-Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`
-and waits for the container to report healthy), `Support windows` and `Dependency audit` — each a
-required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
+Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`,
+scans the image with Grype and waits for the container to report healthy), `Support windows` and
+`Dependency audit` — each a required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
 and the base image digests.
 
 `Support windows` (`scripts/support-windows.mjs`) checks that every place naming the Node.js
 version agrees with `.node-version`, and warns before Node.js or the Debian release under the base
 images reaches its end of support: Node.js with a warning at 180 days and a failure at 90, Debian
-at 365 and 180. It and the audit job also run weekly, so an advisory or an approaching end of
-support surfaces without a code change.
+at 365 and 180. It, the container job and the audit job also run weekly, so an advisory or an
+approaching end of support surfaces without a code change.
+
+The `TypeScript` job builds the web client twice from scratch (`scripts/reproducible-web.sh`) and
+fails unless both builds are byte-identical; the release binary embeds those assets, so a tag's
+client can be rebuilt and compared. The image scan fails on a high or critical vulnerability with a
+fixed version in the base image's Debian packages; the fix is a new base image digest (Dependabot
+proposes one weekly, or bump it by hand). The release binaries are built from the locked
+dependencies with `SOURCE_DATE_EPOCH` set, but nothing builds them twice and compares.
 
 ## Commits and pull requests
 
