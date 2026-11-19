@@ -1,4 +1,4 @@
-# ADR-016 — Interface languages as path prefixes, shells generated per language
+# ADR-016 — Interface languages in the path, the default language without a prefix
 
 **Status:** Accepted
 
@@ -17,33 +17,42 @@ need little more than a catalogue. Three things constrain how:
 
 ## Decision
 
-**Every page exists once per known language, under a path prefix:** `/en/`, `/de/p/{id}`,
-`/de/manage/{id}`, `/de/report`, `/de/imprint` and so on. Every language the binary was built with
-is offered, and `en` is the default; the operator does not choose.
+**Every page exists once per known language. The default language has no path prefix, every other
+language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the English view page and
+`/de/p/{id}` the German one; likewise `/`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`,
+`/terms`.
 
-- **A path without a prefix is redirected** (`302`, `Vary: Accept-Language`,
-  `Cache-Control: no-store`) to the known language `Accept-Language` weighs highest, otherwise to
-  `en`. The path is copied, not inspected, so the redirect of `/p/{id}` is the same for an
-  existing and an unknown id; the fragment stays in the browser. Share and management links keep
-  their prefix-less form.
+- **Every known language is always offered; the operator chooses only the default.**
+  `[i18n] default_language` (default `en`) is the only key; an unknown code or any other key in
+  `[i18n]` is a startup error.
+- **The prefix of the default language is redirected away** (`302`, `Cache-Control: no-store`):
+  `/en/p/{id}` → `/p/{id}`, `/en` → `/`, query kept. The path is copied, not inspected, so the
+  redirect is the same for an existing and an unknown id; the fragment stays in the browser.
+  `/<lang>` without a slash redirects to `/<lang>/`.
+- **The server does not negotiate.** It never reads `Accept-Language` and sends no `Vary` for it;
+  the path alone decides which shell is served. Share and management links keep their prefix-less
+  form and open in the default language.
 - **A prefix that is not a known language is an unknown path** (the generic `404`), not a redirect.
-- **The browser decides finally.** A classic head script (`language-init.js`, before
+- **The browser decides the language.** A classic head script (`language-init.js`, before
   `theme-init.js`) moves the page to the stored choice (`localStorage` `capsulebin.language`), else
-  to the first offered browser language, else to the default — keeping query and fragment. The
-  languages and the default reach it through a `<meta>` the shell generator writes into every
-  shell at build time; the server inserts nothing for it.
+  to the first offered browser language, else to the default — keeping query and fragment. A path
+  without a known language prefix counts as the default language. The offered languages and the
+  default reach the script through a `<meta>` in every shell.
 - **Shells are generated at build time** from one set of templates and one catalogue per language
   (`src/server/web/src/i18n/<lang>.json`) into `dist/<lang>/<shell>.html`. Catalogue values are
-  plain text and HTML-escaped. The scripts' texts are resolved at build time too: the web client
-  is built once per language, each build carrying only the texts of its language that the scripts
-  use, so a page never ships another language and more languages make no page larger. Code that
-  does not depend on the language lives in chunks of its own, built identically for every
-  language and shipped once under `/assets/`; a check on the build output enforces both. Numbers
-  and dates follow the page language.
-- **A language switch** next to the theme toggle stores the choice and loads the same address
-  under the other prefix, replacing the history entry — except once a page must not be reloaded
-  (a retrieval or deletion has started, or the create form holds a draft), where it only stores the
-  choice.
+  plain text and HTML-escaped. The build does not know the default language: it writes the tokens
+  `%%capsulebin:prefix%%` in front of internal links and `%%capsulebin:default%%` into the meta
+  element, and the server fills them in from its configuration (no prefix for the default
+  language, `/<lang>` otherwise) — data that is the same for every request.
+- **One web build; each shell loads the catalogue module of its language**
+  (`src/i18n/register-<lang>.ts`) before the page script. The page scripts hold no catalogue and
+  are shared by all languages, so a page never loads another language's texts and more languages
+  make no page larger. Numbers and dates follow the page language.
+- **A language switch** next to the theme toggle stores the choice and loads the same address in
+  the chosen language, replacing the history entry — except once a page must not be reloaded (a
+  retrieval or deletion has started, or the create form holds any input), where it only stores
+  the choice and says so **in the chosen language**. That notice is the one text every page holds
+  in every language.
 - **`parseLink` accepts a known language segment** before `p`/`manage`, so a link copied from the
   address bar works in the CLI. To keep that unambiguous, `server.public_url` must not end in a
   known language code (startup error).
@@ -52,10 +61,24 @@ is offered, and `en` is the default; the operator does not choose.
 
 ## Rejected
 
-- **English shells, catalogues loaded with `import()` behind a loading indicator.** Translates at
-  runtime and shows a spinner on every page; the language paths make both unnecessary.
+- **Every language under a prefix, prefix-less paths redirected by `Accept-Language`.** Every
+  share link would start with a redirect; the server would need an `Accept-Language` parser and
+  `Vary: Accept-Language` on the redirect, and every cache in front of it would have to honour
+  that. The head script decides with more knowledge (the stored choice) anyway. Without a prefix
+  for the default language, URLs are shorter and share links land directly on a page.
+- **One web build per language, each with its catalogue resolved at build time.** Keeps a page on
+  its own language too, but needs a build script running Vite once per language, a search for the
+  keys the scripts name, splitting language-free code into chunks of its own, a check of the
+  output and a separate all-language catalogue module for the dev server and tests — more
+  machinery than the property needs.
 - **One shared bundle carrying every catalogue, selected by `<html lang>` at runtime.** Every page
   would ship every language and grow with each new one.
+- **The operator chooses the list of offered languages.** Costs configuration, startup
+  validation, a languages marker the server fills into every shell and legal footers per
+  configured language, for little value. With every known language always offered, the list is
+  known at build time; only the default is configuration.
+- **English shells, catalogues loaded with `import()` behind a loading indicator.** Translates at
+  runtime and shows a spinner on every page; the language paths make both unnecessary.
 - **The server picks the language from a preference cookie, same URL for every language.** Needs a
   cookie and `Vary` on the pages. The choice is kept in `localStorage`, like the theme; there is no
   cookie.
@@ -65,27 +88,27 @@ is offered, and `en` is the default; the operator does not choose.
   ADR-015 the most: the server would put far more than data into every page.
 - **Redirecting a prefix that is not a known language.** A `404` keeps the set of page URLs small
   and unambiguous.
-- **The operator chooses the offered languages and the default.** Costs configuration, startup
-  validation, a languages marker the server fills into every shell and legal footers per
-  configured language, for little value. With a fixed set the language list is known at build
-  time.
 
 ## Consequences
 
-- The route table of ADR-004 now exists once per language; every prefix-less page path is a
-  redirect.
+- The route table of ADR-004 exists once per language: prefix-less for the default language,
+  prefixed for the others, plus the redirect from the default language's prefix.
+- Which paths are pages and which are redirects depends on `default_language`. Changing it on an
+  instance moves the previous default's pages under its prefix; prefix-less links then open in the
+  new default language until the head script moves the browser to its own.
+- A recipient whose browser prefers another offered language gets one client-side
+  `location.replace` before the page is shown; without JavaScript the page stays in the language
+  of its path.
 - The set of known languages is in three places — `KNOWN_LANGUAGES` in the server
   (`config/model.rs`) and in core (`languages.ts`), and the catalogue files — because the three are
-  built separately. Tests fail when they differ. A new language is a catalogue plus two list
-  entries; the web build picks up every catalogue file by itself, and every instance running that
-  binary offers it. The default `en` is a constant in the server (`DEFAULT_LANGUAGE`) and in the web
-  client (`default-language.ts`).
-- The web build generates `languages × shells` documents and runs Vite once per language
-  (`scripts/build.ts`); generator and builds are deterministic, so the reproducible-build check
-  still holds. The Vite dev server and the unit tests load every catalogue, chosen by
-  `<html lang>`.
-- Caches and proxies in front of the server must keep `Vary: Accept-Language` on the redirect (it
-  is also `no-store`).
+  built separately. Tests fail when they differ. A new language is a catalogue file, its
+  `register-<lang>.ts`, an entry in `language-next-page.ts` and two list entries; every instance
+  running that binary offers it.
+- The web build generates `languages × shells` documents as inputs of one Vite build; the
+  generator is deterministic, so the reproducible-build check still holds. The Vite dev server
+  fills the tokens itself, with the default `en`.
+- No cache or proxy in front of the server has to treat page responses specially: none varies by
+  a request header.
 - The CLI, the API's `problem+json` texts and the legal texts stay English for now; the pages map
   error codes to their own texts instead of showing the API's. Operators cannot replace the
   catalogues.

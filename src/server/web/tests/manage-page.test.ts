@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PublicHeader, toBase64url } from '@capsulebin/core';
 
-import { shellFor } from '../scripts/shells';
 import de from '../src/i18n/de.json';
+import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
 import { LANGUAGE_STORAGE_KEY } from '../src/language';
+import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const SECRET = `v1.${toBase64url(new Uint8Array(32).fill(7))}`;
@@ -36,11 +37,11 @@ function stubServer(describe: () => Response): void {
 }
 
 async function loadPage(hash = `#${SECRET}`): Promise<void> {
-    const page = new DOMParser().parseFromString(shellFor('manage', 'de'), 'text/html');
-    document.documentElement.lang = 'de';
+    const page = new DOMParser().parseFromString(servedShell('manage', 'de'), 'text/html');
     document.documentElement.innerHTML = page.documentElement.innerHTML;
     window.history.replaceState(null, '', `/de/manage/${ID}${hash}`);
     vi.resetModules();
+    await setPageLanguage('de');
     await import('../src/pages/manage');
     await flush();
 }
@@ -90,7 +91,9 @@ describe('management page in German', () => {
         expect(window.location.pathname).toBe(`/de/manage/${ID}`);
         const notice = document.querySelector('[data-language-notice]')!;
         expect(notice.getAttribute('role')).toBe('status');
-        expect(notice.textContent).toBe(de['shell.languageNextPage']);
+        // In the chosen language, not the page's.
+        expect(notice.textContent).toBe(LANGUAGE_NEXT_PAGE.en);
+        expect(notice.getAttribute('lang')).toBe('en');
     });
 
     it('only stores a language choice while the delete is running', async () => {
@@ -109,7 +112,7 @@ describe('management page in German', () => {
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
         expect(window.location.pathname).toBe(`/de/manage/${ID}`);
         expect(document.querySelector('[data-language-notice]')!.textContent).toBe(
-            de['shell.languageNextPage'],
+            LANGUAGE_NEXT_PAGE.en,
         );
     });
 

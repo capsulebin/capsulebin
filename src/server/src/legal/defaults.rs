@@ -1,6 +1,6 @@
 //! The built-in privacy notice and terms of use.
 //!
-//! English only, under every language prefix; the article says so in a shell
+//! English only, in the pages of every language; the article says so in a shell
 //! of another language (`lang="en"`).
 //!
 //! What CapsuleBin does with data is fixed by the software and its
@@ -41,7 +41,8 @@ pub struct Facts {
 
 impl Facts {
     /// `prefix` is the language prefix of the shell the texts are shown in
-    /// (`/en`), for the links to pages served here.
+    /// (`/de`, empty for the default language), for the links to pages served
+    /// here.
     pub fn from_config(config: &Config, prefix: &str, imprint_href: Option<String>, hosting: bool) -> Self {
         Self {
             imprint_href,

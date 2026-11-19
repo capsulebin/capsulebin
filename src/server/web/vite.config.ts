@@ -1,23 +1,26 @@
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
-import { catalogueModule } from './scripts/catalogue.ts';
 import {
     GENERATED_DIR,
     SHELLS,
     catalogueLanguages,
+    fillServerTokens,
     generateShells,
     generatedPath,
     type ShellName,
 } from './scripts/shells.ts';
+import { DEFAULT_LANGUAGE } from './src/default-language.ts';
 
 /**
  * The shells are generated per language from the templates in this directory and
  * the catalogues in src/i18n/ (scripts/shells.ts) before Vite sees them. Vite
- * builds the generated files; this plugin puts them at `dist/<lang>/<shell>.html`
- * and, in the dev server, answers the page routes under every language prefix
- * the way the server does. Paths without a prefix get a 404 there instead of the
- * server's redirect.
+ * builds the generated files, all languages in one build; this plugin puts them
+ * at `dist/<lang>/<shell>.html` and, in the dev server, answers the page routes
+ * the way the server does with `DEFAULT_LANGUAGE` as its default language: that
+ * language's pages without a prefix, every other under `/<lang>/`, and the
+ * shells' server tokens filled in accordingly. Paths under the default
+ * language's prefix get a 404 there instead of the server's redirect.
  */
 function languageShells(): Plugin {
     /** The shell a page path without language prefix shows, e.g. `/p/x` -> `p`. */
@@ -31,24 +34,35 @@ function languageShells(): Plugin {
     };
     const shellForRoute = (path: string): { lang: string; shell: ShellName } | null => {
         const match = /^\/([a-z]{2,3})(\/.*)$/.exec(path);
-        const [, lang = '', rest = ''] = match ?? [];
-        if (!catalogueLanguages().includes(lang)) return null;
-        const shell = shellForPage(rest);
-        return shell ? { lang, shell } : null;
+        const [, prefix = '', tail = ''] = match ?? [];
+        const prefixed = prefix !== DEFAULT_LANGUAGE && catalogueLanguages().includes(prefix);
+        const shell = shellForPage(prefixed ? tail : path);
+        return shell ? { lang: prefixed ? prefix : DEFAULT_LANGUAGE, shell } : null;
     };
+    /** The language of a generated shell by its dev server path (`/.shells/de/p.html`). */
+    const languageOfShell = (path: string): string | null =>
+        new RegExp(`^/${GENERATED_DIR}/([^/]+)/`).exec(path)?.[1] ?? null;
     /**
-     * Paths that would otherwise get a raw template (`{{lang}}` unfilled): pages
-     * without a prefix, which only the real server redirects, the bare prefix
-     * (`/en`), and the templates themselves.
+     * Paths that would otherwise get a raw template (`{{lang}}` unfilled): the
+     * bare prefix (`/de`) and the templates themselves.
      */
     const wouldServeTemplate = (path: string): boolean =>
-        shellForPage(path) !== null ||
         catalogueLanguages().some((lang) => path === `/${lang}`) ||
         SHELLS.some((shell) => path === `/${shell}.html`);
 
     return {
         name: 'capsulebin-language-shells',
         enforce: 'post',
+        config() {
+            const shells = generateShells();
+            return {
+                build: {
+                    rolldownOptions: {
+                        input: shells.map((path) => resolve(import.meta.dirname, path)),
+                    },
+                },
+            };
+        },
         generateBundle(_, bundle) {
             const prefix = `${GENERATED_DIR}/`;
             for (const file of Object.values(bundle)) {
@@ -58,7 +72,6 @@ function languageShells(): Plugin {
             }
         },
         configureServer(server) {
-            generateShells();
             const sources = [
                 ...SHELLS.map((shell) => resolve(import.meta.dirname, `${shell}.html`)),
                 resolve(import.meta.dirname, 'src/i18n'),
@@ -76,40 +89,36 @@ function languageShells(): Plugin {
                 if (route) {
                     req.url = `/${generatedPath(route.lang, route.shell)}${url.search}`;
                 } else if (wouldServeTemplate(url.pathname)) {
-                    const prefixes = catalogueLanguages().map((lang) => `/${lang}/`);
                     res.statusCode = 404;
                     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
                     res.end(
-                        `Not found. The dev server serves pages only under a language prefix ` +
-                            `(${prefixes.join(', ')}); the server redirects paths without one.\n`,
+                        `Not found. The dev server serves ${DEFAULT_LANGUAGE} pages without a ` +
+                            `prefix (/) and every other language under its own (/<lang>/).\n`,
                     );
                     return;
                 }
                 next();
             });
         },
+        transformIndexHtml(html, ctx) {
+            // Only the dev server: in a build the tokens stay for the server to fill.
+            const lang = ctx.server ? languageOfShell(ctx.path) : null;
+            return lang ? fillServerTokens(html, lang, DEFAULT_LANGUAGE) : html;
+        },
     };
 }
-
-/** Modules whose output does not depend on the interface language. */
-const LANGUAGE_FREE = /[\\/](node_modules|src[\\/]core)[\\/]/;
 
 /**
  * Vite is only a dev server and bundler - there is no SPA runtime. Hence a
  * multi-page build: every route gets its own document and the server maps path to
  * file.
- *
- * The production build is scripts/build.ts (`npm run build`), which runs Vite
- * once per language with that language's shells as input and its catalogue as
- * `virtual:catalogue`. The dev server has every catalogue in one module, chosen
- * by `<html lang>`.
  */
 export default defineConfig({
     root: import.meta.dirname,
     base: '/',
     // No SPA fallback: an unknown path is a 404, not the raw index.html template.
     appType: 'mpa',
-    plugins: [languageShells(), { ...catalogueModule(null), apply: 'serve' }],
+    plugins: [languageShells()],
 
     build: {
         outDir: 'dist',
@@ -133,25 +142,6 @@ export default defineConfig({
         // No source maps in production: the bundle ships inside the binary and source
         // maps would only widen the attack surface.
         sourcemap: false,
-        rolldownOptions: {
-            output: {
-                // Libraries and @capsulebin/core in chunks of their own, split by
-                // the pages that use them: a chunk that imports the catalogue
-                // differs per language, so anything bundled with it would exist
-                // once per language. DOMPurify gets a chunk of its own: the browser
-                // tests allow Chromium's report of its inert parse by that name.
-                codeSplitting: {
-                    groups: [
-                        {
-                            name: 'dompurify',
-                            test: /[\\/]node_modules[\\/]dompurify[\\/]/,
-                            priority: 1,
-                        },
-                        { name: 'vendor', test: LANGUAGE_FREE, entriesAware: true },
-                    ],
-                },
-            },
-        },
     },
 
     server: {

@@ -16,7 +16,7 @@ mod markdown;
 
 use std::path::Path;
 
-use crate::config::{Config, ConfigError, LegalSection};
+use crate::config::{Config, ConfigError, LegalSection, language_prefix};
 
 pub use markdown::render as render_markdown;
 
@@ -29,7 +29,7 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_URL_BYTES: usize = 2048;
 
 /// The language of the legal texts: the built-in ones are English, and the
-/// operator's text for a page is served under every language prefix.
+/// operator's text for a page is served in the pages of every language.
 const TEXT_LANGUAGE: &str = "en";
 
 /// Everything the legal routes and the footer of one interface language need,
@@ -83,7 +83,7 @@ pub enum Which {
 impl Which {
     pub const ALL: [Self; 3] = [Self::Imprint, Self::Privacy, Self::Terms];
 
-    /// The page's path below the language prefix, and its name in the
+    /// The page's path below the language prefix (if any), and its name in the
     /// shell's footer marker.
     pub fn path(self) -> &'static str {
         match self {
@@ -112,12 +112,13 @@ enum Target {
 }
 
 /// Reads, checks and renders the legal pages for the shells of `language`:
-/// links to the pages served here carry its prefix (`/de/privacy`). Called by
+/// links to the pages served here carry its prefix (`/de/privacy`, or
+/// `/privacy` for the default language). Called by
 /// `Config::validate` for every known language, so `capsulebin check`
 /// reports a missing file or a bad combination too.
 pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigError> {
     let legal = &config.legal;
-    let prefix = format!("/{language}");
+    let prefix = language_prefix(&config.i18n.default_language, language);
     let page = |title: &'static str, markdown: &str| page(title, markdown, language);
 
     if legal.hosting.is_some() && legal.operator.is_none() {

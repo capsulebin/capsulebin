@@ -19,8 +19,8 @@ mod env;
 mod model;
 
 pub use model::{
-    AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, KNOWN_LANGUAGES, LegalConfig, LegalSection,
-    PastesConfig, PurgeConfig, ServerConfig, Synchronous,
+    AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES, LegalConfig,
+    LegalSection, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
 };
 
 use std::path::{Path, PathBuf};
@@ -70,6 +70,8 @@ pub struct Resolved {
     /// The legal pages and footer links of every interface language, read
     /// and rendered, in the order of [`KNOWN_LANGUAGES`].
     pub legal: Vec<(&'static str, crate::legal::LegalPages)>,
+    /// `i18n.default_language`: the language of the pages without a prefix.
+    pub default_language: &'static str,
 }
 
 impl Config {
@@ -112,6 +114,8 @@ impl Config {
         self.abuse.validate()?;
         self.rate_limits.validate()?;
         let creation_tokens = self.creation.validate()?;
+        // Before the legal pages: their links depend on the default language.
+        let default_language = self.i18n.validate()?;
         let legal = KNOWN_LANGUAGES
             .iter()
             .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))
@@ -123,6 +127,7 @@ impl Config {
             config: self.clone(),
             creation_tokens,
             legal,
+            default_language,
         })
     }
 }

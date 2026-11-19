@@ -58,6 +58,8 @@ pub struct AppState {
     /// language, rendered once from `[legal]` (see
     /// [`legal`] and [`api::assets`]).
     pub legal: Arc<LegalByLanguage>,
+    /// `i18n.default_language`: the language of the pages without a prefix.
+    pub default_language: &'static str,
 }
 
 impl AppState {
@@ -83,6 +85,7 @@ impl AppState {
             rate_limits: resolved.config.rate_limits.clone(),
             abuse: resolved.config.abuse.clone(),
             legal: Arc::new(LegalByLanguage::new(resolved.legal.clone())),
+            default_language: resolved.default_language,
         }
     }
 
@@ -117,7 +120,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api::health::routes())
         .merge(api::pastes::routes())
         .merge(api::reports::routes())
-        .merge(api::assets::routes())
+        .merge(api::assets::routes(state.default_language))
         // `.layer()` wraps, so the *later* call runs *first*: the client IP is
         // resolved before the rate limiter reads it. In the opposite order every
         // client shared one bucket (`tests/rate_limits.rs` pins this down).

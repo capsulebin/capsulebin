@@ -1,9 +1,10 @@
 // @vitest-environment node
 /**
- * Acceptance test for the external review fix "dev server 404": the Vite dev
- * server serves the pages under every language prefix like the server does and
- * answers 404 - never a raw template with unfilled `{{…}}` placeholders - for
- * page paths without a prefix, the bare prefix and the template files.
+ * Acceptance test for the Vite dev server: it serves the pages the way the server
+ * does with `en` as default language - English without a prefix, every other
+ * language under its own, the server tokens of the shells filled in - and answers
+ * 404, never a raw template with unfilled `{{…}}` placeholders, for the default
+ * language's prefix, a bare prefix and the template files.
  */
 
 import { resolve } from 'node:path';
@@ -12,6 +13,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type ViteDevServer } from 'vite';
 
 import { KNOWN_LANGUAGES } from '@capsulebin/core';
+
+import { DEFAULT_LANGUAGE } from '../src/default-language';
+import { languagePrefix } from '../src/language-prefix';
 
 let server: ViteDevServer;
 let origin: string;
@@ -37,36 +41,44 @@ async function get(path: string): Promise<{ status: number; text: string }> {
     return { status: response.status, text: await response.text() };
 }
 
+const PAGES = [
+    '/',
+    '/p/AbCdEfGhIjKlMnOpQrStUv',
+    '/manage/AbCdEfGhIjKlMnOpQrStUv',
+    '/report?id=x',
+    '/imprint',
+    '/privacy',
+    '/terms',
+];
+
 describe('dev server', () => {
-    it('serves every page under every language prefix with a filled shell', async () => {
+    it('serves every page of every language with a filled shell', async () => {
         for (const lang of KNOWN_LANGUAGES) {
-            for (const path of [
-                '/',
-                '/p/AbCdEfGhIjKlMnOpQrStUv',
-                '/manage/AbCdEfGhIjKlMnOpQrStUv',
-                '/report?id=x',
-                '/imprint',
-                '/privacy',
-                '/terms',
-            ]) {
-                const answer = await get(`/${lang}${path}`);
-                expect(answer.status, `/${lang}${path}`).toBe(200);
-                expect(answer.text, `/${lang}${path}`).toContain(`<html lang="${lang}"`);
-                expect(answer.text, `/${lang}${path}`).not.toContain('{{');
+            const prefix = languagePrefix(DEFAULT_LANGUAGE, lang);
+            for (const page of PAGES) {
+                const path = prefix + page;
+                const answer = await get(path);
+                expect(answer.status, path).toBe(200);
+                expect(answer.text, path).toContain(`<html lang="${lang}"`);
+                expect(answer.text, path).not.toContain('{{');
+                expect(answer.text, path).not.toContain('%%');
+                expect(answer.text, path).toContain(`data-default="${DEFAULT_LANGUAGE}"`);
+                expect(answer.text, path).toContain(`<a class="cb-logo" href="${prefix}/">`);
             }
+        }
+    });
+
+    it('answers 404 under the prefix of the default language', async () => {
+        for (const page of PAGES) {
+            const path = `/${DEFAULT_LANGUAGE}${page}`;
+            const answer = await get(path);
+            expect(answer.status, path).toBe(404);
+            expect(answer.text, path).not.toContain('{{');
         }
     });
 
     it('answers 404 instead of a raw template', async () => {
         for (const path of [
-            '/',
-            '/p/AbCdEfGhIjKlMnOpQrStUv',
-            '/manage/AbCdEfGhIjKlMnOpQrStUv',
-            '/report',
-            '/report?id=x',
-            '/imprint',
-            '/privacy',
-            '/terms',
             '/index.html',
             '/p.html',
             '/manage.html',

@@ -81,56 +81,77 @@ describe('language-init.js', () => {
     });
 
     it('prefers the stored choice over the browser language', () => {
-        expect(run({ path: '/en/', stored: 'de', browser: ['en-US'] })).toBe('/de/');
+        expect(run({ path: '/', stored: 'de', browser: ['en-US'] })).toBe('/de/');
+        expect(run({ path: '/de/', stored: 'en', browser: ['de-DE'] })).toBe('/');
     });
 
     it('ignores a stored language that is not offered', () => {
         expect(
             run({ path: '/de/', stored: 'de', meta: { content: 'en', default: 'en' } }),
         ).toBeNull();
-        expect(run({ path: '/en/', stored: 'fr', browser: ['de-AT'] })).toBe('/de/');
+        expect(run({ path: '/', stored: 'fr', browser: ['de-AT'] })).toBe('/de/');
     });
 
     it('takes the first browser language whose primary subtag is offered', () => {
-        expect(run({ path: '/en/report', browser: ['fr-FR', 'de-CH', 'en'] })).toBe('/de/report');
-        expect(run({ path: '/de/report', browser: ['EN-gb', 'de'] })).toBe('/en/report');
+        expect(run({ path: '/report', browser: ['fr-FR', 'de-CH', 'en'] })).toBe('/de/report');
+        expect(run({ path: '/de/report', browser: ['EN-gb', 'de'] })).toBe('/report');
     });
 
     it('falls back to the default language (data-default)', () => {
-        expect(
-            run({ path: '/de/', browser: ['fr'], meta: { content: 'en de', default: 'en' } }),
-        ).toBe('/en/');
+        expect(run({ path: '/de/', browser: ['fr'] })).toBe('/');
         expect(run({ path: '/en/', browser: [], meta: { content: 'en de', default: 'de' } })).toBe(
-            '/de/',
+            '/',
         );
     });
 
+    it('treats a path without a known prefix as the default language', () => {
+        expect(run({ path: '/p/abc', browser: ['en-US'] })).toBeNull();
+        expect(run({ path: '/p/abc', browser: ['de-DE'] })).toBe('/de/p/abc');
+        expect(run({ path: '/fr/', stored: 'de' })).toBe('/de/fr/');
+    });
+
+    it('follows the configured default language', () => {
+        const meta = { content: 'en de', default: 'de' };
+        expect(run({ path: '/p/abc', browser: ['de-DE'], meta })).toBeNull();
+        expect(run({ path: '/p/abc', browser: ['en-US'], meta })).toBe('/en/p/abc');
+        expect(run({ path: '/en/p/abc', browser: ['en-US'], meta })).toBeNull();
+        expect(run({ path: '/en/p/abc', stored: 'de', browser: ['en-US'], meta })).toBe('/p/abc');
+    });
+
     it('keeps the rest of the path, the query and the fragment unchanged', () => {
-        expect(
-            run({
-                path: '/en/p/01JABCDEFGHJKMNPQRSTVWXYZ0',
-                search: '?x=1',
-                hash: '#v1.c2VjcmV0',
-                stored: 'de',
-            }),
-        ).toBe('/de/p/01JABCDEFGHJKMNPQRSTVWXYZ0?x=1#v1.c2VjcmV0');
+        const page = { search: '?x=1', hash: '#v1.c2VjcmV0' };
+        expect(run({ ...page, path: '/p/01JABCDEFGHJKMNPQRSTVWXYZ0', stored: 'de' })).toBe(
+            '/de/p/01JABCDEFGHJKMNPQRSTVWXYZ0?x=1#v1.c2VjcmV0',
+        );
+        expect(run({ ...page, path: '/de/p/01JABCDEFGHJKMNPQRSTVWXYZ0', stored: 'en' })).toBe(
+            '/p/01JABCDEFGHJKMNPQRSTVWXYZ0?x=1#v1.c2VjcmV0',
+        );
+    });
+
+    it('leads from the bare prefix to the start page', () => {
+        expect(run({ path: '/de', stored: 'en' })).toBe('/');
     });
 
     it('stays when the page already has the chosen language', () => {
         expect(run({ path: '/de/manage/x', stored: 'de', browser: ['en'] })).toBeNull();
-        expect(run({ path: '/en/', browser: ['en-US'] })).toBeNull();
+        expect(run({ path: '/', browser: ['en-US'] })).toBeNull();
+        expect(run({ path: '/manage/x', stored: 'en', browser: ['de'] })).toBeNull();
     });
 
     it('does nothing without the meta element', () => {
-        expect(run({ path: '/en/', stored: 'de', meta: null })).toBeNull();
+        expect(run({ path: '/', stored: 'de', meta: null })).toBeNull();
     });
+
+    it.each(['%%capsulebin:default%%', 'fr', ''])(
+        'does nothing without a usable default language: %j',
+        (fallback) => {
+            const meta = { content: 'en de', default: fallback };
+            expect(run({ path: '/', stored: 'de', meta })).toBeNull();
+            expect(run({ path: '/de/', stored: 'en', meta })).toBeNull();
+        },
+    );
 
     it('does nothing without localStorage', () => {
-        expect(run({ path: '/en/', stored: 'throws', browser: ['de'] })).toBeNull();
-    });
-
-    it('does nothing on a path without an offered prefix', () => {
-        expect(run({ path: '/fr/', stored: 'de' })).toBeNull();
-        expect(run({ path: '/', stored: 'de' })).toBeNull();
+        expect(run({ path: '/', stored: 'throws', browser: ['de'] })).toBeNull();
     });
 });

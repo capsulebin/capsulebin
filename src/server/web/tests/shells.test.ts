@@ -1,17 +1,20 @@
 /**
  * The shell templates and the per-language shells generated from them
  * (scripts/shells.ts): every visible text comes from the catalogue, nothing of
- * the template machinery is left over, the server's markers are all there, the
- * languages meta is written at build time, and every internal link stays within
- * the page's language.
+ * the template machinery is left over, the server's markers and tokens are all
+ * there, the languages meta is written at build time, and every internal link
+ * stays within the page's language once the server has filled in the prefix.
  */
 
 import { KNOWN_LANGUAGES } from '@capsulebin/core';
 import { describe, expect, it } from 'vitest';
 
 import {
+    DEFAULT_TOKEN,
+    PREFIX_TOKEN,
     SHELLS,
     catalogueLanguages,
+    fillServerTokens,
     fitsInComment,
     keysInComments,
     readCatalogue,
@@ -211,15 +214,18 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         expect(html).not.toContain('<!--capsulebin:legal-links-->');
     });
 
-    /** public/language-init.js and the language switch read it; the server adds nothing. */
-    it('names every known language and the default in its head, before the head script', () => {
+    /**
+     * public/language-init.js and the language switch read it. The languages are
+     * written here; the default language is the server's to fill in.
+     */
+    it('names every known language in its head, before the head script, with the default token', () => {
         const metas = doc.querySelectorAll<HTMLMetaElement>('meta[name="capsulebin-languages"]');
         expect(metas).toHaveLength(1);
         const meta = metas[0]!;
         expect(meta.parentElement).toBe(doc.head);
         expect(meta.content).toBe(KNOWN_LANGUAGES.join(' '));
-        expect(meta.content.split(' ')[0]).toBe('en');
-        expect(meta.dataset.default).toBe('en');
+        expect(meta.dataset.default).toBe(DEFAULT_TOKEN);
+        expect(html.split(DEFAULT_TOKEN)).toHaveLength(2);
 
         const script = doc.head.querySelector('script[src="/language-init.js"]')!;
         expect(
@@ -227,17 +233,60 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         ).toBeTruthy();
     });
 
-    it('links internally only within its language', () => {
-        const links = [...doc.querySelectorAll<HTMLAnchorElement>('a[href^="/"]')].concat(
-            [...doc.querySelectorAll('template')].flatMap((template) => [
-                ...template.content.querySelectorAll<HTMLAnchorElement>('a[href^="/"]'),
-            ]),
-        );
+    /** Every `<a href>` of `page`, including those inside <template>s. */
+    const hrefs = (page: Document): string[] =>
+        [...page.querySelectorAll('a[href]')]
+            .concat(
+                [...page.querySelectorAll('template')].flatMap((template) => [
+                    ...template.content.querySelectorAll('a[href]'),
+                ]),
+            )
+            .map((link) => link.getAttribute('href')!);
+
+    /** The prefix depends on the default language, so the server fills it in. */
+    it('starts every link with the prefix token and has no language in a link', () => {
+        const links = hrefs(doc);
         expect(links.length).toBeGreaterThan(0);
-        for (const link of links) {
-            expect(link.getAttribute('href')).toMatch(new RegExp(`^/${lang}/`));
+        for (const href of links) {
+            expect(href.startsWith(`${PREFIX_TOKEN}/`), href).toBe(true);
+            expect(href.slice(PREFIX_TOKEN.length), href).not.toMatch(
+                new RegExp(`^/(${KNOWN_LANGUAGES.join('|')})(/|$)`),
+            );
         }
+        expect(html).not.toContain(`/${lang}/`);
     });
+
+    it('carries the tokens only as link prefix and as the default in the meta', () => {
+        const other = html
+            .replaceAll(`href="${PREFIX_TOKEN}/`, '')
+            .replaceAll(`data-default="${DEFAULT_TOKEN}"`, '');
+        expect(other).not.toContain('%%');
+    });
+
+    it.each(KNOWN_LANGUAGES)(
+        'links only within its language on an instance with default %s',
+        (d) => {
+            const served = fillServerTokens(html, lang, d);
+            expect(served).not.toContain('%%');
+            expect(
+                parse(served).querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]')!
+                    .dataset.default,
+            ).toBe(d);
+
+            const others = KNOWN_LANGUAGES.filter((known) => known !== lang).join('|');
+            for (const href of hrefs(parse(served))) {
+                if (lang === d) {
+                    expect(href, href).toMatch(/^\/(?!\/)/);
+                    expect(href, href).not.toMatch(
+                        new RegExp(`^/(${KNOWN_LANGUAGES.join('|')})(/|$)`),
+                    );
+                } else {
+                    expect(href, href).toMatch(new RegExp(`^/${lang}/`));
+                }
+                expect(href, href).not.toMatch(new RegExp(`^/(${others})(/|$)`));
+            }
+        },
+    );
 
     it('has a hidden language switch next to the theme toggle', () => {
         const tools = doc.querySelector('.cb-head-tools')!;

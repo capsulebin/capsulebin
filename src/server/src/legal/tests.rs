@@ -55,7 +55,7 @@ fn nothing_configured_means_no_pages_and_no_links() {
 fn an_operator_brings_the_imprint_and_both_built_in_texts() {
     let pages = resolved(&with_operator());
 
-    assert_eq!(pages.footer, links(Some("/en/imprint"), Some("/en/privacy"), Some("/en/terms")));
+    assert_eq!(pages.footer, links(Some("/imprint"), Some("/privacy"), Some("/terms")));
     let imprint = pages.imprint.expect("imprint");
     assert_eq!(imprint.title, "Imprint");
     assert!(imprint.html.contains("Example GmbH<br />"), "{}", imprint.html);
@@ -63,9 +63,9 @@ fn an_operator_brings_the_imprint_and_both_built_in_texts() {
     assert!(pages.terms.expect("terms").html.contains("<h2>What you may not share</h2>"));
 }
 
-/// Links to pages served here carry the prefix of the shell they are shown in;
-/// links elsewhere stay as configured. The text itself stays English, marked as
-/// such inside a shell of another language.
+/// Links to pages served here carry the prefix of the shell they are shown in,
+/// none for the default language; links elsewhere stay as configured. The text
+/// itself stays English, marked as such inside a shell of another language.
 #[test]
 fn links_follow_the_language_of_the_shell() {
     let mut config = with_operator();
@@ -80,7 +80,16 @@ fn links_follow_the_language_of_the_shell() {
 
     let english = resolved(&config).terms.expect("terms").html;
     assert!(english.starts_with(r#"<article class="cb-prose cb-legal">"#), "{english}");
-    assert!(english.contains(r#"href="/en/report""#), "{english}");
+    assert!(english.contains(r#"href="/report""#), "{english}");
+
+    // With German as the default it is English that has the prefix.
+    config.i18n.default_language = "de".to_owned();
+    let pages = resolve(&config, "de").expect("legal configuration must resolve");
+    assert_eq!(pages.footer, links(Some("/imprint"), Some("/privacy-notice"), Some("/terms")));
+    assert!(pages.terms.expect("terms").html.contains(r#"href="/report""#));
+    let pages = resolved(&config);
+    assert_eq!(pages.footer, links(Some("/en/imprint"), Some("/privacy-notice"), Some("/en/terms")));
+    assert!(pages.terms.expect("terms").html.contains(r#"href="/en/report""#));
 }
 
 #[test]

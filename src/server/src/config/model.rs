@@ -30,6 +30,8 @@ pub struct Config {
     pub abuse: AbuseConfig,
     #[serde(default)]
     pub legal: LegalConfig,
+    #[serde(default)]
+    pub i18n: I18nConfig,
 }
 
 fn default_bind() -> String {
@@ -600,11 +602,59 @@ pub struct LegalSection {
     pub extra_file: Option<PathBuf>,
 }
 
-/// Interface languages the server offers, each under its path prefix (`/en/`,
-/// `/de/`): a shell is built for each of them
+/// Interface languages the server offers: a shell is built for each of them
 /// (`src/server/web/src/i18n/<code>.json`). The same list lives in
 /// `@capsulebin/core` (`languages.ts`); a test keeps the three in step.
 pub const KNOWN_LANGUAGES: &[&str] = &["en", "de"];
 
-/// The language a request without a usable `Accept-Language` is sent to.
+/// The default of `i18n.default_language`.
 pub const DEFAULT_LANGUAGE: &str = "en";
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_owned()
+}
+
+/// `[i18n]`: which known language is the default one. Every known language is
+/// always offered; the default one has its pages at the paths without a
+/// prefix (`/p/{id}`), every other one under its prefix (`/de/p/{id}`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct I18nConfig {
+    #[serde(default = "default_language")]
+    pub default_language: String,
+}
+
+impl Default for I18nConfig {
+    fn default() -> Self {
+        Self {
+            default_language: default_language(),
+        }
+    }
+}
+
+impl I18nConfig {
+    /// The default language as the known code it names.
+    pub(super) fn validate(&self) -> Result<&'static str, ConfigError> {
+        KNOWN_LANGUAGES
+            .iter()
+            .copied()
+            .find(|&language| language == self.default_language)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "i18n.default_language must be one of {}, got {:?}",
+                    KNOWN_LANGUAGES.join(", "),
+                    self.default_language
+                ))
+            })
+    }
+}
+
+/// The path prefix of the pages in `language`: none for the default language,
+/// `/<language>` for every other one.
+pub fn language_prefix(default_language: &str, language: &str) -> String {
+    if language == default_language {
+        String::new()
+    } else {
+        format!("/{language}")
+    }
+}

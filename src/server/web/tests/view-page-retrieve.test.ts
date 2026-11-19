@@ -9,9 +9,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PublicHeader, toBase64url } from '@capsulebin/core';
 
-import { shellFor } from '../scripts/shells';
-import de from '../src/i18n/de.json';
+import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
 import { LANGUAGE_STORAGE_KEY } from '../src/language';
+import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const KEY = `v1.${toBase64url(new Uint8Array(32).fill(7))}`;
@@ -45,8 +45,8 @@ beforeAll(async () => {
         return new Promise<Response>(() => {});
     });
 
-    const page = new DOMParser().parseFromString(shellFor('p', 'de'), 'text/html');
-    document.documentElement.lang = 'de';
+    const page = new DOMParser().parseFromString(servedShell('p', 'de'), 'text/html');
+    await setPageLanguage('de');
     document.documentElement.innerHTML = page.documentElement.innerHTML;
     window.history.replaceState(null, '', `/de/p/${ID}#${KEY}`);
     await import('../src/pages/view');
@@ -68,7 +68,7 @@ describe('view page during the retrieval', () => {
         expect(window.location.hash).toBe(`#${KEY}`);
         expect(document.querySelectorAll('[data-language-notice]')).toHaveLength(1);
         expect(document.querySelector('[data-language-notice]')!.textContent).toBe(
-            de['shell.languageNextPage'],
+            LANGUAGE_NEXT_PAGE.en,
         );
     });
 });

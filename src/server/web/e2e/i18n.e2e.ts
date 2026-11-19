@@ -4,13 +4,15 @@ import { create } from './create';
 import { type Guard, expect, installGuard, test } from './guard';
 
 /**
- * The interface languages in a real engine: every page under a language prefix,
- * the German interface without English left over, the language switch, internal
- * links that keep the prefix, and the way a prefix-less share link reaches the
- * page in the reader's language with the key still in the fragment.
+ * The interface languages in a real engine: the default language (`en` here)
+ * without a path prefix and German under `/de/`, the German interface without
+ * English left over, the language switch, internal links that stay in the page's
+ * language, and the way a prefix-less share link reaches the page in the reader's
+ * language with the key still in the fragment.
  *
  * Playwright's browsers default to `en-US`; `language-init.js` would move a page
- * under `/de/` to `/en/` there, so the German flows run with `locale: 'de-DE'`.
+ * under `/de/` to the prefix-less one there, so the German flows run with
+ * `locale: 'de-DE'`.
  */
 
 const catalogue = (language: string): Record<string, string> =>
@@ -70,6 +72,13 @@ async function expectLinksUnder(page: Page, prefix: string): Promise<void> {
     const links = await internalLinks(page);
     expect(links.length).toBeGreaterThan(0);
     expect(links.filter((href) => !href.startsWith(prefix))).toEqual([]);
+}
+
+/** Pages in the default language link without any language prefix. */
+async function expectLinksWithoutPrefix(page: Page): Promise<void> {
+    const links = await internalLinks(page);
+    expect(links.length).toBeGreaterThan(0);
+    expect(links.filter((href) => /^\/(en|de)(\/|$)/.test(href))).toEqual([]);
 }
 
 /** A second browser with its own locale, under the same guard as the test's own. */
@@ -201,7 +210,8 @@ test.describe('in a German browser', () => {
         expect(fragment).toMatch(/^#v1\./);
         expect(manage).toMatch(new RegExp(`^${origin}/manage/${id}#v1\\.`));
 
-        // A fresh browser, nothing stored: the server picks /de/ by Accept-Language.
+        // A fresh browser, nothing stored: the server answers with the English page
+        // and language-init.js moves it to /de/ by the browser language.
         const { context, guard } = await browserIn(browser, 'de-DE');
         const view = await context.newPage();
         const urls = recordUrls(view);
@@ -216,7 +226,31 @@ test.describe('in a German browser', () => {
     });
 });
 
-test('an English browser moves a /de/ link to /en/ until German is chosen', async ({
+test('every internal link of an English page has no language prefix', async ({ page, context }) => {
+    await page.goto('/');
+    await expectLinksWithoutPrefix(page);
+    const { share, manage } = await create(page, { items: [{ type: 'plain', text: 'Links' }] });
+    await expectLinksWithoutPrefix(page);
+
+    const view = await context.newPage();
+    await view.goto(share);
+    await expect(view.locator('.cb-item-panel')).toContainText('Links', { timeout: 30_000 });
+    await expectLinksWithoutPrefix(view);
+    expect(await internalLinks(view)).toContain(`/report?id=${parts(share).id}`);
+
+    const managePage = await context.newPage();
+    await managePage.goto(manage);
+    await expect(managePage.locator('[data-delete-btn]')).toBeVisible({ timeout: 30_000 });
+    await expectLinksWithoutPrefix(managePage);
+
+    for (const path of ['/report', '/imprint', '/privacy', '/terms']) {
+        await page.goto(path);
+        await expect(page.locator('footer')).toBeVisible();
+        await expectLinksWithoutPrefix(page);
+    }
+});
+
+test('an English browser moves a /de/ link to the prefix-less one until German is chosen', async ({
     page,
     browser,
 }) => {
@@ -229,11 +263,21 @@ test('an English browser moves a /de/ link to /en/ until German is chosen', asyn
     const urls = recordUrls(view);
     await view.goto(`${origin}/de/p/${id}${fragment}`);
     await expect(view.locator('.cb-item-panel')).toContainText('Moved along', { timeout: 30_000 });
-    expect(urls).toContain(`${origin}/en/p/${id}${fragment}`);
-    expect(new URL(view.url()).pathname).toBe(`/en/p/${id}`);
+    expect(urls).toContain(`${origin}/p/${id}${fragment}`);
+    expect(new URL(view.url()).pathname).toBe(`/p/${id}`);
 
-    // The stored choice outranks the browser language, and Accept-Language too.
+    // The stored choice outranks the browser language: the /de/ link now stays ...
     await view.evaluate(() => localStorage.setItem('capsulebin.language', 'de'));
+    const stays = await context.newPage();
+    const staysUrls = recordUrls(stays);
+    await stays.goto(`${origin}/de/p/${id}${fragment}`);
+    await expect(stays.locator('.cb-item-panel')).toContainText('Moved along', {
+        timeout: 30_000,
+    });
+    expect(staysUrls).not.toContain(`${origin}/p/${id}${fragment}`);
+    expect(new URL(stays.url()).pathname).toBe(`/de/p/${id}`);
+
+    // ... and the prefix-less share link moves to /de/.
     const again = await context.newPage();
     const againUrls = recordUrls(again);
     await again.goto(share);
@@ -247,24 +291,51 @@ test('an English browser moves a /de/ link to /en/ until German is chosen', asyn
 });
 
 test('on a filled create form the language switch only stores the choice', async ({ page }) => {
-    await page.goto('/en/');
+    await page.goto('/');
     const editor = page.locator('[data-item-text]');
     await editor.fill('A draft worth keeping');
     await page.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
 
     await page.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
     await expect(page.locator('[data-language-notice]')).toHaveText(
-        catalogue('en')['shell.languageNextPage'] ?? '',
+        catalogue('de')['shell.languageNextPage'] ?? '',
     );
     expect(await page.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
     expect(await page.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
-    expect(new URL(page.url()).pathname).toBe('/en/');
+    expect(new URL(page.url()).pathname).toBe('/');
     await expect(editor).toHaveValue('A draft worth keeping');
 });
 
+// AC24: a field other than the items is a draft too.
+test('with only a title or an expiry set the language switch only stores the choice', async ({
+    page,
+}) => {
+    const german = page.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' });
+    const notice = page.locator('[data-language-notice]');
+
+    await page.goto('/');
+    await page.locator('#create-title').fill('Only a title');
+    await page.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+    await german.click();
+    await expect(notice).toHaveText(catalogue('de')['shell.languageNextPage'] ?? '');
+    expect(await page.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(page.url()).pathname).toBe('/');
+    await expect(page.locator('#create-title')).toHaveValue('Only a title');
+
+    await page.evaluate(() => localStorage.clear());
+    await page.goto('/');
+    await page.locator('#create-expiry').selectOption('3600');
+    await page.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
+    await german.click();
+    await expect(notice).toHaveText(catalogue('de')['shell.languageNextPage'] ?? '');
+    expect(await page.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
+    expect(new URL(page.url()).pathname).toBe('/');
+    await expect(page.locator('#create-expiry')).toHaveValue('3600');
+});
+
 // On an empty create form the switch navigates.
-test('the language switch moves the start page to German', async ({ page }) => {
-    await page.goto('/en/');
+test('the language switch moves the start page to German and back', async ({ page }) => {
+    await page.goto('/');
     const switcher = page.locator('[data-language-switch]');
     await expect(switcher).toBeVisible();
     await expect(switcher.getByRole('button', { name: 'English' })).toHaveAttribute(
@@ -283,6 +354,12 @@ test('the language switch moves the start page to German', async ({ page }) => {
     await expect(switcher.getByRole('button', { name: 'English' })).not.toHaveAttribute(
         'aria-current',
     );
+
+    // The default language has no prefix.
+    await switcher.getByRole('button', { name: 'English' }).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    expect(new URL(page.url()).pathname).toBe('/');
+    expect(await page.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('en');
 });
 
 test('on an opened capsule the language switch only stores the choice', async ({
@@ -300,9 +377,11 @@ test('on an opened capsule the language switch only stores the choice', async ({
     await view.evaluate(() => Object.assign(window, { stillTheSamePage: true }));
     await view.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
 
-    await expect(view.locator('[data-language-notice]')).toHaveText(
-        catalogue('en')['shell.languageNextPage'] ?? '',
-    );
+    // AC27: in the chosen language, on the English page.
+    await expect(view.locator('html')).toHaveAttribute('lang', 'en');
+    const notice = view.locator('[data-language-notice]');
+    await expect(notice).toHaveText(catalogue('de')['shell.languageNextPage'] ?? '');
+    await expect(notice).toHaveAttribute('lang', 'de');
     expect(await view.evaluate(() => localStorage.getItem('capsulebin.language'))).toBe('de');
     expect(await view.evaluate(() => 'stillTheSamePage' in window)).toBe(true);
     expect(view.url()).toBe(opened);
@@ -337,7 +416,7 @@ test('while a burn capsule is retrieved the language switch only stores the choi
 
     await view.locator('[data-language-switch]').getByRole('button', { name: 'Deutsch' }).click();
     await expect(view.locator('[data-language-notice]')).toHaveText(
-        catalogue('en')['shell.languageNextPage'] ?? '',
+        catalogue('de')['shell.languageNextPage'] ?? '',
     );
     release();
 

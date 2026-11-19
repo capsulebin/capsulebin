@@ -4,11 +4,17 @@
  *
  * Templates are ordinary HTML with these placeholders:
  *
- * - `{{lang}}` - the language code, for `<html lang>` and the prefix of internal
- *   links (`href="/{{lang}}/report"`);
- * - `{{languages}}` and `{{default}}` - every known language, space-separated,
- *   and the default language, for the `<meta name="capsulebin-languages">` that
- *   `public/language-init.js` and the language switch read;
+ * - `{{lang}}` - the language code, for `<html lang>`;
+ * - `{{languages}}` - every known language, space-separated, for the
+ *   `<meta name="capsulebin-languages">` that `public/language-init.js` and the
+ *   language switch read;
+ * - `{{prefix}}` and `{{default}}` - the prefix of internal links
+ *   (`href="{{prefix}}/report"`) and the meta's `data-default`. Both depend on the
+ *   instance's default language, which is configuration and so unknown here: the
+ *   generator writes the tokens {@link PREFIX_TOKEN} and {@link DEFAULT_TOKEN},
+ *   which pass through the build unchanged. The server replaces them at startup
+ *   (no prefix for the default language, `/<lang>` for every other), the Vite dev
+ *   server per request ({@link fillServerTokens});
  * - `{{<catalogue key>}}` - a text from the catalogue. Catalogue values are plain
  *   text and are HTML-escaped here, so a catalogue cannot bring markup or script
  *   into a page.
@@ -31,7 +37,7 @@ import { join, resolve } from 'node:path';
 // Deep import: plain Node (`npm run build`) cannot resolve core's extensionless index imports.
 import { KNOWN_LANGUAGES } from '@capsulebin/core/src/languages.ts';
 
-import { DEFAULT_LANGUAGE } from '../src/default-language.ts';
+import { languagePrefix } from '../src/language-prefix.ts';
 
 const WEB_ROOT = resolve(import.meta.dirname, '..');
 
@@ -49,6 +55,12 @@ export const GENERATED_DIR = '.shells';
 
 const CATALOGUE_DIR = join(WEB_ROOT, 'src', 'i18n');
 
+/** Token for the prefix of internal links: empty for the default language, else `/<lang>`. */
+export const PREFIX_TOKEN = '%%capsulebin:prefix%%';
+
+/** Token for the instance's default language, in the languages meta. */
+export const DEFAULT_TOKEN = '%%capsulebin:default%%';
+
 /**
  * Placeholders filled from the language rather than the catalogue; catalogue keys
  * always contain a dot, so they cannot clash.
@@ -57,8 +69,19 @@ function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
     return new Map([
         ['lang', lang],
         ['languages', KNOWN_LANGUAGES.join(' ')],
-        ['default', DEFAULT_LANGUAGE],
+        ['prefix', PREFIX_TOKEN],
+        ['default', DEFAULT_TOKEN],
     ]);
+}
+
+/**
+ * Replaces the tokens in a generated shell of language `lang` the way the server
+ * does for an instance whose default language is `defaultLanguage`.
+ */
+export function fillServerTokens(html: string, lang: string, defaultLanguage: string): string {
+    return html
+        .replaceAll(PREFIX_TOKEN, languagePrefix(defaultLanguage, lang))
+        .replaceAll(DEFAULT_TOKEN, defaultLanguage);
 }
 
 const PLACEHOLDER = /\{\{([A-Za-z0-9_.]+)\}\}/g;

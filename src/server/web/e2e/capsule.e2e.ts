@@ -189,7 +189,7 @@ test('a burn capsule with a password survives a wrong password', async ({ page, 
 test('the report form sends the id without the key', async ({ page }) => {
     const { share } = await create(page, { items: [{ type: 'plain', text: 'report me' }] });
 
-    await page.goto('/en/report');
+    await page.goto('/report');
     await page.fill('[data-report-paste]', share);
     await page.selectOption('[data-report-reason]', 'spam');
     await page.fill('[data-report-description]', 'Browser check of the report form.');
@@ -215,7 +215,7 @@ test('hostile HTML in Markdown is removed and never runs', async ({
     // handler. Chromium reports the onerror attribute it sees during that parse as
     // a script-src-attr violation, although nothing in that document can run.
     // Whether anything did run is what the XSS canary and the checks below decide.
-    if (browserName === 'chromium') guard.allow('script-src-attr', /\/assets\/dompurify-/);
+    if (browserName === 'chromium') guard.allow('script-src-attr', /\/assets\/render-markdown-/);
 
     const { share } = await create(page, { items: [{ type: 'markdown', text: HOSTILE_MARKDOWN }] });
     const view = await context.newPage();

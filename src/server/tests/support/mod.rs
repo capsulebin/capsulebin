@@ -72,6 +72,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
+        i18n: Default::default(),
     }
 }
 
@@ -144,8 +145,31 @@ pub async fn harness_from_dump(name: &str, dump: &'static str, now: i64) -> Harn
 }
 
 /// What the web build writes into the `<head>` of every shell: all known
-/// languages and the default.
-pub const LANGUAGES_META: &str = r#"<meta name="capsulebin-languages" content="en de" data-default="en">"#;
+/// languages, and a token where the server puts the configured default.
+const LANGUAGES_META: &str = r#"<meta name="capsulebin-languages" content="en de" data-default="%%capsulebin:default%%">"#;
+
+/// [`LANGUAGES_META`] as a server with the default language `default` serves it.
+pub fn languages_meta(default: &str) -> String {
+    LANGUAGES_META.replace("%%capsulebin:default%%", default)
+}
+
+/// An internal link as the web build writes it into every shell, with a token
+/// where the server puts the language prefix.
+const REPORT_LINK: &str = r#"<a href="%%capsulebin:prefix%%/report">report</a>"#;
+
+/// [`REPORT_LINK`] as served in a shell under `prefix` (`""` or `/de`).
+pub fn report_link(prefix: &str) -> String {
+    REPORT_LINK.replace("%%capsulebin:prefix%%", prefix)
+}
+
+/// Each possible `i18n.default_language` with the path prefix every known
+/// language then has: none for the default language itself.
+pub const LAYOUTS: [(&str, [(&str, &str); 2]); 2] = [("en", [("en", ""), ("de", "/de")]), ("de", [("en", "/en"), ("de", "")])];
+
+/// A token-mode harness with `default` as `i18n.default_language`.
+pub async fn harness_with_default_language(name: &str, default: &str) -> Harness {
+    harness_with(name, |config| config.i18n.default_language = default.to_owned()).await
+}
 
 /// A legal section configured as Markdown text.
 pub fn legal_text(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
@@ -164,14 +188,15 @@ pub fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
 
 /// The asset directory doubles as the shell source, so the tests do not depend on
 /// a frontend build having happened. Like the build, it has the shells of every
-/// known language under `<language>/`, each with the language list in its head
-/// and the footer markers with the labels of its catalogue.
+/// known language under `<language>/`, each with the language list in its
+/// head, an internal link and the footer markers with the labels of its
+/// catalogue - and the tokens the server fills in where the build writes them.
 pub fn write_shells(dir: &Path) {
     for language in capsulebin_server::config::KNOWN_LANGUAGES {
         let shells = dir.join(language);
         std::fs::create_dir_all(&shells).unwrap();
         let head = format!(r#"<!doctype html><html lang="{language}"><head>{LANGUAGES_META}"#);
-        let footer = format!("<footer>{}</footer>", legal_link_markers(language));
+        let footer = format!("<nav>{REPORT_LINK}</nav><footer>{}</footer>", legal_link_markers(language));
         for (file, marker) in [
             ("index.html", "create"),
             ("p.html", "view"),

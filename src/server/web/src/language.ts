@@ -2,13 +2,16 @@
  * Interface language of the page: catalogue lookup, plural forms, number, size,
  * date and expiry formatting, and the language prefix of internal paths.
  *
- * Each page is served under a language prefix (`/de/p/…`) as a shell generated
- * for that language (scripts/shells.ts), so `<html lang>` is the page language.
- * The texts come from `virtual:catalogue` (scripts/catalogue.ts): the web build
- * runs once per language, and each build's scripts carry that language's texts
- * only - the ones the scripts use, the shell has the rest. There is no choice
- * between catalogues at runtime, no reloading and no translation of the static
- * shell.
+ * Each page is served as a shell generated for one language (scripts/shells.ts),
+ * so `<html lang>` is the page language: without a path prefix in the instance's
+ * default language (`/p/…`), under a language prefix in every other (`/de/p/…`).
+ * The texts come from the catalogue module of that language
+ * (`i18n/register-<lang>.ts`), which the shell loads before the page script and
+ * which hands its catalogue to {@link register}. This module and the page
+ * scripts hold no catalogue themselves, so a page loads its own language only
+ * (but for the one notice in `i18n/language-next-page.ts`).
+ * There is no choice between catalogues at runtime, no reloading and no
+ * translation of the static shell.
  *
  * Catalogue values are plain text. Callers put them into the page as text
  * (`textContent`, Lit text bindings), never as HTML.
@@ -21,7 +24,7 @@ import { KNOWN_LANGUAGES, type Language, isKnownLanguage } from '@capsulebin/cor
 
 import { DEFAULT_LANGUAGE } from './default-language';
 import type en from './i18n/en.json';
-import catalogue from 'virtual:catalogue';
+import { languagePrefix } from './language-prefix';
 
 export type { Language };
 
@@ -42,8 +45,8 @@ export type PluralKey = {
 export const LANGUAGE_STORAGE_KEY = 'capsulebin.language';
 
 /**
- * The language of this page, from `<html lang>`. The shell and the scripts of a
- * page come from the same language's build, so this is the catalogue's language.
+ * The language of this page, from `<html lang>`. The shell loads the catalogue
+ * module of its own language, so this is the catalogue's language.
  */
 export function pageLanguage(): Language {
     const primary = document.documentElement.lang.split('-')[0]?.toLowerCase() ?? '';
@@ -59,8 +62,21 @@ function interpolate(text: string, params: Readonly<Record<string, string | numb
     });
 }
 
-/** The build has checked that the catalogue has every key the scripts name. */
+let catalogue: Readonly<Record<string, string>> | null = null;
+
+/** Makes `texts` the catalogue of this page. Called by the catalogue module the shell loads. */
+export function register(texts: Readonly<Record<string, string>>): void {
+    catalogue = texts;
+}
+
+/** Every catalogue has every key (tests/i18n-catalogues.test.ts). */
 function lookup(key: string): string {
+    if (catalogue === null) {
+        throw new Error(
+            'No catalogue registered: the shell has to load its catalogue module ' +
+                '(src/i18n/register-<lang>.ts) before the page script.',
+        );
+    }
     return catalogue[key] ?? key;
 }
 
@@ -128,20 +144,38 @@ export function formatDateTime(date: Date): string {
     }).format(date);
 }
 
-/** A local absolute path under the page's language prefix: `/report` → `/de/report`. */
-export function localPath(path: string): string {
-    return `/${pageLanguage()}${path.startsWith('/') ? path : `/${path}`}`;
+/** The `<meta name="capsulebin-languages">` every shell carries. */
+function languagesMeta(): HTMLMetaElement | null {
+    return document.querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]');
 }
 
 /**
- * The languages this instance offers, from the `<meta name="capsulebin-languages">`
- * the shell generator puts into every shell. Without it every known language is
- * offered.
+ * The languages this instance offers, from the meta the shell generator puts into
+ * every shell. Without it every known language is offered.
  */
 export function offeredLanguages(): Language[] {
-    const meta = document.querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]');
+    const meta = languagesMeta();
     if (!meta) return [...KNOWN_LANGUAGES];
     return meta.content.split(/\s+/).filter(isKnownLanguage);
+}
+
+/**
+ * The default language of this instance, the one whose pages have no path prefix:
+ * the meta's `data-default`, which the server fills in from its configuration.
+ */
+export function defaultLanguage(): Language {
+    const configured = languagesMeta()?.dataset.default ?? '';
+    return isKnownLanguage(configured) ? configured : DEFAULT_LANGUAGE;
+}
+
+/** The path prefix of pages in `language`: none for the default language, else `/de`. */
+function prefixOf(language: Language): string {
+    return languagePrefix(defaultLanguage(), language);
+}
+
+/** A local absolute path in the page's language: `/report` stays, or becomes `/de/report`. */
+export function localPath(path: string): string {
+    return `${prefixOf(pageLanguage())}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 /** The name of a language in that language ("English", "Deutsch"). */
@@ -162,18 +196,21 @@ export function storeLanguage(language: Language): void {
     }
 }
 
-/** The current location (path, query, fragment) under the prefix of `language`. */
+/**
+ * The current location (path, query, fragment) in `language`: a known language
+ * prefix of the path is dropped, and the prefix of `language` put in front.
+ */
 export function pathInLanguage(language: Language, location: Location = window.location): string {
     const [, prefix = '', tail = ''] = /^\/([^/]+)(.*)$/.exec(location.pathname) ?? [];
-    const rest = isKnownLanguage(prefix) ? tail : location.pathname;
-    return `/${language}${rest}${location.search}${location.hash}`;
+    const rest = isKnownLanguage(prefix) ? tail || '/' : location.pathname;
+    return `${prefixOf(language)}${rest}${location.search}${location.hash}`;
 }
 
 /**
  * What choosing a language in the switch does:
  *
  * - `navigate` stores the choice and loads the same page (query and fragment
- *   included) under the new prefix, in place of the current history entry: a
+ *   included) in the new language, in place of the current history entry: a
  *   language change is no step to go back to, and an entry kept behind would
  *   hold the key in its fragment after the page has removed it from its own;
  * - `store` only stores it, for pages that must not be reloaded: once a capsule

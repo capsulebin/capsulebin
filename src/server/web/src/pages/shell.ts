@@ -15,8 +15,8 @@ import {
     endonym,
     offeredLanguages,
     pageLanguage,
-    t,
 } from '../language';
+import { LANGUAGE_NEXT_PAGE } from '../i18n/language-next-page';
 import { initTheme, mountThemeToggle } from '../theme';
 
 // --- boot --------------------------------------------------------------------
@@ -104,15 +104,17 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
  * For pages that must not be reloaded any more - a retrieval or deletion has
  * started, or the key is gone from the address: from now on the switch only
  * stores the choice and says next to it that the choice applies from the next
- * page on. Calling it again changes nothing.
+ * page on - in the chosen language, which need not be the page's: whoever picks
+ * German may not read the English page. Calling it again changes nothing.
  */
 export function languageFromNextPage(shell: Shell): void {
     const { languageSwitch } = shell;
     if (!languageSwitch) return;
 
     const notice = languageSwitch.addNotice();
-    languageSwitch.storeOnly(() => {
-        notice.textContent = t('shell.languageNextPage');
+    languageSwitch.storeOnly((language) => {
+        notice.lang = language;
+        notice.textContent = LANGUAGE_NEXT_PAGE[language];
     });
 }
 

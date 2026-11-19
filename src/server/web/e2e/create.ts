@@ -1,7 +1,19 @@
 import type { Page } from '@playwright/test';
+
+import { DEFAULT_LANGUAGE } from '../src/default-language';
+import { languagePrefix } from '../src/language-prefix';
 import { expect } from './guard';
 
 /** The create page as a user fills it in, shared by the flows in the `*.e2e.ts` files. */
+
+/**
+ * The path prefix of pages in `language` on the instance under test, whose default
+ * language is the built-in one (playwright.config.ts sets none): none for English,
+ * `/de` for German.
+ */
+export function prefixOf(language: string): string {
+    return languagePrefix(DEFAULT_LANGUAGE, language);
+}
 
 type Item =
     | { type: 'plain' | 'markdown'; name?: string; text: string }
@@ -16,15 +28,15 @@ interface Capsule {
 }
 
 /**
- * Creates a capsule through the create page under the prefix of `language` and
- * returns its two links.
+ * Creates a capsule through the create page in `language` and returns its two
+ * links.
  */
 export async function create(
     page: Page,
     capsule: Capsule,
     language = 'en',
 ): Promise<{ share: string; manage: string }> {
-    await page.goto(`/${language}/`);
+    await page.goto(`${prefixOf(language)}/`);
     await expect(page.locator('[data-create-form]')).toBeVisible();
     if (capsule.title) await page.fill('#create-title', capsule.title);
 

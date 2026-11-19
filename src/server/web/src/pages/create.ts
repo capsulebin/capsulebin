@@ -137,13 +137,38 @@ function isItemEmpty(item: ItemState): boolean {
     return item.presentation === 'download' ? !item.fileBytes : item.text.trim().length === 0;
 }
 
-/** A draft is worth keeping once an item has content or a name the user gave it. */
+/** The item editor's controls show the active item and are set by the script;
+ *  what the user did to the items is in `items`. */
+const ITEM_CONTROLS =
+    '[data-item-type], [data-item-name], [data-item-lang], [data-item-text], [data-item-file]';
+
+/** Whether a form control no longer holds the value the template gave it. */
+function isChanged(control: Element): boolean {
+    if (control instanceof HTMLInputElement) {
+        return control.type === 'checkbox' || control.type === 'radio'
+            ? control.checked !== control.defaultChecked
+            : control.value !== control.defaultValue;
+    }
+    if (control instanceof HTMLSelectElement) {
+        const options = [...control.options];
+        const initial = options.find((option) => option.defaultSelected) ?? options[0];
+        return control.value !== (initial?.value ?? '');
+    }
+    return control instanceof HTMLTextAreaElement && control.value !== control.defaultValue;
+}
+
+/** A draft is worth keeping once an item has content or a name the user gave it,
+ *  or any other field of the form (title, expiry, burn, password) was changed. */
 function hasDraft(): boolean {
-    return items.some((item) => !isItemEmpty(item) || item.nameEdited);
+    if (items.some((item) => !isItemEmpty(item) || item.nameEdited)) return true;
+    const form = document.querySelector<HTMLFormElement>('[data-create-form]');
+    return [...(form?.elements ?? [])].some(
+        (control) => !control.matches(ITEM_CONTROLS) && isChanged(control),
+    );
 }
 
 /** Reloading the page under another prefix would discard the draft: from the
- *  first content on, the language switch only stores the choice. Stays so even
+ *  first input on, the language switch only stores the choice. Stays so even
  *  if the form is emptied again (and on the done page, which holds the links). */
 function keepDraftOnLanguageSwitch(): void {
     if (hasDraft()) languageFromNextPage(shell);
@@ -184,8 +209,10 @@ function showEdit(): void {
 
     const form = byAttr<HTMLFormElement>('create-form');
     // Bubbles up after the field handlers below have updated the items; added
-    // files and type changes go through render().
+    // files and type changes go through render(). Checkboxes and selects fire
+    // `input` too, but `change` is what every browser sends for them.
     form.addEventListener('input', keepDraftOnLanguageSwitch);
+    form.addEventListener('change', keepDraftOnLanguageSwitch);
 
     // Tabs: selection, removal and keyboard navigation (delegated, since the
     // tab list is re-rendered).

@@ -205,12 +205,20 @@ enabled = true
 # stay until they are closed.
 report_retention = "90d"
 
+[i18n]
+# The default interface language, one of "en" and "de". Its pages have no
+# language prefix (/, /p/<id>, /report); every other language is always offered
+# under its prefix (/de/, /de/p/<id>). Paths under the prefix of the default
+# language are redirected to the ones without it. This is the only key here:
+# which languages are offered is not configurable.
+default_language = "en"
+
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
-# served by CapsuleBin at /<language>/imprint, /privacy and /terms and linked
-# from the footer of every page; the texts are English under every prefix. An
-# instance open to the public in the EU usually needs at least an imprint and a
-# privacy notice.
+# served by CapsuleBin at /imprint, /privacy and /terms (and under the prefix of
+# every other language, /de/imprint) and linked from the footer of every page;
+# the texts are English in every language. An instance open to the public in
+# the EU usually needs at least an imprint and a privacy notice.
 #
 # Each text is Markdown, given inline (text = """...""") or read from a file at
 # startup (file = "..."), or a link to a page hosted elsewhere (url = "...").

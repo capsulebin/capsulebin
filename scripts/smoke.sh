@@ -183,12 +183,16 @@ echo "ok  healthcheck"
 
 VALID_ID="2pS3xQ7Rk9mNpLz4AbCdEA"
 
-# Every page exists once per known language, under its prefix and in its
-# language, with every known language for the head script and the legal links
-# of its own prefix in the footer.
+# Every page exists once per known language and in its language: without a
+# prefix in the default language (en, nothing else is configured here), under
+# its prefix in every other one. Each carries every known language and the
+# default for the head script, and its internal links and the legal links in
+# the footer under its own prefix; no token of the web build is left.
 for lang in en de; do
-  for route in "/${lang}/" "/${lang}/p/${VALID_ID}" "/${lang}/manage/${VALID_ID}" "/${lang}/report" \
-    "/${lang}/imprint" "/${lang}/privacy" "/${lang}/terms"; do
+  prefix=""
+  [ "${lang}" = "en" ] || prefix="/${lang}"
+  for route in "${prefix}/" "${prefix}/p/${VALID_ID}" "${prefix}/manage/${VALID_ID}" "${prefix}/report" \
+    "${prefix}/imprint" "${prefix}/privacy" "${prefix}/terms"; do
     headers="$(curl -fsS -D - -o "${WORKDIR}/shell.html" "${BASE}${route}" | tr -d '\r')" ||
       fail "${route} unreachable"
     grep -qi '^content-type: text/html; charset=utf-8$' <<<"${headers}" || fail "${route} is not served as HTML"
@@ -196,46 +200,48 @@ for lang in en de; do
     grep -q "<html lang=\"${lang}\">" "${WORKDIR}/shell.html" || fail "${route} is not a shell in '${lang}'"
     grep -qE '<meta name="capsulebin-languages" content="en de" data-default="en"[[:space:]]*/?>' \
       "${WORKDIR}/shell.html" ||
-      fail "${route} does not carry the offered languages"
-    grep -q "href=\"/${lang}/imprint\"" "${WORKDIR}/shell.html" || fail "${route} lacks the footer link to /${lang}/imprint"
+      fail "${route} does not carry the offered languages and the default"
+    grep -q "href=\"${prefix}/imprint\"" "${WORKDIR}/shell.html" ||
+      fail "${route} lacks the footer link to ${prefix}/imprint"
+    grep -q "href=\"${prefix}/\"" "${WORKDIR}/shell.html" ||
+      fail "${route} lacks the internal link to ${prefix}/"
+    if grep -q '%%capsulebin:' "${WORKDIR}/shell.html"; then
+      fail "${route} still carries a token of the web build"
+    fi
     if grep -qE '(src|href)="https?://' "${WORKDIR}/shell.html"; then
       fail "${route} references an external resource"
     fi
     check_headers "${route}"
     echo "ok  ${route}"
   done
-  grep -q "${LEGAL_MARKER}" <<<"$(curl -fsS "${BASE}/${lang}/imprint")" ||
-    fail "/${lang}/imprint does not show the configured text"
+  grep -q "${LEGAL_MARKER}" <<<"$(curl -fsS "${BASE}${prefix}/imprint")" ||
+    fail "${prefix}/imprint does not show the configured text"
 done
 
-# A page path without a prefix - above all a share link - is redirected by
-# Accept-Language, to the default without one. The path is only copied, so the
-# key in the fragment stays in the browser.
-for route in "/" "/p/${VALID_ID}"; do
-  for accept in "" "en-US,en;q=0.9" "de-DE,de;q=0.9,en;q=0.5"; do
-    args=()
-    expected="en"
-    if [ -n "${accept}" ]; then
-      args=(-H "accept-language: ${accept}")
-      [[ "${accept}" == de* ]] && expected="de"
-    fi
-    headers="$(curl -sS -D - -o /dev/null "${args[@]}" "${BASE}${route}" | tr -d '\r')"
-    grep -q '^HTTP/[0-9.]* 302' <<<"${headers}" || fail "${route} (${accept:-no Accept-Language}) is not a 302"
-    grep -qi "^location: /${expected}${route}\$" <<<"${headers}" ||
-      fail "${route} (${accept:-no Accept-Language}) does not redirect to /${expected}${route}"
-    grep -qi '^vary: accept-language$' <<<"${headers}" || fail "${route}: redirect without Vary: Accept-Language"
-    grep -qi '^cache-control: no-store$' <<<"${headers}" || fail "${route}: the redirect may be cached"
-    check_headers "${route}" "${args[@]}"
-  done
-  echo "ok  ${route} redirects by Accept-Language"
+# The default language has no prefix: a path under it is redirected to the same
+# path without it. The path is only copied, so the key in the fragment stays in
+# the browser. The server does not negotiate: no Vary, and Accept-Language
+# changes nothing.
+for route in "" "/" "/p/${VALID_ID}" "/report?id=${VALID_ID}"; do
+  expected="${route:-/}"
+  headers="$(curl -sS -D - -o /dev/null -H "accept-language: de-DE,de;q=0.9" "${BASE}/en${route}" | tr -d '\r')"
+  grep -q '^HTTP/[0-9.]* 302' <<<"${headers}" || fail "/en${route} is not a 302"
+  location="$(grep -i '^location: ' <<<"${headers}" | cut -d' ' -f2-)"
+  [ "${location}" = "${expected}" ] || fail "/en${route} redirects to '${location}' instead of ${expected}"
+  if grep -qi '^vary:.*accept-language' <<<"${headers}"; then
+    fail "/en${route}: the redirect varies by Accept-Language"
+  fi
+  grep -qi '^cache-control: no-store$' <<<"${headers}" || fail "/en${route}: the redirect may be cached"
+  check_headers "/en${route}"
+  echo "ok  /en${route} redirects to ${expected}"
 done
 
 # The view shell must not depend on the id, so a scanner cannot tell existing from
 # absent.
-for lang in en de; do
-  a="$(curl -fsS "${BASE}/${lang}/p/${VALID_ID}")"
-  b="$(curl -fsS "${BASE}/${lang}/p/AAAAAAAAAAAAAAAAAAAAAA")"
-  [ "${a}" = "${b}" ] || fail "the ${lang} view shell differs by paste id"
+for prefix in "" "/de"; do
+  a="$(curl -fsS "${BASE}${prefix}/p/${VALID_ID}")"
+  b="$(curl -fsS "${BASE}${prefix}/p/AAAAAAAAAAAAAAAAAAAAAA")"
+  [ "${a}" = "${b}" ] || fail "the view shell under '${prefix}/p/' differs by paste id"
 done
 echo "ok  view shell is id independent"
 

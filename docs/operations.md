@@ -169,10 +169,10 @@ server {
 }
 ```
 
-A page path without a language prefix (`/`, `/p/{id}`, …) answers a `302` that depends on
-`Accept-Language`, with `Vary: Accept-Language` and `Cache-Control: no-store`. A caching proxy or
-CDN must honour both; do not strip `Vary` or cache that redirect, or one client's language is
-served to the next.
+Pages and the redirect away from the default language's prefix (see
+[Interface languages](#interface-languages)) are sent with `Cache-Control: no-store`; a caching
+proxy or CDN must honour it. No page response depends on `Accept-Language`, so nothing has to be
+keyed on it.
 
 **`trusted_proxies` must list the proxy, not the clients.** Too broad a range lets clients pick
 their own address for rate limiting by sending `X-Forwarded-For`; empty behind a proxy makes every
@@ -193,10 +193,11 @@ client share the proxy's bucket.
 
 ## Legal pages
 
-CapsuleBin serves an imprint, a privacy notice and terms of use at `/<language>/imprint`,
-`/<language>/privacy` and `/<language>/terms` for every interface language, and links them from the
-footer of every page, once `[legal.operator]` is set. The texts are English under every prefix; in
-a shell of another language the text is marked `lang="en"`.
+CapsuleBin serves an imprint, a privacy notice and terms of use at `/imprint`, `/privacy` and
+`/terms` in the default interface language and under the prefix of every other one
+(`/de/imprint`), and links them from the footer of every page, once `[legal.operator]` is set. The
+texts are English in every language; in a shell of another language the text is marked
+`lang="en"`.
 
 - **Imprint**: the operator's own Markdown (`text` or `file`), followed by a "Hosting" block from
   `[legal.hosting]` if someone else hosts the instance.
@@ -215,15 +216,27 @@ instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state
 
 ## Interface languages
 
-Every page is served in English and German, under its prefix: `/en/`, `/de/p/{id}`,
-`/de/report`. There is nothing to configure: every language the binary was built with is offered,
-English is the default.
+Every page is served in English and German; both are always offered. The pages of the default
+language have no path prefix (`/`, `/p/{id}`, `/report`), the other language lives under its
+prefix (`/de/`, `/de/p/{id}`, `/de/report`).
 
-- Links without a prefix — share and management links are always created that way — are redirected
-  (`302`) to the language the browser's `Accept-Language` prefers, otherwise to English. The key in
-  the fragment stays in the browser.
-- In the browser, a language the user picked in the switch (kept in `localStorage`) or a supported
-  browser language moves the page to that prefix.
+```toml
+[i18n]
+default_language = "en"   # or "de"; env CAPSULEBIN__I18N__DEFAULT_LANGUAGE
+```
+
+`default_language` is the only key in `[i18n]`; a code that is not a known language or any other
+key there is a startup error (`capsulebin check` reports it). With `"de"`, German is prefix-less
+and English is under `/en/`.
+
+- Paths under the prefix of the default language (`/en/p/{id}` with the default `en`) are
+  redirected (`302`) to the same path without it.
+- The server does not read `Accept-Language`. In the browser, a language the user picked in the
+  switch (kept in `localStorage`), else a supported browser language, moves the page to that
+  language; the key in the fragment stays in the browser.
+- Share and management links are always created without a prefix, so they open in the default
+  language first. Changing `default_language` later does not break them, but moves the pages of
+  the previous default under its prefix.
 - Any other prefix is an unknown path (`404`).
 - `server.public_url` must not end in a language code (see
   [Settings that matter](#settings-that-matter)).
@@ -298,7 +311,7 @@ and restart. Existing capsules are unaffected — the token only authorizes crea
 
 ## Abuse handling runbook
 
-Reports arrive through the report form (`/<language>/report`). Only reports about capsules that
+Reports arrive through the report form (`/report`, `/de/report`). Only reports about capsules that
 currently exist reach the queue.
 
 ```sh

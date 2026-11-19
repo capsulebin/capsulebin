@@ -7,7 +7,7 @@
     "description": "CapsuleBin web client: TypeScript, Web Crypto, Lit for view rendering, no SPA router",
     "scripts": {
         "dev": "vite",
-        "build": "node scripts/build.ts",
+        "build": "vite build",
         "preview": "vite preview",
         "check": "tsc --noEmit",
         "test": "vitest run",

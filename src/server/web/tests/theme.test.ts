@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { applyChoice, effectiveTheme, mountThemeToggle, readChoice } from '../src/theme';
+import { setPageLanguage } from './page-language';
 
 const STORAGE_KEY = 'capsulebin.theme';
 
@@ -66,10 +67,11 @@ describe('theme choice', () => {
 });
 
 describe('toggle', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         localStorage.clear();
         delete document.documentElement.dataset.theme;
         fakeMatchMedia(false);
+        await setPageLanguage('en');
     });
 
     /**

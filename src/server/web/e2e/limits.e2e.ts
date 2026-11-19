@@ -16,7 +16,7 @@ const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 
 /** Opens the create page with a single, empty file item. */
 async function openFileItem(page: Page): Promise<void> {
-    await page.goto('/en/');
+    await page.goto('/');
     await expect(page.locator('[data-create-form]')).toBeVisible();
     await page.selectOption('#create-item-type', 'download');
 }

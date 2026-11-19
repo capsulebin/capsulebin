@@ -9,16 +9,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { toBase64url } from '@capsulebin/core';
 
-import { shellFor } from '../scripts/shells';
 import de from '../src/i18n/de.json';
+import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
 import { LANGUAGE_STORAGE_KEY } from '../src/language';
+import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const KEY = `v1.${toBase64url(new Uint8Array(32).fill(7))}`;
 
 async function loadPage(hash: string): Promise<void> {
-    const page = new DOMParser().parseFromString(shellFor('p', 'de'), 'text/html');
-    document.documentElement.lang = 'de';
+    const page = new DOMParser().parseFromString(servedShell('p', 'de'), 'text/html');
+    await setPageLanguage('de');
     document.documentElement.innerHTML = page.documentElement.innerHTML;
     window.history.replaceState(null, '', `/de/p/${ID}${hash}`);
     await import('../src/pages/view');
@@ -73,6 +74,7 @@ describe('view page in German', () => {
         expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
         expect(window.location.pathname).toBe(`/de/p/${ID}`);
         expect(notice()!.getAttribute('role')).toBe('status');
-        expect(notice()!.textContent).toBe(de['shell.languageNextPage']);
+        expect(notice()!.textContent).toBe(LANGUAGE_NEXT_PAGE.en);
+        expect(notice()!.getAttribute('lang')).toBe('en');
     });
 });

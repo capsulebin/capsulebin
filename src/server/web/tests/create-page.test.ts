@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { shellFor } from '../scripts/shells';
+import { servedShell, setPageLanguage } from './page-language';
 
 function el<T extends HTMLElement>(attr: string): T {
     return document.querySelector<T>(`[data-${attr}]`)!;
@@ -32,12 +32,12 @@ function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
 }
 
 async function loadPage(lang: 'en' | 'de' = 'en'): Promise<void> {
-    document.documentElement.lang = lang;
     document.documentElement.innerHTML = new DOMParser().parseFromString(
-        shellFor('index', lang),
+        servedShell('index', lang),
         'text/html',
     ).documentElement.innerHTML;
     vi.resetModules();
+    await setPageLanguage(lang);
     await import('../src/pages/create');
 }
 
@@ -167,6 +167,9 @@ describe('create page item tabs', () => {
 });
 
 describe('create page language switch', () => {
+    // AC27: the notice is in the chosen language, on an English page too.
+    const GERMAN_NOTICE = 'Die Sprache gilt ab der nächsten Seite.';
+
     function chooseGerman(): void {
         document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="de"]')!.click();
     }
@@ -190,7 +193,7 @@ describe('create page language switch', () => {
         type('draft');
         chooseGerman();
         expect(localStorage.getItem('capsulebin.language')).toBe('de');
-        expect(notice()).toBe('The language applies from the next page on.');
+        expect(notice()).toBe(GERMAN_NOTICE);
         expect(el<HTMLTextAreaElement>('item-text').value).toBe('draft');
     });
 
@@ -199,7 +202,7 @@ describe('create page language switch', () => {
         name.value = 'todo.txt';
         name.dispatchEvent(new Event('input', { bubbles: true }));
         chooseGerman();
-        expect(notice()).toBe('The language applies from the next page on.');
+        expect(notice()).toBe(GERMAN_NOTICE);
     });
 
     // AC24 acceptance: "any item holds content (text, name or a file)".
@@ -211,7 +214,7 @@ describe('create page language switch', () => {
         await vi.waitFor(() => expect(tabs()).toEqual(['data.bin *']));
         chooseGerman();
         expect(localStorage.getItem('capsulebin.language')).toBe('de');
-        expect(notice()).toBe('The language applies from the next page on.');
+        expect(notice()).toBe(GERMAN_NOTICE);
         expect(tabs()).toEqual(['data.bin *']);
     });
 
@@ -224,7 +227,7 @@ describe('create page language switch', () => {
         form.dispatchEvent(drop);
         await vi.waitFor(() => expect(tabs()).toEqual(['dropped.txt *']));
         chooseGerman();
-        expect(notice()).toBe('The language applies from the next page on.');
+        expect(notice()).toBe(GERMAN_NOTICE);
     });
 
     it('still navigates after only adding further empty items', () => {
@@ -234,13 +237,59 @@ describe('create page language switch', () => {
         expect(notice()).toBeUndefined();
     });
 
-    it('only stores the choice in a German page too, with the German notice', async () => {
+    // AC24: any other form field changed from its default is a draft too.
+    function change(
+        id: string,
+        set: (control: HTMLInputElement & HTMLSelectElement) => void,
+    ): void {
+        const control = document.getElementById(id) as HTMLInputElement & HTMLSelectElement;
+        set(control);
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    it.each([
+        ['the title', 'create-title', 'Meeting notes'],
+        ['the password', 'create-password', 'secret'],
+        ['the expiry', 'create-expiry', '3600'],
+        ['no expiry', 'create-expiry', ''],
+    ])('only stores the choice once %s is set', (_field, id, value) => {
+        change(id, (control) => (control.value = value));
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect((document.getElementById(id) as HTMLInputElement).value).toBe(value);
+    });
+
+    it('only stores the choice once burn after reading is ticked', () => {
+        change('create-burn', (control) => (control.checked = true));
+        chooseGerman();
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect((document.getElementById('create-burn') as HTMLInputElement).checked).toBe(true);
+    });
+
+    it('still navigates when a field is back at its default', () => {
+        change('create-expiry', (control) => (control.value = '604800'));
+        change('create-burn', (control) => (control.checked = false));
+        change('create-title', (control) => (control.value = ''));
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('still navigates after only changing the type of an empty item', () => {
+        change('create-item-type', (control) => (control.value = 'code'));
+        change('create-item-lang', (control) => (control.value = 'rust'));
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice in a German page too, with the notice in the chosen language', async () => {
         await loadPage('de');
         type('Entwurf');
         document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!.click();
         expect(localStorage.getItem('capsulebin.language')).toBe('en');
-        expect(notice()).toBeTruthy();
-        expect(notice()).not.toBe('The language applies from the next page on.');
+        expect(notice()).toBe('The language applies from the next page on.');
+        expect(document.querySelector('[data-language-notice]')!.getAttribute('lang')).toBe('en');
         expect(el<HTMLTextAreaElement>('item-text').value).toBe('Entwurf');
     });
 });

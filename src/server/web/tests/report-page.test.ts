@@ -6,9 +6,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { shellFor } from '../scripts/shells';
 import de from '../src/i18n/de.json';
 import en from '../src/i18n/en.json';
+import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const KEY = 'v1.c2VjcmV0LWtleS1ub3QtdG8tYmUtc2VudA';
@@ -39,11 +39,11 @@ function stubServer(
 }
 
 async function loadPage(search = '', lang: 'en' | 'de' = 'en'): Promise<void> {
-    const page = new DOMParser().parseFromString(shellFor('report', lang), 'text/html');
-    document.documentElement.lang = lang;
+    const page = new DOMParser().parseFromString(servedShell('report', lang), 'text/html');
     document.documentElement.innerHTML = page.documentElement.innerHTML;
     window.history.replaceState(null, '', `/${lang}/report${search}`);
     vi.resetModules();
+    await setPageLanguage(lang);
     await import('../src/pages/report');
     await flush();
 }
