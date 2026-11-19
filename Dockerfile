@@ -42,6 +42,15 @@ COPY --from=web /build/src/server/web/dist src/server/web/dist
 RUN cargo build --release --locked -p capsulebin-server \
     && install -D -m 0755 target/release/capsulebin /out/capsulebin \
     && install -d -m 0700 /out/data
+# The one library the binary needs beyond glibc: libgcc_s (stack unwinding).
+# The runtime base has glibc but no libgcc_s, so it is taken from this stage -
+# the same Debian release - together with its copyright file and its dpkg
+# record, so that the SBOM and the image scan still see the package.
+RUN multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
+    && install -D -m 0644 "/usr/lib/${multiarch}/libgcc_s.so.1" "/out/rootfs/usr/lib/${multiarch}/libgcc_s.so.1" \
+    && install -D -m 0644 /usr/share/doc/libgcc-s1/copyright /out/rootfs/usr/share/doc/libgcc-s1/copyright \
+    && install -d /out/rootfs/var/lib/dpkg/status.d \
+    && dpkg-query --status libgcc-s1 > /out/rootfs/var/lib/dpkg/status.d/libgcc-s1
 
 # --- binary only -------------------------------------------------------------
 # The release binary on its own, for the release tarballs:
@@ -52,13 +61,19 @@ FROM scratch AS binary
 COPY --from=server /out/capsulebin /capsulebin
 
 # --- runtime -----------------------------------------------------------------
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+# distroless "base-nossl": glibc, CA certificates and tzdata, but no OpenSSL.
+# CapsuleBin never loads OpenSSL (TLS ends at the reverse proxy), and an unused
+# library in the image is still something to patch and to explain in every
+# scan. The "cc" variant would add OpenSSL and libstdc++, neither of which the
+# binary links; its one real need, libgcc_s, is copied in below.
+FROM gcr.io/distroless/base-nossl-debian12:nonroot@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
 
 LABEL org.opencontainers.image.title="CapsuleBin" \
       org.opencontainers.image.description="Accountless, end-to-end encrypted paste service" \
       org.opencontainers.image.source="https://github.com/capsulebin/capsulebin" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
+COPY --from=server /out/rootfs/ /
 COPY --from=server /out/capsulebin /usr/local/bin/capsulebin
 # Owned by the image's non-root user, so a fresh named volume inherits it.
 COPY --from=server --chown=65532:65532 /out/data /data
