@@ -52,7 +52,7 @@ describe('theme-init.js', () => {
 });
 
 describe('HTML shells', () => {
-    const shells = ['index.html', 'p.html', 'manage.html', 'report.html'] as const;
+    const shells = ['index.html', 'p.html', 'manage.html', 'report.html', 'legal.html'] as const;
 
     function shell(name: string): string {
         return readFileSync(fileURLToPath(new URL(`../${name}`, import.meta.url)), 'utf8');

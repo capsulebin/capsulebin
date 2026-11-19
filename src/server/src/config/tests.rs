@@ -28,6 +28,7 @@ fn valid(directory: &Path) -> Config {
         purge: PurgeConfig::default(),
         rate_limits: Default::default(),
         abuse: Default::default(),
+        legal: Default::default(),
     }
 }
 
@@ -503,6 +504,41 @@ fn rejects_invalid_abuse_settings() {
     let mut config = valid(&dir);
     config.abuse.contact = Some("a\nb".to_owned());
     assert!(config.validate().is_err(), "contact with a line break accepted");
+}
+
+#[test]
+fn legal_sections_can_be_set_from_the_environment() {
+    let mut table = toml::Table::new();
+    apply_env(
+        &mut table,
+        [
+            (
+                "CAPSULEBIN__LEGAL__OPERATOR__FILE".to_owned(),
+                "/etc/capsulebin/operator.md".to_owned(),
+            ),
+            (
+                "CAPSULEBIN__LEGAL__PRIVACY__EXTRA".to_owned(),
+                "Backups are kept for 7 days.".to_owned(),
+            ),
+        ],
+    )
+    .expect("overlay");
+    let config: Config = table.try_into().expect("parse");
+
+    assert_eq!(
+        config.legal.operator.and_then(|operator| operator.file),
+        Some(PathBuf::from("/etc/capsulebin/operator.md"))
+    );
+    assert_eq!(
+        config.legal.privacy.and_then(|privacy| privacy.extra).as_deref(),
+        Some("Backups are kept for 7 days.")
+    );
+}
+
+#[test]
+fn rejects_unknown_legal_keys() {
+    let parsed = toml::from_str::<Config>("[legal.operator]\nimprint = \"x\"\n");
+    assert!(parsed.is_err(), "a typo in a legal section must not be ignored");
 }
 
 #[test]

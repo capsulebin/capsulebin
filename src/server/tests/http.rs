@@ -104,6 +104,81 @@ async fn fetching_the_shell_does_not_touch_the_paste() {
     assert_eq!(answer.status, StatusCode::OK);
 }
 
+fn legal_text(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
+    Some(capsulebin_server::config::LegalSection {
+        text: Some(markdown.to_owned()),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn every_shell_carries_the_configured_legal_links() {
+    let h = harness_with("shell-legal", |config| {
+        config.legal.operator = legal_text("Example GmbH");
+        config.legal.terms = Some(capsulebin_server::config::LegalSection {
+            url: Some("https://operator.example/terms".to_owned()),
+            ..Default::default()
+        });
+    })
+    .await;
+
+    for path in [
+        "/",
+        "/p/2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/manage/2pS3xQ7Rk9mNpLz4AbCdEA",
+        "/report",
+        "/imprint",
+    ] {
+        let text = h.get(path).await.text();
+        assert!(
+            text.contains(
+                r#"<footer><a href="/imprint">Imprint</a><a href="/privacy">Privacy</a><a href="https://operator.example/terms">Terms</a></footer>"#
+            ),
+            "{path}: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn legal_pages_are_served_with_their_title_and_text() {
+    let h = harness_with("legal-pages", |config| {
+        config.legal.operator = legal_text("Example **GmbH**");
+        config.legal.hosting = legal_text("Hoster AG");
+    })
+    .await;
+
+    let imprint = h.get("/imprint").await;
+    assert_eq!(imprint.status, StatusCode::OK);
+    let text = imprint.text();
+    assert!(text.contains("<title>Imprint</title><header>Imprint</header>"), "{text}");
+    assert!(text.contains("Example <strong>GmbH</strong>"), "{text}");
+    assert!(text.contains("<h2>Hosting</h2>"), "{text}");
+    assert_eq!(
+        imprint
+            .headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(imprint.headers.contains_key("content-security-policy"));
+
+    // The built-in texts.
+    assert!(h.get("/privacy").await.text().contains("<h2>Controller</h2>"));
+    assert!(h.get("/terms").await.text().contains("<h2>What you may not share</h2>"));
+}
+
+#[tokio::test]
+async fn without_legal_configuration_there_are_no_pages_and_no_links() {
+    let h = harness("shell-no-legal").await;
+
+    assert!(h.get("/").await.text().contains("<footer></footer>"));
+    for path in ["/imprint", "/privacy", "/terms"] {
+        let answer = h.get(path).await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(answer.text(), "Not Found", "{path}");
+    }
+}
+
 #[tokio::test]
 async fn every_route_serves_its_own_shell() {
     let h = harness("shell-routes").await;

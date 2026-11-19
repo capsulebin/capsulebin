@@ -238,6 +238,15 @@ knowing before editing one:
 
 Run `capsulebin --config … check` to validate a file before deploying it.
 
+### Legal pages
+
+`[legal]` gives an instance an imprint, a privacy notice and terms of use at `/imprint`, `/privacy`
+and `/terms`, linked from every page's footer. The imprint is the operator's own Markdown, with an
+optional block for a separate hosting provider; the privacy notice and the terms are built in
+(English) and describe what CapsuleBin actually does with the configured retention and
+limits. Each can be replaced by own text, a file or a link. See
+[Legal pages](docs/operations.md#legal-pages) in the operations handbook.
+
 ### Retention
 
 The `[purge]` table decides when a capsule is removed. Three rules apply independently, and each one

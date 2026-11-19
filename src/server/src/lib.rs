@@ -13,6 +13,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod healthcheck;
+pub mod legal;
 pub mod repository;
 
 use std::sync::Arc;
@@ -53,6 +54,9 @@ pub struct AppState {
     pub trusted_proxies: Vec<String>,
     pub rate_limits: crate::api::rate_limit::RateLimitConfig,
     pub abuse: AbuseConfig,
+    /// The operator's legal pages and footer links, rendered once from
+    /// `[legal]` (see [`legal`] and [`api::assets`]).
+    pub legal: Arc<legal::LegalPages>,
 }
 
 impl AppState {
@@ -77,6 +81,7 @@ impl AppState {
             trusted_proxies: resolved.config.server.trusted_proxies.clone(),
             rate_limits: resolved.config.rate_limits.clone(),
             abuse: resolved.config.abuse.clone(),
+            legal: Arc::new(resolved.legal.clone()),
         }
     }
 

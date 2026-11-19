@@ -199,6 +199,24 @@ impl Default for RateLimitConfig {
 }
 
 impl RateLimitConfig {
+    /// Whether any limit keys on the client address - which the built-in
+    /// privacy notice has to mention (`crate::legal`). The per-paste limit
+    /// keys on the paste id and does not count.
+    pub fn uses_client_ip(&self) -> bool {
+        self.create.rate().is_enabled()
+            || self.create.bytes_per_day.as_u64() > 0
+            || self.create.max_concurrent > 0
+            || [
+                &self.descriptor,
+                &self.retrieve,
+                &self.delete,
+                &self.report,
+                &self.invalid_capability,
+            ]
+            .into_iter()
+            .any(RateLimit::is_enabled)
+    }
+
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         self.create.rate().validate("create")?;
         self.descriptor.validate("descriptor")?;
