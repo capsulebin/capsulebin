@@ -379,6 +379,13 @@ images reaches its end of support: Node.js with a warning at 180 days and a fail
 at 365 and 180. It and the audit job also run weekly, so an advisory or an approaching end of
 support surfaces without a code change.
 
+## Commits and pull requests
+
+Commit messages, pull request titles and squash-merge subjects follow
+[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) — `fix(server): …`,
+`feat(web): …`, `build(deps): …`, `ci: …`, `docs: …`; scopes `server`, `web`, `cli`, `core`, `deps`,
+`ci`, `release` (see `CONTRIBUTING.md`). Every commit carries a DCO sign-off (`git commit -s`).
+
 ## Releasing
 
 `.github/workflows/release.yml` runs on a tag `vX.Y.Z` and publishes binaries, the CLI bundle, the

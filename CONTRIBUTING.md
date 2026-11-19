@@ -49,4 +49,9 @@ release build (see [README.md](README.md#tests)).
   Changing any of them needs an ADR in `docs/adr/`.
 - **Protocol changes** (capsule format, crypto profile, public header) need updated golden vectors
   in `docs/test-vectors/` and a version decision (ADR-003).
-- **Commit messages** explain *why*, not only what. One logical change per commit.
+- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+  `<type>(<scope>): <description>`, for example `fix(server): …`, `feat(web): …`,
+  `build(deps): …`, `ci: …` or `docs: …`. Scopes are the parts of the repository — `server`, `web`,
+  `cli`, `core` — or `deps`, `ci` and `release`; a breaking change adds `!` and a
+  `BREAKING CHANGE:` footer. The body explains *why*, not only what. One logical change per commit.
+  Pull request titles use the same format, because a squash merge turns the title into the commit.
