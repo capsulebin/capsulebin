@@ -41,8 +41,10 @@ prefix, served from a shell generated for that language:
 | `GET /{lang}` | `302` to `/{lang}/` |
 | `GET /`, `/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms` | `302` to the same path under the language from `Accept-Language` |
 
-Vite's inputs are the generated shells (five per language); the bundles under `/assets/` are shared
-by all languages. The byte-identity rule below holds for `GET /{lang}/p/{id}` and for the redirect
+Vite runs once per language with that language's five generated shells as inputs
+(`scripts/build.ts`), each build carrying only its own language's texts. All builds write to the
+shared `/assets/`: chunks that import the catalogue exist once per language, language-free code
+(libraries, `@capsulebin/core`) in chunks of its own that exist once. The byte-identity rule below holds for `GET /{lang}/p/{id}` and for the redirect
 from `/p/{id}`; `view_shell_is_identical_for_every_id` and the acceptance script check the
 prefixed path.
 

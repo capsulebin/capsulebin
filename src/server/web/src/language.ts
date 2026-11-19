@@ -4,8 +4,11 @@
  *
  * Each page is served under a language prefix (`/de/p/…`) as a shell generated
  * for that language (scripts/shells.ts), so `<html lang>` is the page language.
- * Both catalogues are in the bundle and the one for `<html lang>` is used; there
- * is no reloading and no translation of the static shell at runtime.
+ * The texts come from `virtual:catalogue` (scripts/catalogue.ts): the web build
+ * runs once per language, and each build's scripts carry that language's texts
+ * only - the ones the scripts use, the shell has the rest. There is no choice
+ * between catalogues at runtime, no reloading and no translation of the static
+ * shell.
  *
  * Catalogue values are plain text. Callers put them into the page as text
  * (`textContent`, Lit text bindings), never as HTML.
@@ -16,8 +19,8 @@
 
 import { KNOWN_LANGUAGES, type Language, isKnownLanguage } from '@capsulebin/core';
 
-import de from './i18n/de.json';
-import en from './i18n/en.json';
+import type en from './i18n/en.json';
+import catalogue from 'virtual:catalogue';
 
 export type { Language };
 
@@ -34,15 +37,16 @@ export type PluralKey = {
     [K in MessageKey]: K extends `${infer Base}#other` ? Base : never;
 }[MessageKey];
 
-const CATALOGUES: Record<Language, Readonly<Record<string, string>>> = { en, de };
-
 /** The language the catalogue keys are written for; used if `<html lang>` is unusable. */
 const SOURCE_LANGUAGE: Language = 'en';
 
 /** Where the language switch stores the choice. `public/language-init.js` reads it. */
 export const LANGUAGE_STORAGE_KEY = 'capsulebin.language';
 
-/** The language of this page, from `<html lang>`. */
+/**
+ * The language of this page, from `<html lang>`. The shell and the scripts of a
+ * page come from the same language's build, so this is the catalogue's language.
+ */
 export function pageLanguage(): Language {
     const primary = document.documentElement.lang.split('-')[0]?.toLowerCase() ?? '';
     return isKnownLanguage(primary) ? primary : SOURCE_LANGUAGE;
@@ -57,8 +61,9 @@ function interpolate(text: string, params: Readonly<Record<string, string | numb
     });
 }
 
+/** The build has checked that the catalogue has every key the scripts name. */
 function lookup(key: string): string {
-    return CATALOGUES[pageLanguage()][key] ?? CATALOGUES[SOURCE_LANGUAGE][key] ?? key;
+    return catalogue[key] ?? key;
 }
 
 /** The text for `key` in the page language; numbers in `params` are formatted. */

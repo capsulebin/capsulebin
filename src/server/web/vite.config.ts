@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
+import { catalogueModule } from './scripts/catalogue.ts';
 import {
     GENERATED_DIR,
     SHELLS,
@@ -8,15 +9,14 @@ import {
     generateShells,
     generatedPath,
     type ShellName,
-} from './scripts/shells';
+} from './scripts/shells.ts';
 
 /**
  * The shells are generated per language from the templates in this directory and
  * the catalogues in src/i18n/ (scripts/shells.ts) before Vite sees them. Vite
  * builds the generated files; this plugin puts them at `dist/<lang>/<shell>.html`
  * and, in the dev server, answers the page routes under every language prefix
- * the way the server does. The bundles under /assets/ are the same for every
- * language.
+ * the way the server does.
  */
 function languageShells(): Plugin {
     const shellForRoute = (path: string): { lang: string; shell: ShellName } | null => {
@@ -43,6 +43,7 @@ function languageShells(): Plugin {
             }
         },
         configureServer(server) {
+            generateShells();
             const sources = [
                 ...SHELLS.map((shell) => resolve(import.meta.dirname, `${shell}.html`)),
                 resolve(import.meta.dirname, 'src/i18n'),
@@ -64,17 +65,23 @@ function languageShells(): Plugin {
     };
 }
 
-const shells = generateShells();
+/** Modules whose output does not depend on the interface language. */
+const LANGUAGE_FREE = /[\\/](node_modules|src[\\/]core)[\\/]/;
 
 /**
  * Vite is only a dev server and bundler - there is no SPA runtime. Hence a
  * multi-page build: every route gets its own document and the server maps path to
  * file.
+ *
+ * The production build is scripts/build.ts (`npm run build`), which runs Vite
+ * once per language with that language's shells as input and its catalogue as
+ * `virtual:catalogue`. The dev server has every catalogue in one module, chosen
+ * by `<html lang>`.
  */
 export default defineConfig({
     root: import.meta.dirname,
     base: '/',
-    plugins: [languageShells()],
+    plugins: [languageShells(), { ...catalogueModule(null), apply: 'serve' }],
 
     build: {
         outDir: 'dist',
@@ -99,7 +106,23 @@ export default defineConfig({
         // maps would only widen the attack surface.
         sourcemap: false,
         rolldownOptions: {
-            input: shells.map((path) => resolve(import.meta.dirname, path)),
+            output: {
+                // Libraries and @capsulebin/core in chunks of their own, split by
+                // the pages that use them: a chunk that imports the catalogue
+                // differs per language, so anything bundled with it would exist
+                // once per language. DOMPurify gets a chunk of its own: the browser
+                // tests allow Chromium's report of its inert parse by that name.
+                codeSplitting: {
+                    groups: [
+                        {
+                            name: 'dompurify',
+                            test: /[\\/]node_modules[\\/]dompurify[\\/]/,
+                            priority: 1,
+                        },
+                        { name: 'vendor', test: LANGUAGE_FREE, entriesAware: true },
+                    ],
+                },
+            },
         },
     },
 

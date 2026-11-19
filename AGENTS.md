@@ -369,9 +369,11 @@ npm run e2e -w @capsulebin/web
 | `src/render-markdown.ts` | Markdown rendering (marked + DOMPurify) |
 | `src/render-code.ts` | Code rendering (highlight.js) |
 | `src/theme.ts` | Theme switching |
-| `src/language.ts` | Page language from `<html lang>`, `t()`/`tn()`, `Intl` formatting, prefixed paths, switch logic |
+| `src/language.ts` | Page language from `<html lang>`, `t()`/`tn()` over `virtual:catalogue`, `Intl` formatting, prefixed paths, switch logic |
 | `src/i18n/<lang>.json` | Catalogues (plain text, plural keys `<key>#<category>`) |
 | `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`) |
+| `scripts/build.ts` | `npm run build`: one Vite build per language into the shared `dist/`, then `scripts/check-dist.ts` (no foreign texts per page, language-free chunks once) |
+| `scripts/catalogue.ts` | `virtual:catalogue`: the texts the scripts name, one language per build (every language by `<html lang>` in dev server and tests) |
 | `public/language-init.js` | Head script: moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
 | `src/styles/tokens.css` | Design tokens |

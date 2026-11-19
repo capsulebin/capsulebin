@@ -68,9 +68,9 @@ describe('page language', () => {
 
 describe('texts', () => {
     it('come from the catalogue of the page language', () => {
-        expect(t('manage.cancel')).toBe('Cancel');
+        expect(t('expiry.none')).toBe('No expiry');
         setPage('de');
-        expect(t('manage.cancel')).toBe('Abbrechen');
+        expect(t('expiry.none')).toBe('Kein Ablauf');
     });
 
     it('take plural forms by the language rules', () => {

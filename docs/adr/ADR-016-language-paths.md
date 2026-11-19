@@ -34,8 +34,12 @@ the default; startup fails on an unknown, duplicate or missing code.
   the footer links (ADR-015).
 - **Shells are generated at build time** from one set of templates and one catalogue per language
   (`src/server/web/src/i18n/<lang>.json`) into `dist/<lang>/<shell>.html`. Catalogue values are
-  plain text and HTML-escaped; JS/CSS bundles are shared and carry every catalogue, selected by
-  `<html lang>`. Numbers and dates follow the page language.
+  plain text and HTML-escaped. The scripts' texts are resolved at build time too: the web client
+  is built once per language, each build carrying only the texts of its language that the scripts
+  use, so a page never ships another language and more languages make no page larger. Code that
+  does not depend on the language lives in chunks of its own, built identically for every
+  language and shipped once under `/assets/`; a check on the build output enforces both. Numbers
+  and dates follow the page language.
 - **A language switch** next to the theme toggle stores the choice and loads the same address
   under the other prefix — except once a page has removed the key from its address, where it only
   stores the choice.
@@ -46,6 +50,9 @@ the default; startup fails on an unknown, duplicate or missing code.
 
 - **English shells, catalogues loaded with `import()` behind a loading indicator.** Translates at
   runtime and shows a spinner on every page; the language paths make both unnecessary.
+- **One shared bundle carrying every catalogue, selected by `<html lang>` at runtime.** The first
+  implementation did this; it was replaced because every page shipped every language and grew
+  with each new one.
 - **The server picks the language from a preference cookie, same URL for every language.** Needs a
   cookie and `Vary` on the pages. The choice is kept in `localStorage`, like the theme; there is no
   cookie.
@@ -63,9 +70,11 @@ the default; startup fails on an unknown, duplicate or missing code.
 - The set of known languages is in three places — `KNOWN_LANGUAGES` in the server
   (`config/model.rs`) and in core (`languages.ts`), and the catalogue files — because the three are
   built separately. Tests fail when they differ. A new language is a catalogue plus two list
-  entries (and the import in `language.ts`).
-- The web build generates `languages × shells` documents; the generator is deterministic so the
-  reproducible-build check still holds.
+  entries; the web build picks up every catalogue file by itself.
+- The web build generates `languages × shells` documents and runs Vite once per language
+  (`scripts/build.ts`); generator and builds are deterministic, so the reproducible-build check
+  still holds. The Vite dev server and the unit tests still have every catalogue, chosen by
+  `<html lang>`.
 - Caches and proxies in front of the server must keep `Vary: Accept-Language` on the redirect (it
   is also `no-store`).
 - The CLI, the API's `problem+json` texts and the legal texts stay English for now; the pages map
