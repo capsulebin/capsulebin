@@ -227,12 +227,21 @@ jobs:
   # The shipped bundle in real engines, under the server's CSP and Trusted
   # Types, against the release binary from the acceptance job
   # (src/server/web/e2e, playwright.config.ts).
+  #
+  # It runs in Playwright's image, which carries the engines and their system
+  # libraries: installing those with apt on the runner hung for 20 minutes more
+  # than once. The image tag has to name the locked @playwright/test version;
+  # when they differ, Playwright stops with a message saying to update the
+  # image. --user 1001 is the runner's own user, as Playwright recommends.
   browser:
     name: Browser (Chromium, Firefox, WebKit)
     if: github.event_name != 'schedule'
     needs: acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:9beb546099e11f52d62e505537914870e01a67e0e6b00ae41da4775324e73dbe
+      options: --user 1001
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -254,12 +263,8 @@ jobs:
           name: capsulebin-linux-amd64
           path: target/release
 
-      # The engine builds that match the locked @playwright/test version, with
-      # the system libraries they need.
-      - name: Browsers
-        run: |
-          chmod +x target/release/capsulebin
-          npm exec -w @capsulebin/web -- playwright install --with-deps chromium firefox webkit
+      - name: Executable
+        run: chmod +x target/release/capsulebin
 
       - name: Browser tests
         run: npm run e2e -w @capsulebin/web
