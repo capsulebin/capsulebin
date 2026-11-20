@@ -437,46 +437,55 @@ async fn legal_pages_are_served_with_their_title_and_text() {
         .await;
 
         for (language, prefix) in languages {
+            let [imprint_label, ..] = labels(language);
             let imprint = h.get(&format!("{prefix}/imprint")).await;
             assert_eq!(imprint.status, StatusCode::OK);
             let text = imprint.text();
             assert!(text.contains(&format!(r#"<html lang="{language}">"#)), "{text}");
-            assert!(text.contains("<title>Imprint</title></head><header>Imprint</header>"), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "<title>{imprint_label} · CapsuleBin</title></head><header>{imprint_label}</header>\
+                     <main><div class=\"cb-prose cb-legal\"><h1>{imprint_label}</h1><article"
+                )),
+                "{text}"
+            );
             assert!(text.contains("Example <strong>GmbH</strong>"), "{text}");
             assert!(text.contains("<h2>Hosting</h2>"), "{text}");
             assert_eq!(imprint.header("content-type"), Some("text/html; charset=utf-8"));
             assert_eq!(imprint.header("cache-control"), Some("no-store"));
             assert!(imprint.headers.contains_key("content-security-policy"));
 
-            // The built-in texts, with their links under the shell's prefix.
+            // The built-in texts in the shell's language, with their links
+            // under the shell's prefix.
+            let [controller, not_share] = match language {
+                "de" => ["<h2>Verantwortlicher</h2>", "<h2>Was du nicht teilen darfst</h2>"],
+                _ => ["<h2>Controller</h2>", "<h2>What you may not share</h2>"],
+            };
             let privacy = h.get(&format!("{prefix}/privacy")).await.text();
-            assert!(privacy.contains("<h2>Controller</h2>"), "{privacy}");
+            assert!(privacy.contains(controller), "{privacy}");
             assert!(privacy.contains(&format!(r#"href="{prefix}/imprint""#)), "{privacy}");
             let terms = h.get(&format!("{prefix}/terms")).await.text();
-            assert!(terms.contains("<h2>What you may not share</h2>"), "{terms}");
+            assert!(terms.contains(not_share), "{terms}");
             assert!(terms.contains(&format!(r#"href="{prefix}/report""#)), "{terms}");
         }
     }
 }
 
-/// The texts are English in every language; in a German shell the article says
-/// so, for screen readers.
+/// The operator's text is in the default language; in a shell of another
+/// language the article says so, for screen readers. The built-in texts are
+/// in the shell's language and never marked.
 #[tokio::test]
 async fn legal_texts_in_another_language_than_the_shell_are_marked() {
     let h = harness_with("legal-lang", legal_configuration).await;
 
-    for page in ["imprint", "privacy"] {
-        let german = h.get(&format!("/de/{page}")).await.text();
-        assert!(
-            german.contains(r#"<main><article class="cb-prose cb-legal" lang="en">"#),
-            "{page}: {german}"
-        );
-
-        let english = h.get(&format!("/{page}")).await.text();
-        assert!(
-            english.contains(r#"<main><article class="cb-prose cb-legal">"#),
-            "{page}: {english}"
-        );
+    for (path, article) in [
+        ("/de/imprint", r#"<article lang="en">"#),
+        ("/imprint", "<article>"),
+        ("/de/privacy", "<article>"),
+        ("/privacy", "<article>"),
+    ] {
+        let text = h.get(path).await.text();
+        assert!(text.contains(&format!("</h1>{article}")), "{path}: {text}");
     }
 }
 

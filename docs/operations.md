@@ -195,18 +195,42 @@ client share the proxy's bucket.
 
 CapsuleBin serves an imprint, a privacy notice and terms of use at `/imprint`, `/privacy` and
 `/terms` in the default interface language and under the prefix of every other one
-(`/de/imprint`), and links them from the footer of every page, once `[legal.operator]` is set. The
-texts are English in every language; in a shell of another language the text is marked
-`lang="en"`.
+(`/de/imprint`), and links them from the footer of every page, once `[legal.operator]` is set.
+Page titles and headings follow the page language.
 
 - **Imprint**: the operator's own Markdown (`text` or `file`), followed by a "Hosting" block from
   `[legal.hosting]` if someone else hosts the instance.
-- **Privacy notice and terms**: built in, in English. The privacy
-  notice states what CapsuleBin processes and how long it keeps it, taken from the running
-  configuration (retention rules, report retention, whether limits use the client address), and
-  names the hosting provider as processor. What it cannot know - the reverse proxy's logs,
+- **Privacy notice and terms**: built in, in English and German, always in the page's language.
+  The privacy notice states what CapsuleBin processes and how long it keeps it, taken from the
+  running configuration (retention rules, report retention, whether limits use the client
+  address), and names the hosting provider as processor. What it cannot know - the reverse proxy's logs,
   backups, a data protection officer - goes into `[legal.privacy] extra`. Either text can be
   replaced entirely with `text`, `file` or `url`.
+
+`[legal.*]` holds the texts of the default language (`i18n.default_language`). For the other
+language, give `[legal.<lang>.operator]`, `.hosting`, `.privacy` and `.terms` with the same keys
+(env `CAPSULEBIN__LEGAL__DE__OPERATOR__FILE`):
+
+```toml
+[legal.operator]                     # default language (en)
+file = "/etc/capsulebin/legal/operator.md"
+
+[legal.de.operator]                  # German pages
+file = "/etc/capsulebin/legal/operator.de.md"
+```
+
+- A section without a translation falls back: German pages show the `[legal.*]` text, marked with
+  the default language's `lang` for screen readers. The built-in texts need no translation.
+- A language section replaces its `[legal.*]` counterpart as a whole: an empty `[legal.de.privacy]`
+  gives German pages the built-in German notice without the `[legal.privacy]` text or `extra`;
+  `[legal.de.privacy] extra` is the German addition. A `url` per language
+  (`[legal.de.operator] url`) changes that language's footer links and its privacy notice's link
+  to the controller.
+- Startup errors: `[legal.<default language>]` (use `[legal.*]`), an unknown language code, and
+  `[legal.<lang>.operator]` or `.hosting` without `[legal.operator]` or `[legal.hosting]` - every
+  language names the same operator and hosting provider. The rules for a section also apply to what
+  a language falls back to: `[legal.de.operator] url` with a `[legal.hosting]` is refused, as
+  `[legal.operator] url` is.
 
 The texts are read and rendered at startup, so `capsulebin check` reports a missing file, and a
 changed file takes effect on restart. In the container, mount them read-only, e.g.
@@ -241,8 +265,8 @@ and English is under `/en/`.
 - `server.public_url` must not end in a language code (see
   [Settings that matter](#settings-that-matter)); the CLI's `put` refuses such a `--server` by
   the same rule. For an existing instance with such an address see [Upgrades](#upgrades).
-- The footer link labels follow the page language; the CLI, the API's error texts and the legal
-  texts stay English.
+- The footer link labels and the legal pages follow the page language (see
+  [Legal pages](#legal-pages)); the CLI and the API's error texts stay English.
 
 See [i18n.md](i18n.md) for the rules in detail.
 

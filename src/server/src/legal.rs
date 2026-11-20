@@ -16,7 +16,7 @@ mod markdown;
 
 use std::path::Path;
 
-use crate::config::{Config, ConfigError, LegalSection, language_prefix};
+use crate::config::{Config, ConfigError, LegalSection, LegalSectionKind, language_prefix};
 
 pub use markdown::render as render_markdown;
 
@@ -27,10 +27,6 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 
 /// Longest accepted `url`.
 const MAX_URL_BYTES: usize = 2048;
-
-/// The language of the legal texts: the built-in ones are English, and the
-/// operator's text for a page is served in the pages of every language.
-const TEXT_LANGUAGE: &str = "en";
 
 /// Everything the legal routes and the footer of one interface language need,
 /// rendered.
@@ -62,13 +58,12 @@ impl FooterLinks {
     }
 }
 
-/// One page served by CapsuleBin.
+/// One page served by CapsuleBin. Its title is the shell's: the footer label
+/// of the page, from the catalogue of the shell's language.
 #[derive(Debug, Clone)]
 pub struct Page {
-    /// Plain text, for `<title>` and the header.
-    pub title: &'static str,
-    /// The `<article>` with heading and rendered text; it carries `lang` when
-    /// the text is not in the language of the shell it is served in.
+    /// The `<article>` with the rendered text, without a heading; `lang` marks
+    /// what is not in the language of the shell it is served in.
     pub html: String,
 }
 
@@ -116,68 +111,37 @@ enum Target {
 /// `/privacy` for the default language). Called by
 /// `Config::validate` for every known language, so `capsulebin check`
 /// reports a missing file or a bad combination too.
+///
+/// Each section is `[legal.<language>.*]` if set, else `[legal.*]`; the
+/// built-in texts are in `language`.
 pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigError> {
-    let legal = &config.legal;
     let prefix = language_prefix(&config.i18n.default_language, language);
-    let page = |title: &'static str, markdown: &str| page(title, markdown, language);
+    let operator = effective(config, LegalSectionKind::Operator, language);
+    let hosting = effective(config, LegalSectionKind::Hosting, language);
 
-    if legal.hosting.is_some() && legal.operator.is_none() {
-        return Err(invalid("legal.hosting needs legal.operator: the imprint names the operator first"));
-    }
-
-    // Imprint: operator, then hosting.
-    let imprint = match &legal.operator {
-        None => Target::None,
-        Some(operator) => {
-            reject_extra(operator, "operator")?;
-            match source(operator, "operator", true)? {
-                Source::Url(url) => {
-                    if legal.hosting.is_some() {
-                        return Err(invalid(
-                            "legal.hosting needs legal.operator as text or file: with a url the imprint is not served here",
-                        ));
-                    }
-                    Target::Elsewhere(url)
-                }
-                Source::Markdown(operator_text) => {
-                    let mut markdown = operator_text;
-                    if let Some(hosting) = &legal.hosting {
-                        reject_extra(hosting, "hosting")?;
-                        match source(hosting, "hosting", false)? {
-                            Source::Markdown(hosting_text) => {
-                                markdown.push_str(&format!("\n\n## Hosting\n\n{hosting_text}"));
-                            }
-                            Source::Url(_) | Source::Default => {
-                                return Err(invalid("legal.hosting needs text or file"));
-                            }
-                        }
-                    }
-                    Target::Here(page("Imprint", &markdown))
-                }
-                Source::Default => return Err(invalid("legal.operator needs text, file or url")),
-            }
-        }
-    };
-
+    let imprint = imprint(&operator, &hosting, language)?;
     let href = |which: Which, target: &Target| match target {
         Target::None => None,
         Target::Here(_) => Some(format!("{prefix}/{}", which.path())),
         Target::Elsewhere(url) => Some(url.clone()),
     };
-    let mut facts = defaults::Facts::from_config(config, &prefix, href(Which::Imprint, &imprint), legal.hosting.is_some());
+    let mut facts = defaults::Facts::from_config(config, &prefix, href(Which::Imprint, &imprint), hosting.section.is_some());
 
     let privacy = document(
-        legal.privacy.as_ref(),
-        "privacy",
-        "Privacy notice",
+        &effective(config, LegalSectionKind::Privacy, language),
         &facts,
         defaults::privacy,
-        &page,
+        language,
     )?;
     if let Target::Elsewhere(url) = &privacy {
         facts.privacy_href.clone_from(url);
     }
-    let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms, &page)?;
+    let terms = document(
+        &effective(config, LegalSectionKind::Terms, language),
+        &facts,
+        defaults::terms,
+        language,
+    )?;
 
     let footer = FooterLinks {
         imprint: href(Which::Imprint, &imprint),
@@ -197,38 +161,140 @@ pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigErro
     })
 }
 
-/// The privacy notice or the terms: the operator's own, or the built-in text
-/// with the operator's additions.
-fn document(
-    section: Option<&LegalSection>,
-    key: &str,
-    title: &'static str,
-    facts: &defaults::Facts,
-    built_in: fn(&defaults::Facts, Option<&str>) -> String,
-    page: &dyn Fn(&'static str, &str) -> Page,
-) -> Result<Target, ConfigError> {
-    let section_or_default = section.cloned().unwrap_or_default();
-    match source(&section_or_default, key, true)? {
+/// The section as it applies to the pages of `language`: its own
+/// `[legal.<language>.*]` as a whole if there is one, else `[legal.*]`.
+fn effective<'a>(config: &'a Config, which: LegalSectionKind, language: &str) -> Effective<'a> {
+    let legal = &config.legal;
+    let own = legal.languages.get_key_value(language).and_then(|(language, texts)| {
+        texts.section(which).map(|section| Effective {
+            section: Some(section),
+            language: language.as_str(),
+            key: format!("legal.{language}.{}", which.name()),
+        })
+    });
+    own.unwrap_or_else(|| Effective {
+        section: legal.section(which),
+        language: &config.i18n.default_language,
+        key: format!("legal.{}", which.name()),
+    })
+}
+
+/// A section that applies to the pages of one language.
+struct Effective<'a> {
+    section: Option<&'a LegalSection>,
+    /// The language its texts are written in.
+    language: &'a str,
+    /// Where it is configured, for error messages (`legal.de.operator`).
+    key: String,
+}
+
+/// A part of a page in one language, as Markdown.
+struct Block<'a> {
+    language: &'a str,
+    markdown: String,
+}
+
+/// The imprint: the operator, then the hosting provider.
+fn imprint(operator: &Effective, hosting: &Effective, language: &str) -> Result<Target, ConfigError> {
+    let Some(operator_section) = operator.section else {
+        if hosting.section.is_some() {
+            return Err(invalid(&format!(
+                "{} needs legal.operator: the imprint names the operator first",
+                hosting.key
+            )));
+        }
+        return Ok(Target::None);
+    };
+    reject_extra(operator_section, &operator.key)?;
+    let operator_text = match source(operator_section, &operator.key, true)? {
+        Source::Markdown(text) => text,
         Source::Url(url) => {
-            reject_extra(&section_or_default, key)?;
+            if hosting.section.is_some() {
+                return Err(invalid(&format!(
+                    "{} needs {} as text or file: with a url the imprint is not served here",
+                    hosting.key, operator.key
+                )));
+            }
+            return Ok(Target::Elsewhere(url));
+        }
+        Source::Default => return Err(invalid(&format!("{} needs text, file or url", operator.key))),
+    };
+
+    let mut blocks = vec![Block {
+        language: operator.language,
+        markdown: operator_text,
+    }];
+    if let Some(hosting_section) = hosting.section {
+        reject_extra(hosting_section, &hosting.key)?;
+        match source(hosting_section, &hosting.key, false)? {
+            // The heading belongs to the block, in its language.
+            Source::Markdown(hosting_text) => blocks.push(Block {
+                language: hosting.language,
+                markdown: format!("## Hosting\n\n{hosting_text}"),
+            }),
+            Source::Url(_) | Source::Default => return Err(invalid(&format!("{} needs text or file", hosting.key))),
+        }
+    }
+    Ok(Target::Here(page(&blocks, language)))
+}
+
+/// The privacy notice or the terms: the operator's own, or the built-in text
+/// in `language` with the operator's additions.
+fn document(
+    effective: &Effective,
+    facts: &defaults::Facts,
+    built_in: fn(&defaults::Facts, &str) -> defaults::BuiltIn,
+    language: &str,
+) -> Result<Target, ConfigError> {
+    let key = &effective.key;
+    let section = effective.section.cloned().unwrap_or_default();
+    match source(&section, key, true)? {
+        Source::Url(url) => {
+            reject_extra(&section, key)?;
             Ok(Target::Elsewhere(url))
         }
         Source::Markdown(text) => {
-            reject_extra(&section_or_default, key)?;
-            Ok(Target::Here(page(title, &text)))
+            reject_extra(&section, key)?;
+            let block = Block {
+                language: effective.language,
+                markdown: text,
+            };
+            Ok(Target::Here(page(&[block], language)))
         }
         Source::Default => {
-            let extra = extra(&section_or_default, key)?;
+            let extra = extra(&section, key)?;
             if facts.imprint_href.is_none() {
                 // Without an operator the built-in text would have no controller.
                 return match extra {
                     Some(_) => Err(invalid(&format!(
-                        "legal.{key}.extra extends the built-in text, which needs legal.operator"
+                        "{key}.extra extends the built-in text, which needs legal.operator"
                     ))),
                     None => Ok(Target::None),
                 };
             }
-            Ok(Target::Here(page(title, &built_in(facts, extra.as_deref()))))
+            let text = built_in(facts, language);
+            let blocks = match extra {
+                // The extra in another language is a block of its own, so it can be marked.
+                Some(extra) if effective.language != language => vec![
+                    Block {
+                        language,
+                        markdown: text.before_extra,
+                    },
+                    Block {
+                        language: effective.language,
+                        markdown: extra.trim().to_owned(),
+                    },
+                    Block {
+                        language,
+                        markdown: text.after_extra,
+                    },
+                ],
+                extra => vec![Block {
+                    language,
+                    markdown: text.join(extra.as_deref()),
+                }],
+            };
+            Ok(Target::Here(page(&blocks, language)))
         }
     }
 }
@@ -246,21 +312,21 @@ fn source(section: &LegalSection, key: &str, url_allowed: bool) -> Result<Source
         .filter(|set| *set)
         .count();
     if given > 1 {
-        return Err(invalid(&format!("legal.{key}: set one of text, file and url, not several")));
+        return Err(invalid(&format!("{key}: set one of text, file and url, not several")));
     }
     if let Some(text) = &section.text {
-        return Ok(Source::Markdown(checked_text(text.clone(), &format!("legal.{key}.text"))?));
+        return Ok(Source::Markdown(checked_text(text.clone(), &format!("{key}.text"))?));
     }
     if let Some(path) = &section.file {
-        return Ok(Source::Markdown(read(path, &format!("legal.{key}.file"))?));
+        return Ok(Source::Markdown(read(path, &format!("{key}.file"))?));
     }
     if let Some(url) = &section.url {
         if !url_allowed {
-            return Err(invalid(&format!("legal.{key}.url is not supported, use text or file")));
+            return Err(invalid(&format!("{key}.url is not supported, use text or file")));
         }
         if !is_acceptable_url(url) {
             return Err(invalid(&format!(
-                "legal.{key}.url must be an absolute http(s) URL or a path starting with a single /, \
+                "{key}.url must be an absolute http(s) URL or a path starting with a single /, \
                  at most {MAX_URL_BYTES} bytes, without spaces or control characters; got {url:?}"
             )));
         }
@@ -271,9 +337,9 @@ fn source(section: &LegalSection, key: &str, url_allowed: bool) -> Result<Source
 
 fn extra(section: &LegalSection, key: &str) -> Result<Option<String>, ConfigError> {
     match (&section.extra, &section.extra_file) {
-        (Some(_), Some(_)) => Err(invalid(&format!("legal.{key}: set extra or extra_file, not both"))),
-        (Some(text), None) => checked_text(text.clone(), &format!("legal.{key}.extra")).map(Some),
-        (None, Some(path)) => read(path, &format!("legal.{key}.extra_file")).map(Some),
+        (Some(_), Some(_)) => Err(invalid(&format!("{key}: set extra or extra_file, not both"))),
+        (Some(text), None) => checked_text(text.clone(), &format!("{key}.extra")).map(Some),
+        (None, Some(path)) => read(path, &format!("{key}.extra_file")).map(Some),
         (None, None) => Ok(None),
     }
 }
@@ -281,7 +347,7 @@ fn extra(section: &LegalSection, key: &str) -> Result<Option<String>, ConfigErro
 fn reject_extra(section: &LegalSection, key: &str) -> Result<(), ConfigError> {
     if section.extra.is_some() || section.extra_file.is_some() {
         return Err(invalid(&format!(
-            "legal.{key}.extra only extends a built-in text; put the whole text into text or file instead"
+            "{key}.extra only extends a built-in text; put the whole text into text or file instead"
         )));
     }
     Ok(())
@@ -323,22 +389,39 @@ fn is_acceptable_url(url: &str) -> bool {
     absolute || local_path
 }
 
-/// A page for the shell of `language`. The `lang` attribute lets a screen
-/// reader pronounce an English text in a German shell as English.
-fn page(title: &'static str, markdown: &str, language: &str) -> Page {
-    let lang = if language == TEXT_LANGUAGE {
-        String::new()
-    } else {
-        format!(r#" lang="{TEXT_LANGUAGE}""#)
-    };
-    Page {
-        title,
-        html: format!(
-            r#"<article class="cb-prose cb-legal"{lang}><h1>{}</h1>{}</article>"#,
-            escape(title),
-            render_markdown(markdown)
+/// A page for the shell of `language`. `lang` lets a screen reader pronounce
+/// a text in another language correctly: on the `<article>` when the whole
+/// text is in one other language, else on each block that is not in
+/// `language`. Nothing is marked that is in the shell's language.
+fn page(blocks: &[Block], language: &str) -> Page {
+    let lang = |code: &str| format!(r#" lang="{}""#, escape(code));
+    let foreign = |block: &&Block| block.language != language;
+    let whole = blocks
+        .first()
+        .filter(|first| blocks.iter().all(|block| block.language == first.language))
+        .filter(foreign);
+    let html = match whole {
+        Some(first) => format!(
+            "<article{}>{}</article>",
+            lang(first.language),
+            blocks.iter().map(|block| render_markdown(&block.markdown)).collect::<String>()
         ),
-    }
+        None => format!(
+            "<article>{}</article>",
+            blocks
+                .iter()
+                .map(|block| {
+                    let html = render_markdown(&block.markdown);
+                    if foreign(&block) {
+                        format!("<div{}>{html}</div>", lang(block.language))
+                    } else {
+                        html
+                    }
+                })
+                .collect::<String>()
+        ),
+    };
+    Page { html }
 }
 
 /// HTML escaping for text and attribute values.

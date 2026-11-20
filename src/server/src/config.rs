@@ -20,7 +20,7 @@ mod model;
 
 pub use model::{
     AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES, LegalConfig,
-    LegalSection, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
+    LegalSection, LegalSectionKind, LegalTexts, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
 };
 
 use std::path::{Path, PathBuf};
@@ -127,6 +127,7 @@ impl Config {
         let creation_tokens = self.creation.validate()?;
         // Before the legal pages: their links depend on the default language.
         let default_language = self.i18n.validate()?;
+        self.legal.validate(default_language)?;
         let legal = KNOWN_LANGUAGES
             .iter()
             .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))

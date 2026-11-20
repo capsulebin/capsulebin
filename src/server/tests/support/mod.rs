@@ -191,6 +191,8 @@ pub fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
 /// known language under `<language>/`, each with the language list in its
 /// head, an internal link and the footer markers with the labels of its
 /// catalogue - and the tokens the server fills in where the build writes them.
+/// `legal.html` has the title markers where the real one has them: in
+/// `<title>`, the header and the `<h1>` above the content.
 pub fn write_shells(dir: &Path) {
     for language in capsulebin_server::config::KNOWN_LANGUAGES {
         let shells = dir.join(language);
@@ -208,8 +210,8 @@ pub fn write_shells(dir: &Path) {
         std::fs::write(
             shells.join("legal.html"),
             format!(
-                "{head}<title><!--capsulebin:legal-title--></title></head><header><!--capsulebin:legal-title--></header>\
-                 <main><!--capsulebin:legal-content--></main>{footer}"
+                "{head}<title><!--capsulebin:legal-title--> · CapsuleBin</title></head><header><!--capsulebin:legal-title--></header>\
+                 <main><div class=\"cb-prose cb-legal\"><h1><!--capsulebin:legal-title--></h1><!--capsulebin:legal-content--></div></main>{footer}"
             ),
         )
         .unwrap();

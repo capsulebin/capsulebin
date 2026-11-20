@@ -1,7 +1,9 @@
 # Privacy notice: what an instance processes
 
-CapsuleBin has a built-in privacy notice (`/privacy`, in English) that an instance serves
-once `[legal.operator]` is configured (see [Legal pages](operations.md#legal-pages)). This page
+CapsuleBin has a built-in privacy notice in English and German (`/privacy`, and `/de/privacy` or
+`/en/privacy` for the language that is not the default) that an instance serves once
+`[legal.operator]` is configured (see [Legal pages](operations.md#legal-pages)). Both languages
+state the same facts under the same sections; the table names the English headings. This page
 lists what that notice states and where it comes from, so that an operator can check it against
 their deployment, add what it cannot know, or replace it with their own.
 
@@ -24,7 +26,7 @@ jurisdiction, and the operator stays responsible for what their instance publish
 ## What the operator has to add
 
 The software cannot know what runs around it. Typical additions, as Markdown in
-`[legal.privacy] extra` or `extra_file` (inserted before "Your rights"):
+`[legal.privacy] extra` or `extra_file` (inserted before "Your rights", German "Deine Rechte"):
 
 - **The reverse proxy's access log.** Usually the largest item: it records client IP addresses and
   full request paths, including capsule ids. State what is logged and for how long.
@@ -36,6 +38,12 @@ The software cannot know what runs around it. Typical additions, as Markdown in
 
 An operator who prefers their own text replaces the notice with `[legal.privacy] text`, `file` or
 `url`; the table below is the basis for it.
+
+These settings are the default language's. The other language's pages use `[legal.privacy]` as
+well (its `extra` or own text shown there marked with the default language) unless
+`[legal.<lang>.privacy]` is set, e.g. `[legal.de.privacy] extra` with the German additions; that
+table replaces `[legal.privacy]` as a whole for those pages, so an empty one gives the plain
+built-in notice.
 
 ## The facts in detail
 

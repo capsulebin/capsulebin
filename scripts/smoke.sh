@@ -218,6 +218,17 @@ for lang in en de; do
     fail "${prefix}/imprint does not show the configured text"
 done
 
+# The built-in privacy notice exists in every language, titled from the page's
+# catalogue.
+for expected in "/privacy|Privacy|GDPR" "/de/privacy|Datenschutz|DSGVO"; do
+  IFS='|' read -r route title text <<<"${expected}"
+  page="$(curl -fsS "${BASE}${route}")" || fail "${route} unreachable"
+  grep -qF "<title>${title} · CapsuleBin</title>" <<<"${page}" || fail "${route} is not titled '${title}'"
+  grep -qF "<h1>${title}</h1>" <<<"${page}" || fail "${route} lacks the heading '${title}'"
+  grep -qF "${text}" <<<"${page}" || fail "${route} does not show the built-in text (no '${text}')"
+  echo "ok  ${route} (built-in text, title '${title}')"
+done
+
 # The default language has no prefix: a path under it is redirected to the same
 # path without it. The path is only copied, so the key in the fragment stays in
 # the browser. The server does not negotiate: no Vary, and Accept-Language

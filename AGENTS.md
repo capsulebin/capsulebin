@@ -172,8 +172,13 @@ Critical rules:
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
   startup without raw HTML or images and with links limited to http(s), mailto, tel and local
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
-  privacy notice and terms (`legal/defaults.rs`) describe what the server stores and
-  logs: change them together with any such behaviour.
+  privacy notice and terms (`legal/defaults/{en,de}.rs`) describe what the server stores and
+  logs: change them together with any such behaviour, in every language. `[legal.*]` is the
+  default language's text; `[legal.<lang>.*]` (same keys) gives another language's section, which
+  replaces its `[legal.*]` counterpart as a whole; without one that language falls back to
+  `[legal.*]`, marked with `lang` (`docs/i18n.md`). `[legal]` has no `deny_unknown_fields`
+  (it uses `flatten`); `LegalConfig::validate` refuses unknown or default-language tables instead.
+  Legal page titles come from the catalogue's footer labels, never from Rust.
 - **`[i18n] default_language` is the only language setting** (default `en`) — it chooses the
   language whose pages have no path prefix; an unknown code or any other key in `[i18n]` is a
   startup error. Every language in `KNOWN_LANGUAGES` is always offered. The known languages exist
@@ -284,7 +289,7 @@ npm run e2e -w @capsulebin/web
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the language switch and the head script's language choice (`i18n.e2e.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -304,7 +309,7 @@ npm run e2e -w @capsulebin/web
 | 012 | No OpenAPI document | Contract = capsule format, crypto profile, golden vectors; if ever needed, generate from `wire.rs` |
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
-| 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts filled in from the configuration; restricted Markdown rendered at startup; code still only from the binary |
+| 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts (English, German) filled in from the configuration; per language `[legal.<lang>.*]` with fallback to `[legal.*]`; restricted Markdown rendered at startup; code still only from the binary |
 | 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
 
 ## Source code map
@@ -335,8 +340,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`, turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` |
-| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
+| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`, turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` titled with the label of their own footer marker |
+| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; each section from `[legal.<lang>.*]` or else `[legal.*]`, `lang` on blocks not in the page language; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs` + `defaults/{en,de}.rs`: built-in texts per language) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |

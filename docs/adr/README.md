@@ -21,3 +21,4 @@ change is recognised as a change rather than happening by accident.
 | [013](ADR-013-abuse-reports-and-moderation.md) | Abuse reports and moderation without decryption | Accepted |
 | [014](ADR-014-agpl-licence-and-contributions.md) | AGPL licence, DCO for contributions | Accepted |
 | [015](ADR-015-legal-pages-rendered-by-the-server.md) | Legal pages: operator text rendered by the server | Accepted |
+| [016](ADR-016-language-paths.md) | Interface languages in the path, the default language without a prefix | Accepted |
