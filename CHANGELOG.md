@@ -68,6 +68,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   name, a slogan (per language with `[branding.<lang>]`), a header logo with an optional dark-theme
   variant and a favicon, without a rebuild. Logos and favicon are PNG, WebP or ICO files checked at
   startup and served same-origin under hashed, immutable URLs; SVG from the operator is refused.
+  `[branding.colors.light]` and `[branding.colors.dark]` set the theme's colour tokens per theme
+  (`#rgb` or `#rrggbb`, unset tokens keep the built-in value); the server serves them as a hashed
+  stylesheet, and a pair below the built-in contrast thresholds is a warning in the log and in
+  `capsulebin check`.
 
 ### Web client
 
