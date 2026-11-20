@@ -13,9 +13,11 @@ import { hasQueryOrFragment, LinkError, trailingLanguage } from '@capsulebin/cor
 import { put } from './commands/put';
 import { get } from './commands/get';
 import { remove } from './commands/delete';
-import { ExitCode, toCliError, usage } from './exit';
+import { CliError, ExitCode, toCliError, usage } from './exit';
 import type { Io } from './io';
 import { AS_VALUES } from './items';
+import { readLink } from './secrets';
+import { allowHttp, checkTransport } from './transport';
 
 import pkg from '../package.json' with { type: 'json' };
 
@@ -27,6 +29,10 @@ Usage:
   capsulebin put [FILE...] [options]     Encrypt files (or stdin) into one capsule and upload it
   capsulebin get LINK [options]          Retrieve and decrypt a capsule from its share link
   capsulebin delete LINK [options]       Delete a capsule with its management link
+
+LINK is the link itself, or - to read it from the first line of stdin; or leave it
+out and pass --link-file PATH. A link given as an argument is visible to other
+local users (ps) and lands in your shell history; prefer - or --link-file.
 
 put options:
   -s, --server URL         Server base URL (or CAPSULEBIN_SERVER)
@@ -40,16 +46,27 @@ put options:
       --name NAME          Item name for stdin or a single input
       --title TITLE        Capsule title
       --retries N          Retries on network errors, 429 and 5xx (default 3)
+      --delete-link-file PATH
+                           Write the delete link to PATH, a new file with mode 0600,
+                           instead of stderr or the JSON output
 
 get options:
+  -s, --server URL         The server you trust with CAPSULEBIN_PASSWORD (or CAPSULEBIN_SERVER):
+                           the variable is only used for links to this server
   -o, --output DIR         Write all items to DIR (default: a single item goes to stdout,
                            several items to the current directory)
-      --password-file PATH Read the password from the first line of PATH
-                           (or CAPSULEBIN_PASSWORD, or prompt)
+      --password-file PATH Read the password from the first line of PATH (or
+                           CAPSULEBIN_PASSWORD for links to --server, or prompt)
   -y, --yes                Retrieve a burn-after-retrieval capsule without asking
   -f, --force              Overwrite existing files instead of picking a free name
+      --link-file PATH     Read the share link from the first line of PATH
+
+delete options:
+      --link-file PATH     Read the management link from the first line of PATH
 
 Common options:
+      --allow-http         Allow plain http:// to hosts other than localhost, 127.0.0.0/8
+                           and [::1] (or CAPSULEBIN_ALLOW_HTTP=1); refused by default
       --json               Machine-readable output on stdout
   -h, --help               Show this help
   -V, --version            Show the version
@@ -77,9 +94,12 @@ const OPTIONS = {
     name: { type: 'string' },
     title: { type: 'string' },
     retries: { type: 'string' },
+    'delete-link-file': { type: 'string' },
+    'link-file': { type: 'string' },
     output: { type: 'string', short: 'o' },
     yes: { type: 'boolean', short: 'y' },
     force: { type: 'boolean', short: 'f' },
+    'allow-http': { type: 'boolean' },
     json: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'V' },
@@ -102,11 +122,12 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
         'name',
         'title',
         'retries',
+        'delete-link-file',
     ],
-    get: ['output', 'password-file', 'yes', 'force'],
-    delete: [],
+    get: ['server', 'output', 'password-file', 'yes', 'force', 'link-file'],
+    delete: ['link-file'],
 };
-const COMMON_OPTIONS: (keyof typeof OPTIONS)[] = ['json', 'help', 'version'];
+const COMMON_OPTIONS: (keyof typeof OPTIONS)[] = ['allow-http', 'json', 'help', 'version'];
 
 const UNITS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86_400, w: 604_800 };
 
@@ -181,6 +202,32 @@ function checkServer(server: string): void {
     }
 }
 
+/**
+ * A usable server base: {@link checkServer}'s rules plus the HTTP policy.
+ * Returns it without trailing slashes.
+ */
+function serverBase(given: string, httpAllowed: boolean): string {
+    checkServer(given);
+    checkTransport(given, httpAllowed, '--server');
+    return given.replace(/\/+$/, '');
+}
+
+/**
+ * The server `get` trusts with `CAPSULEBIN_PASSWORD`: `--server`, which must
+ * be usable, else `CAPSULEBIN_SERVER` if usable. An unusable variable (it may
+ * be set for `put`) is no anchor rather than an error, so it cannot break
+ * `get` of a capsule without a password.
+ */
+function passwordAnchor(io: Io, given: string | undefined, httpAllowed: boolean) {
+    if (given !== undefined) return serverBase(given, httpAllowed);
+    try {
+        return serverBase(io.env['CAPSULEBIN_SERVER'] ?? '', httpAllowed);
+    } catch (err) {
+        if (err instanceof CliError) return undefined;
+        throw err;
+    }
+}
+
 /** Runs the CLI and returns the exit code. Never calls `process.exit`. */
 export async function run(argv: string[], io: Io): Promise<number> {
     let json = argv.includes('--json');
@@ -200,13 +247,15 @@ export async function run(argv: string[], io: Io): Promise<number> {
             throw usage(`unknown command "${command}" (expected put, get or delete)`);
         }
         checkOptions(command, values);
+        const httpAllowed = allowHttp(io, values['allow-http'] === true);
 
         switch (command) {
             case 'put': {
                 const given = values.server ?? io.env['CAPSULEBIN_SERVER'] ?? '';
-                const server = given.replace(/\/+$/, '');
-                if (!server) throw usage('no server: pass --server URL or set CAPSULEBIN_SERVER');
-                checkServer(given);
+                if (!given.replace(/\/+$/, '')) {
+                    throw usage('no server: pass --server URL or set CAPSULEBIN_SERVER');
+                }
+                const server = serverBase(given, httpAllowed);
 
                 let as;
                 if (values.as !== undefined) {
@@ -234,17 +283,19 @@ export async function run(argv: string[], io: Io): Promise<number> {
                     name: values.name,
                     title: values.title,
                     retries: parseRetries(values.retries),
+                    deleteLinkFile: values['delete-link-file'],
                     json,
                 });
                 return ExitCode.Ok;
             }
             case 'get':
             case 'delete': {
-                if (positionals.length !== 1) throw usage(`${command} expects exactly one link`);
-                const link = positionals[0]!;
+                const link = await readLink(io, command, positionals, values['link-file']);
                 if (command === 'get') {
                     await get(io, {
                         link,
+                        anchor: passwordAnchor(io, values.server, httpAllowed),
+                        allowHttp: httpAllowed,
                         output: values.output,
                         passwordFile: values['password-file'],
                         yes: values.yes === true,
@@ -252,7 +303,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
                         json,
                     });
                 } else {
-                    await remove(io, { link, json });
+                    await remove(io, { link, allowHttp: httpAllowed, json });
                 }
                 return ExitCode.Ok;
             }

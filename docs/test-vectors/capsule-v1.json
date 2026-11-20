@@ -57,12 +57,12 @@
       "hkdf_salt_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
       "password": "test-password",
       "password_salt_hex": "0102030405060708090a0b0c0d0e0f10",
-      "password_iterations": 1000
+      "password_iterations": 100000
     },
     "expected": {
-      "password_key_hex": "370d1a50de52c7294c36ee6fa9e3fbf6464b4d3671c0805efccab4649998f37a",
-      "content_key_hex": "a6843dcbac097479044bdad32db3c90db4612afe6e2b287dcb80efa72622e135",
-      "reveal_token_hex": "4b811b6822cbf892a01299fc5b80901c281dfee75cdd6f8a0805416b87e03739"
+      "password_key_hex": "02eca3c81d00ad87b7476efb1ace9feec6403a10c20d2c33e951ed3e5ebbc979",
+      "content_key_hex": "b6df808eb4e058f44d5eaf2e15ddb68157747cd8baa227b1adc2a030e4700182",
+      "reveal_token_hex": "f8edb16d6f80dd53746193b2784106648eb1462c538b2b2ff77a140a1657b660"
     }
   },
   "describe": {
@@ -76,13 +76,61 @@
     }
   },
   "password_nfc": {
-    "description": "Passwords are normalized to Unicode NFC before PBKDF2: both spellings derive the same key. Uses password.inputs.password_salt_hex and password_iterations.",
+    "description": "Passwords are normalized to Unicode NFC before PBKDF2: both spellings derive the same key. Uses password.inputs.password_salt_hex.",
     "inputs": {
       "password_composed": "P\u00e4ssw\u00f6rd",
-      "password_decomposed": "Pa\u0308sswo\u0308rd"
+      "password_decomposed": "Pa\u0308sswo\u0308rd",
+      "password_iterations": 100000
     },
     "expected": {
-      "password_key_hex": "18bbff3788a31d18a425690700817071e6aff242bf1b0882096e92ef3590ab9b"
+      "password_key_hex": "4a9a7dee22648347c07d4c3988af979e9fdbdff32bdee8c39212317ee4207af6"
     }
+  },
+  "public_header": {
+    "description": "Public header JSON strings with password parameters. A parser must accept every `accept` entry (byte-identical when re-serialized) and refuse every `reject` entry before deriving anything: iterations must be an integer in [100000, 5000000], the password salt canonical base64url of exactly 16 bytes.",
+    "accept": [
+      {
+        "name": "iterations at the floor",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":100000}}"
+      },
+      {
+        "name": "iterations at the ceiling",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":5000000}}"
+      }
+    ],
+    "reject": [
+      {
+        "name": "iterations one below the floor",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":99999}}"
+      },
+      {
+        "name": "iterations far below the floor",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":1000}}"
+      },
+      {
+        "name": "non-integer iterations",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":100000.5}}"
+      },
+      {
+        "name": "iterations above the ceiling",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":5000001}}"
+      },
+      {
+        "name": "iterations as a string",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"iterations\":\"100000\"}}"
+      },
+      {
+        "name": "15-byte password salt",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4P\",\"iterations\":100000}}"
+      },
+      {
+        "name": "17-byte password salt",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4PEBE\",\"iterations\":100000}}"
+      },
+      {
+        "name": "password salt not base64url",
+        "json": "{\"envelope_format\":1,\"content_format\":\"capsule-file-v1\",\"cipher\":\"AES-256-GCM\",\"nonce\":\"0NHS09TV1tfY2drb\",\"hkdf_salt\":\"wMHCw8TFxsfIycrLzM3Ozw\",\"password\":{\"required\":true,\"kdf\":\"PBKDF2-HMAC-SHA-256\",\"salt\":\"AQIDBAUGBwgJCgsMDQ4P+/\",\"iterations\":100000}}"
+      }
+    ]
   }
 }

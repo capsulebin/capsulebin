@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { Capsule, CapsuleError, type CapsuleItem } from '../src/capsule';
 import { decrypt, derivePasswordKey, encrypt, sha256 } from '../src/crypto';
 import { fromBase64url, toBase64url } from '../src/helpers/bytes';
+import { PublicHeader } from '../src/public_header';
 import { deleteVerifier, deriveDescribeToken, derivePasteKeys, revealVerifier } from '../src/paste';
 
 import vectors from '../../../docs/test-vectors/capsule-v1.json' with { type: 'json' };
@@ -194,13 +195,29 @@ describe('golden vectors', () => {
     it('normalizes passwords to NFC before PBKDF2', async () => {
         const nfc = vectors.password_nfc;
         const salt = hexToBytes(vectors.password.inputs.password_salt_hex);
-        const iterations = vectors.password.inputs.password_iterations;
+        const iterations = nfc.inputs.password_iterations;
         expect(nfc.inputs.password_composed).not.toBe(nfc.inputs.password_decomposed);
         for (const password of [nfc.inputs.password_composed, nfc.inputs.password_decomposed]) {
             const key = await derivePasswordKey(password, salt, iterations);
             expect(bytesToHex(key)).toBe(nfc.expected.password_key_hex);
         }
     });
+
+    // --- public header password parameters ----------------------------------
+
+    for (const accepted of vectors.public_header.accept) {
+        it(`accepts a public header with ${accepted.name}`, () => {
+            const header = PublicHeader.parseFromJson(accepted.json);
+            expect(header.hasPassword()).toBe(true);
+            expect(new TextDecoder().decode(header.toAad())).toBe(accepted.json);
+        });
+    }
+
+    for (const rejected of vectors.public_header.reject) {
+        it(`rejects a public header with ${rejected.name}`, () => {
+            expect(() => PublicHeader.parseFromJson(rejected.json)).toThrow(Error);
+        });
+    }
 
     it('pads the reference capsule to its PADMÉ length', () => {
         expect(fromBase64url(expected.capsule_b64)).toHaveLength(expected.capsule_padded_length);

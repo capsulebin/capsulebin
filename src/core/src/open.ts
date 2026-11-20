@@ -14,7 +14,7 @@
  * refusing the reveal token.
  */
 
-import { ApiError, type DescriptorResponse, type PasteApi } from './api';
+import { ApiError, MalformedHeaderError, type DescriptorResponse, type PasteApi } from './api';
 import { Capsule, CapsuleError } from './capsule';
 import { decrypt, derivePasswordKey } from './crypto';
 import { fromBase64url, toBase64url } from './helpers/bytes';
@@ -57,7 +57,9 @@ export type OpenOutcome =
     | { kind: 'password_required' }
     /** Ciphertext did not authenticate: wrong key, wrong password, or tampering. */
     | { kind: 'decrypt_failed' }
-    /** Decrypted, but not a valid Capsule File Format v1 container. */
+    /** Not a valid capsule: its public header failed to parse (malformed, or
+     *  password parameters outside the accepted range), or it decrypted to
+     *  something that is not a Capsule File Format v1 container. */
     | { kind: 'invalid_capsule'; message: string }
     /** A hook rejected or stopped the retrieval; nothing was retrieved after that point. */
     | { kind: 'aborted' };
@@ -83,6 +85,11 @@ export async function openPaste(
         describeToken = await deriveDescribeToken(linkSecret, id);
         descriptor = await api.getDescriptor(id, { describeToken });
     } catch (err) {
+        // Checked before anything uses the header: no password is asked for
+        // and no reveal token is derived from parameters the client refuses.
+        if (err instanceof MalformedHeaderError) {
+            return { kind: 'invalid_capsule', message: 'the public header is invalid' };
+        }
         return apiFailure(err);
     }
 

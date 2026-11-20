@@ -7,9 +7,12 @@
 import { LinkError, parseLink, PasteApi, toBase64url } from '@capsulebin/core';
 import { usage } from '../exit';
 import type { Io } from '../io';
+import { checkTransport } from '../transport';
 
 export interface DeleteOptions {
     link: string;
+    /** Plain HTTP to a host other than loopback was opted into. */
+    allowHttp: boolean;
     json: boolean;
 }
 
@@ -26,6 +29,7 @@ export async function remove(io: Io, options: DeleteOptions): Promise<void> {
         }
         throw err;
     }
+    checkTransport(link.base, options.allowHttp, "the link's server");
 
     await new PasteApi(link.base).delete(link.id, toBase64url(link.secret));
 

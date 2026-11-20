@@ -7,7 +7,7 @@
  * all of them identically (ADR-001), and so does the CLI.
  */
 
-import { ApiError } from '@capsulebin/core';
+import { ApiError, REDIRECT_REFUSED } from '@capsulebin/core';
 
 export const ExitCode = {
     Ok: 0,
@@ -54,6 +54,15 @@ export function usage(message: string): CliError {
 
 /** Maps an API failure to a CLI error. Never includes request bodies or secrets. */
 export function fromApiError(err: ApiError): CliError {
+    // Before the status: a refused redirect may come with status 0 or 3xx.
+    // The `Location` is server-controlled text and is not shown.
+    if (err.code === REDIRECT_REFUSED) {
+        return new CliError(
+            'the server answered with a redirect, which was not followed; check the server URL',
+            ExitCode.Unreachable,
+            REDIRECT_REFUSED,
+        );
+    }
     if (err.status === 0) {
         return new CliError('could not reach the server', ExitCode.Unreachable, 'network_error');
     }

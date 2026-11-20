@@ -146,24 +146,55 @@ echo "db password: hunter2" | CAPSULEBIN_PASSWORD=... node src/cli/dist/cli.js p
 node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…'            # one item → stdout
 node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…' -o out/    # all items → out/
 node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
+
+# Keep links out of argv and the terminal: the management link goes to a new 0600 file,
+# the share link comes from stdin, the management link from that file
+node src/cli/dist/cli.js put notes.md --delete-link-file notes.link > share.link
+node src/cli/dist/cli.js get - < share.link
+node src/cli/dist/cli.js delete --link-file notes.link
 ```
 
 - **Secrets are never arguments.** Passwords come from `--password-file`, `CAPSULEBIN_PASSWORD`
-  or a hidden prompt; creation tokens from `--token-file` or `CAPSULEBIN_TOKEN`.
+  or a hidden prompt; creation tokens from `--token-file` or `CAPSULEBIN_TOKEN`. A password from a
+  file or the variable is used exactly as given, surrounding spaces included; one made only of
+  whitespace makes `put` stop with exit code `2` instead of creating an unprotected capsule.
+- **Links can stay off the command line.** A link passed as an argument is visible to other local
+  users (`ps`) and lands in the shell history; it still works, for compatibility. `get` and
+  `delete` also take `-` (the first line of stdin) or `--link-file PATH` (the first line of the
+  file). `put --delete-link-file PATH` writes the management link to a new file with mode `0600`
+  instead of stderr (and the JSON output names the file as `delete_link_file` instead of
+  `delete_url`); an existing file or symlink is refused before anything is uploaded, and the file
+  is removed again if the create fails.
+- **`CAPSULEBIN_PASSWORD` only goes to the server you name.** `get` uses it only when the link's
+  server equals `get --server` (else `CAPSULEBIN_SERVER`): same scheme, host and port and the
+  same path, compared without trailing slashes and the language segment. A given `get --server`
+  must pass the same checks as `put --server` (exit code `2`); a `CAPSULEBIN_SERVER` that does not
+  is no trusted server rather than an error (it may be set for `put`). A link chooses its own
+  key derivation parameters and receives the reveal token derived from the password, so a link to
+  another server could otherwise guess the password offline. For such a link `get` stops with
+  exit code `8` (reason `password_origin_mismatch`), or asks for the password when run in a
+  terminal. `--password-file` is used for any link.
+- **HTTPS only, except on loopback.** Every request carries a capability, so `put`, `get` and
+  `delete` refuse a plain `http://` server or link (exit code `2`, before any request) unless the
+  host is `localhost`, an address in `127.0.0.0/8` or `[::1]`, or `--allow-http` /
+  `CAPSULEBIN_ALLOW_HTTP=1` is given. Any other non-empty value of the variable is a usage error.
+  Redirects are never followed: a `3xx` answer to an API request ends with exit code `7` (reason
+  `redirect_refused`) without retrying and without showing where it pointed.
 - **`--json`** prints a single JSON object on stdout — the links on `put`, item metadata and
   written paths on `get`, `{"error": {"reason", "message"}}` on failure.
 - **Exit codes** are stable: `0` ok, `2` usage, `3` not available (unknown, expired, deleted,
   consumed, wrong link or password — indistinguishable by design), `4` a burn capsule someone
-  else retrieved concurrently, `5` undecryptable, `6` rejected by the server (token, size,
-  expiry, rate limit), `7` unreachable or server error, `8` needs a password or burn
-  confirmation. `capsulebin --help` lists all options.
+  else retrieved concurrently, `5` undecryptable or not a valid capsule (also a public header
+  whose password parameters the [crypto profile](docs/crypto-profile.md) refuses), `6` rejected by
+  the server (token, size, expiry, rate limit), `7` unreachable or server error, `8` needs a
+  password or burn confirmation. `capsulebin --help` lists all options.
 - **`put` refuses a server URL whose path ends in an interface language code**
   (`https://example.org/team/de`, exit code `2`): links below it could not be told apart from the
   `/de/` language prefix of the pages. It also refuses one with a query or fragment, even an
   empty one (`https://example.org/team?`, exit code `2`): the API path is appended to the URL.
   The server refuses the same addresses as `public_url`.
 - **Retries are safe.** `put` seals once and re-sends the identical request on network errors,
-  `429` and `5xx`; the server answers a replay like the original
+  `429` and `5xx` (never after a redirect); the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.
 - **Burn capsules are not consumed by accident.** `get` asks first, and refuses
   non-interactively unless `--yes` is given. Once retrieved, output never fails over an existing

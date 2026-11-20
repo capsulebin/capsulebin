@@ -113,14 +113,31 @@ offline brute-force oracle decoupled from the rate limit. See [ADR-001](adr/ADR-
   the operating system and input method (`ä` as U+00E4, or as `a` followed by
   U+0308); without normalization those derive different keys and the capsule
   cannot be opened.
-- `password_salt` is 16 random bytes, independent of `hkdf_salt`.
+- `password_salt` is 16 random bytes, independent of `hkdf_salt`. In the
+  public header it must be canonical unpadded base64url of exactly 16 bytes
+  (22 characters); any other salt is rejected.
 - Default iteration count: `600,000`. Chosen to stay under ~2 seconds on
   reference hardware; carried in the public header rather than hard-coded, so
   a future default can rise without breaking capsules created under the old
   one.
+- Floor: `100,000` iterations (`MIN_PBKDF2_ITERATIONS`). The iteration count
+  must be an integer; a public header claiming fewer, or a non-integer, is
+  rejected. The header comes from whoever issued the link, and the reveal
+  token derived from the password goes to that issuer's server: without a
+  floor, a hostile issuer could pick a trivially cheap KDF and guess the
+  password offline from the reveal token. The floor leaves the default free to
+  change in either direction above it.
 - Hard ceiling: `5,000,000` iterations. A public header claiming more than
   this is rejected before PBKDF2 runs, to bound the client-side cost of
   parsing an arbitrary (attacker-supplied) header.
+- Both bounds and the salt rule are checked when the header is parsed, before
+  a password is asked for or anything is derived from it — not in the PBKDF2
+  primitive, which stays usable with any parameters. A client treats such a
+  header as an invalid capsule, not as a network failure. The server stores
+  the header as opaque bytes and does not check it. No CapsuleBin client has
+  created a header outside these rules; the
+  [test vectors](test-vectors/capsule-v1.json) include headers a parser must
+  accept and refuse (`public_header`), and the password vectors use the floor.
 - The `info` concatenation is `info_label || 0x00 || password_key` — a single
   `0x00` separator byte between the label and the key.
 

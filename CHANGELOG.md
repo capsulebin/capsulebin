@@ -28,7 +28,11 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   and delete capabilities and compares them in constant time.
 - An independent delete secret, so recipients of a link cannot delete the capsule.
 - Optional password protection (NFC-normalized, PBKDF2-HMAC-SHA-256) mixed into the key derivation,
-  with no offline-checkable verifier in the public header.
+  with no offline-checkable verifier in the public header. Clients refuse a header with fewer than
+  100 000 iterations or a password salt other than 16 bytes before asking for the password, so the
+  issuer of a link cannot choose a KDF cheap enough to guess the password offline.
+- The web client and the CLI follow no redirect on an API request.
+- A password of only whitespace is refused instead of silently creating an unprotected capsule.
 - PADMÉ padding, so the ciphertext size reveals little more than the order of magnitude.
 
 ### Server
@@ -97,6 +101,13 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - `capsulebin put`, `get` and `delete`, sharing `@capsulebin/core` with the web client; runs on
   Node.js 24 or newer.
 - Secrets only from files, environment variables or a prompt — never from arguments.
+- Links can stay off the command line: `get -` and `delete -` read the link from stdin,
+  `--link-file` from a file, and `put --delete-link-file` writes the management link to a new
+  owner-only file instead of stderr.
+- `CAPSULEBIN_PASSWORD` is used by `get` only for links to the server named with `--server` (or
+  `CAPSULEBIN_SERVER`).
+- Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`
+  or `CAPSULEBIN_ALLOW_HTTP=1`.
 - Stable exit codes, `--json` output, safe retries and confirmation before consuming a burn capsule.
 
 [Unreleased]: https://github.com/capsulebin/capsulebin/compare/v1.0.0...HEAD

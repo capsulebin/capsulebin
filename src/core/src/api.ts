@@ -38,6 +38,9 @@ export interface RetrieveResponse {
     ciphertext: string; // base64url
 }
 
+/** {@link ApiError} code for a redirect the client did not follow. */
+export const REDIRECT_REFUSED = 'redirect_refused';
+
 export class ApiError extends Error {
     constructor(
         message: string,
@@ -50,6 +53,20 @@ export class ApiError extends Error {
     ) {
         super(message);
         this.name = 'ApiError';
+    }
+}
+
+/**
+ * The describe response arrived, but its public header failed
+ * {@link PublicHeader.parseFromJson}: malformed, or password parameters
+ * outside what this client accepts. A malformed capsule, not a network
+ * problem — `openPaste` reports it as `invalid_capsule`. An `ApiError` with
+ * status `0`, so callers that only know `ApiError` keep treating it as before.
+ */
+export class MalformedHeaderError extends ApiError {
+    constructor() {
+        super('malformed public header', 0, null);
+        this.name = 'MalformedHeaderError';
     }
 }
 
@@ -150,9 +167,7 @@ export class PasteApi {
         try {
             publicHeader = PublicHeader.parseFromJson(new TextDecoder().decode(publicHeaderAad));
         } catch {
-            // Not an HTTP-level failure — no response status to report — so this
-            // reuses the same sentinel `#request()` uses for a failed fetch.
-            throw new ApiError('malformed public header', 0, null);
+            throw new MalformedHeaderError();
         }
 
         return {
@@ -218,12 +233,30 @@ export class PasteApi {
         return `${base}${path}`;
     }
 
+    /**
+     * Sends one API request. Redirects are never followed: every request
+     * carries a capability or creation token in its body or headers, and the
+     * server never redirects an API path, so a redirect comes from a proxy
+     * mistake or someone else. It ends in an `ApiError` with code
+     * `redirect_refused`; the `Location` is server-controlled text and is
+     * not passed on.
+     */
     async #request<T>(url: string, options: RequestInit): Promise<T> {
         let response: Response;
         try {
-            response = await fetch(url, options);
+            response = await fetch(url, { ...options, redirect: 'manual' });
         } catch {
             throw new ApiError('network error', 0, null);
+        }
+
+        // Browsers hide a refused redirect behind an opaque response (status
+        // 0); Node returns the 3xx response itself.
+        if (
+            response.type === 'opaqueredirect' ||
+            (response.status >= 300 && response.status < 400)
+        ) {
+            response.body?.cancel().catch(() => undefined);
+            throw new ApiError('redirect not followed', response.status, REDIRECT_REFUSED);
         }
 
         // 204 No Content: success with no body.
