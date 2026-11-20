@@ -121,6 +121,12 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
 - The image sets `CAPSULEBIN__SERVER__BIND=0.0.0.0:8080` and
   `CAPSULEBIN__DATABASE__PATH=/data/capsulebin.db`. A configuration file can be mounted instead and
   passed as `--config /path serve`.
+- Environment variables are meant for short, single-line values. Put long or multi-line texts,
+  especially the [legal texts](#legal-pages), into a configuration file or a Markdown file referenced by `file`,
+  mount it read-only and pass it at start (`--config /etc/capsulebin/capsulebin.toml serve`).
+  An environment value is taken verbatim as a string (unless it reads as a boolean, an integer or
+  an array): quotes and escape sequences such as `\n` are not interpreted, so Markdown passed this
+  way does not come out as written.
 - `trusted_proxies` must name the address the proxy connects *from* as the container sees it —
   with a published port that is usually the bridge gateway, not `127.0.0.1`. Check the peer
   address in the access log once and narrow the range to it.
@@ -236,6 +242,9 @@ file = "/etc/capsulebin/legal/operator.de.md"
 The texts are read and rendered at startup, so `capsulebin check` reports a missing file, and a
 changed file takes effect on restart. In the container, mount them read-only, e.g.
 `-v ./legal:/etc/capsulebin/legal:ro` with `CAPSULEBIN__LEGAL__OPERATOR__FILE=/etc/capsulebin/legal/operator.md`.
+Give the texts as files (or `text` in a mounted configuration file), not as `…__TEXT` environment
+variables: those are taken verbatim and are unsuitable for multi-line Markdown (see
+[Container](#container)).
 The built-in texts are a careful default, not legal advice: you are responsible for what your
 instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state.
 
