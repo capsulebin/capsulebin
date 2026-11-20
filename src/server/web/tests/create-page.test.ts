@@ -6,6 +6,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+    derivePasswordKeyFor,
+    openPaste,
+    parseLink,
+    PasteApi,
+    type PublicHeader,
+} from '@capsulebin/core';
+import { createFakeServer, type FakeServer } from '../../../core/tests/fake-server';
+import de from '../src/i18n/de.json';
+import en from '../src/i18n/en.json';
 import { servedShell, setPageLanguage } from './page-language';
 
 function el<T extends HTMLElement>(attr: string): T {
@@ -330,4 +340,124 @@ describe('create page in German', () => {
         );
         expect(tabs()).toEqual(['snippet.txt', 'Datei *']);
     });
+});
+
+describe('create page password', () => {
+    const CATALOGUES = { en, de };
+    let server: FakeServer;
+
+    beforeEach(() => {
+        server = createFakeServer(window.location.origin);
+        vi.stubGlobal('fetch', server.fetch);
+    });
+
+    function input<T extends HTMLElement>(id: string): T {
+        return document.getElementById(id) as T;
+    }
+
+    function submit(): void {
+        el<HTMLFormElement>('create-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+    }
+
+    function creates(): number {
+        return server.requests.filter(
+            (r) => r.method === 'POST' && r.url.endsWith('/api/v1/pastes'),
+        ).length;
+    }
+
+    /** Submits and waits for the done view; returns the share link. */
+    async function create(): Promise<string> {
+        submit();
+        await vi.waitFor(() => expect(input('share-link')).not.toBeNull(), { timeout: 15_000 });
+        return input<HTMLInputElement>('share-link').value;
+    }
+
+    async function header(shareUrl: string): Promise<PublicHeader> {
+        const { id } = parseLink(shareUrl, 'share');
+        const encoded = server.pastes.get(id)!.publicHeader;
+        return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as PublicHeader;
+    }
+
+    async function opensWith(shareUrl: string, password: string): Promise<boolean> {
+        const link = parseLink(shareUrl, 'share');
+        const outcome = await openPaste(new PasteApi(link.base), link.id, link.secret, {
+            passwordKey: (h) => derivePasswordKeyFor(h, password),
+        });
+        return outcome.kind === 'success';
+    }
+
+    for (const lang of ['en', 'de'] as const) {
+        it.each([' ', '   ', '\t'])(
+            `refuses a password of only whitespace (%j) in ${lang} and keeps the form`,
+            async (blank) => {
+                await loadPage(lang);
+                type('keep me');
+                input<HTMLInputElement>('create-title').value = 'My title';
+                input<HTMLSelectElement>('create-expiry').value = '86400';
+                input<HTMLInputElement>('create-burn').checked = true;
+                input<HTMLInputElement>('create-password').value = blank;
+                submit();
+                await new Promise((resolve) => setTimeout(resolve, 50));
+
+                expect(creates()).toBe(0);
+                expect(server.requests).toHaveLength(0);
+                // Still the form: neither the encrypting nor the error view.
+                expect(el('create-form')).not.toBeNull();
+                expect(document.querySelector('.cb-spinner')).toBeNull();
+                expect(document.querySelector('[data-error-message]')).toBeNull();
+
+                const message = el('password-error');
+                expect(message.hidden).toBe(false);
+                expect(message.textContent).toBe(CATALOGUES[lang]['create.passwordBlank']);
+                expect(document.activeElement).toBe(input('create-password'));
+                expect(input('create-password').getAttribute('aria-invalid')).toBe('true');
+
+                expect(el<HTMLTextAreaElement>('item-text').value).toBe('keep me');
+                expect(input<HTMLInputElement>('create-title').value).toBe('My title');
+                expect(input<HTMLSelectElement>('create-expiry').value).toBe('86400');
+                expect(input<HTMLInputElement>('create-burn').checked).toBe(true);
+                expect(input<HTMLInputElement>('create-password').value).toBe(blank);
+            },
+        );
+    }
+
+    it('shows no password message before a submit', () => {
+        expect(el('password-error').hidden).toBe(true);
+        expect(input('create-password').hasAttribute('aria-invalid')).toBe(false);
+    });
+
+    it('creates a capsule without a password from an empty field', async () => {
+        type('no password');
+        const share = await create();
+        expect(creates()).toBe(1);
+        expect((await header(share)).password).toBeUndefined();
+    });
+
+    it('passes a password with spaces around it on unchanged', async () => {
+        type('protected');
+        input<HTMLInputElement>('create-password').value = ' secret ';
+        const share = await create();
+        expect((await header(share)).password).toBeDefined();
+        expect(await opensWith(share, 'secret')).toBe(false);
+        expect(await opensWith(share, ' secret ')).toBe(true);
+    }, 30_000);
+
+    it('creates the capsule once a refused password is corrected', async () => {
+        type('second try');
+        input<HTMLInputElement>('create-password').value = '  ';
+        submit();
+        expect(el('password-error').hidden).toBe(false);
+        expect(creates()).toBe(0);
+
+        input<HTMLInputElement>('create-password').value = 'correct horse';
+        submit();
+        // The form gives way to the encrypting view, without the message.
+        expect(document.querySelector('[data-password-error]:not([hidden])')).toBeNull();
+        await vi.waitFor(() => expect(input('share-link')).not.toBeNull(), { timeout: 15_000 });
+        const share = input<HTMLInputElement>('share-link').value;
+        expect(creates()).toBe(1);
+        expect(await opensWith(share, 'correct horse')).toBe(true);
+    }, 30_000);
 });

@@ -418,7 +418,22 @@ function showEdit(): void {
         const expirySecs = expiryValue === '' ? null : parseInt(expiryValue, 10);
         if (expirySecs !== null && (isNaN(expirySecs) || expirySecs <= 0)) return;
         const burn = byId<HTMLInputElement>('create-burn').checked;
-        const password = byId<HTMLInputElement>('create-password').value;
+        const passwordField = byId<HTMLInputElement>('create-password');
+        const password = passwordField.value;
+        // A password of only whitespace is refused here, not passed on: the core
+        // would drop it and create the capsule without protection although the
+        // creator typed one. An empty field means no password; spaces around
+        // real characters stay part of the password.
+        const passwordError = byAttr('password-error');
+        const blankPassword = password !== '' && password.trim() === '';
+        passwordError.textContent = blankPassword ? t('create.passwordBlank') : '';
+        passwordError.hidden = !blankPassword;
+        if (blankPassword) {
+            passwordField.setAttribute('aria-invalid', 'true');
+            passwordField.focus();
+            return;
+        }
+        passwordField.removeAttribute('aria-invalid');
         // Encrypted with the items; the server never sees it.
         const title = byId<HTMLInputElement>('create-title').value.trim() || null;
 

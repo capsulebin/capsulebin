@@ -3,13 +3,15 @@
  *
  * The reporter may paste a full share link. Only the id leaves the browser —
  * the fragment (the decryption key) is cut off before anything else looks at
- * the text, and the server refuses descriptions that still contain one.
+ * the text. A key in the description or contact is refused here, before
+ * anything is sent, and the text is left for the reporter to correct; the
+ * server refuses such text too, for other clients.
  *
  * The server answers every well-formed report the same way, whether or not the
  * capsule exists, so this page always shows the same confirmation.
  */
 
-import { pasteIdFromInput } from '@capsulebin/core';
+import { containsKeyFragment, pasteIdFromInput } from '@capsulebin/core';
 import { t, type TextKey } from '../language';
 import {
     byAttr,
@@ -78,11 +80,21 @@ async function submit(event: SubmitEvent): Promise<void> {
     // Never leave the key in the field, even if the request fails.
     pasteField.value = pasteId;
 
-    const description = byAttr<HTMLTextAreaElement>('report-description').value.trim();
+    const descriptionField = byAttr<HTMLTextAreaElement>('report-description');
+    const description = descriptionField.value.trim();
     if (!description) {
         return showError(t('report.error.noDescription'));
     }
-    const contact = byAttr<HTMLInputElement>('report-contact').value.trim();
+    const contactField = byAttr<HTMLInputElement>('report-contact');
+    const contact = contactField.value.trim();
+
+    // A pasted link in the free text would carry its key to the server. Refuse
+    // it before the request exists; focus the first field concerned, in form order.
+    const withKey = [descriptionField, contactField].find((f) => containsKeyFragment(f.value));
+    if (withKey) {
+        withKey.focus();
+        return showError(t('report.error.containsKey'));
+    }
 
     button.disabled = true;
     try {

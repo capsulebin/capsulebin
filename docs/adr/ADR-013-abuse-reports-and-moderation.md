@@ -25,8 +25,14 @@ optional `contact`.
 - Every well-formed report gets the same `202 {"status":"received"}`, whether or not the paste
   exists. Only reports about a paste that currently exists — active and not expired or consumed, or
   disabled — are stored. Existence check and insert are one SQL statement.
-- A report never carries a key: the report page strips the fragment from a pasted link before
-  sending, and the server refuses text containing `#v1.`.
+- A report never carries a key: the report page strips the fragment from a pasted link in the id
+  field, and it refuses a description or contact containing `#v1.` before anything is sent — no
+  request, a message, focus on the first field concerned, the text left for the reporter to edit.
+  The server refuses such text too, for clients other than the report page. Both use the same
+  rule (`#` followed by the fragment prefix, case-sensitive; `containsKeyFragment` in the core,
+  `check_text` on the server), so the page never sends a text the server would refuse for a key.
+  A bare key without `#` is not detected on either side. The page refuses rather than cutting the
+  key out: removing text from free text is guesswork, and the reporter would not see what was sent.
 - Text with control characters is refused, so a report shown in the operator's terminal cannot carry
   escape sequences.
 - Reports have their own rate-limit class (`rate_limits.report`, which may be set per hour).

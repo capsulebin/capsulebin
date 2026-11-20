@@ -258,9 +258,11 @@
                         class="cb-input"
                         placeholder="{{create.passwordPlaceholder}}"
                         autocomplete="new-password"
+                        aria-describedby="create-password-error"
                     />
                     <span class="cb-label-note"> {{create.passwordNote}} </span>
                 </div>
+                <p class="cb-error" id="create-password-error" data-password-error hidden></p>
                 <button type="submit" class="cb-btn" data-create-submit>{{create.submit}}</button>
             </form>
         </template>
