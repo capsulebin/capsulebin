@@ -8,17 +8,142 @@
 import '../styles/tokens.css';
 import '../styles/base.css';
 
+import {
+    type Language,
+    type SwitchMode,
+    chooseLanguage,
+    endonym,
+    offeredLanguages,
+    pageLanguage,
+} from '../language';
+import { LANGUAGE_NEXT_PAGE } from '../i18n/language-next-page';
 import { initTheme, mountThemeToggle } from '../theme';
 
 // --- boot --------------------------------------------------------------------
 
-export function initShell(): void {
+export interface Shell {
+    /** The language switch in the header, if the page has one. */
+    languageSwitch: LanguageSwitch | null;
+}
+
+export function initShell(): Shell {
     // theme-init.js has already set the attribute before the paint; this call keeps
     // the state consistent in case that script was blocked.
     initTheme();
 
     const toggle = document.querySelector<HTMLButtonElement>('[data-theme-toggle]');
     if (toggle) mountThemeToggle(toggle);
+
+    const languages = document.querySelector<HTMLElement>('[data-language-switch]');
+    return { languageSwitch: languages ? mountLanguageSwitch(languages) : null };
+}
+
+// --- language switch ---------------------------------------------------------
+
+export interface LanguageSwitch {
+    /**
+     * From now on a choice is only stored, not applied by loading the page under
+     * the new prefix; `onStored` runs after each choice (to tell the user it applies
+     * from the next page on). For pages whose fragment is already gone.
+     */
+    storeOnly(onStored: (language: Language) => void): void;
+    /**
+     * The live region next to the switch for a notice about it, added empty on the
+     * first call. It exists before its text changes, so the change is announced.
+     */
+    addNotice(): HTMLElement;
+    /**
+     * Whether a choice is loading the page in another language. The old document
+     * stays on screen until the new one arrives; nothing may be started from it.
+     */
+    isLeaving(): boolean;
+}
+
+/**
+ * Fills `container` with one button per offered language, named in that language,
+ * the page language marked with `aria-current`. With a single language there is
+ * nothing to choose and the switch stays hidden.
+ */
+export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
+    const current = pageLanguage();
+    const offered = offeredLanguages();
+    let mode: SwitchMode = 'navigate';
+    let onStored: ((language: Language) => void) | null = null;
+    let notice: HTMLElement | null = null;
+    let leaving = false;
+
+    container.replaceChildren(
+        ...offered.map((language) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.lang = language;
+            button.dataset.language = language;
+            button.textContent = endonym(language);
+            if (language === current) button.setAttribute('aria-current', 'true');
+            button.addEventListener('click', () => {
+                if (chooseLanguage(language, mode)) {
+                    leaving = true;
+                    disablePageControls();
+                }
+                onStored?.(language);
+            });
+            return button;
+        }),
+    );
+    container.hidden = offered.length < 2;
+
+    return {
+        storeOnly(callback) {
+            mode = 'store';
+            onStored = callback;
+        },
+        addNotice() {
+            if (notice) return notice;
+            notice = document.createElement('span');
+            notice.className = 'cb-status';
+            notice.setAttribute('role', 'status');
+            notice.dataset.languageNotice = '';
+            container.before(notice);
+            return notice;
+        },
+        isLeaving: () => leaving,
+    };
+}
+
+/** Shows that the page is on its way out: nothing in its content can be used any more. */
+function disablePageControls(): void {
+    const controls = document.querySelectorAll<
+        HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+    >('main :is(button, input, select, textarea)');
+    for (const control of controls) control.disabled = true;
+}
+
+/**
+ * Whether the language switch is loading this page in another language. A page
+ * asks before it retrieves or deletes a capsule: a request sent from the old
+ * document could burn the capsule there, with its answer shown nowhere. The
+ * other order is covered by {@link languageFromNextPage}.
+ */
+export function isLeavingPage(shell: Shell): boolean {
+    return shell.languageSwitch?.isLeaving() ?? false;
+}
+
+/**
+ * For pages that must not be reloaded any more - a retrieval or deletion has
+ * started, or the key is gone from the address: from now on the switch only
+ * stores the choice and says next to it that the choice applies from the next
+ * page on - in the chosen language, which need not be the page's: whoever picks
+ * German may not read the English page. Calling it again changes nothing.
+ */
+export function languageFromNextPage(shell: Shell): void {
+    const { languageSwitch } = shell;
+    if (!languageSwitch) return;
+
+    const notice = languageSwitch.addNotice();
+    languageSwitch.storeOnly((language) => {
+        notice.lang = language;
+        notice.textContent = LANGUAGE_NEXT_PAGE[language];
+    });
 }
 
 // --- DOM helpers -------------------------------------------------------------

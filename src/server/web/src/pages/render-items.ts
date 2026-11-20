@@ -7,7 +7,8 @@
 import { html, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 
-import { type CapsuleItem, formatSize } from '@capsulebin/core';
+import type { CapsuleItem } from '@capsulebin/core';
+import { formatSize, t, type TextKey } from '../language';
 import { highlightCode } from '../render-code';
 import { renderMarkdown } from '../render-markdown';
 
@@ -19,35 +20,36 @@ export interface DisplayItem {
     bytes?: Uint8Array;
 }
 
-const KIND_BADGES: Record<string, string> = {
-    plain: 'Text',
-    code: 'Code',
-    markdown: 'MD',
-    download: 'File',
+const KIND_BADGES: Readonly<Record<string, TextKey>> = {
+    plain: 'item.badge.plain',
+    code: 'item.badge.code',
+    markdown: 'item.badge.markdown',
+    download: 'item.badge.download',
 };
 
-const KIND_LABELS: Record<string, string> = {
-    plain: 'Text',
-    code: 'Code',
-    markdown: 'Markdown',
-    download: 'File',
+const KIND_LABELS: Readonly<Record<string, TextKey>> = {
+    plain: 'item.kind.plain',
+    code: 'item.kind.code',
+    markdown: 'item.kind.markdown',
+    download: 'item.kind.download',
 };
 
 export function kindBadge(item: DisplayItem): string {
-    return KIND_BADGES[item.presentation] || 'Item';
+    return t(KIND_BADGES[item.presentation] ?? 'item.badge.other');
+}
+
+function kindLabel(item: DisplayItem): string {
+    return t(KIND_LABELS[item.presentation] ?? 'item.kind.other');
 }
 
 export function itemName(item: DisplayItem, index: number): string {
     if (item.name && item.name.length > 0) return item.name;
-    return `${KIND_LABELS[item.presentation] || 'Item'} ${index + 1}`;
+    return `${kindLabel(item)} ${index + 1}`;
 }
 
 export function itemMeta(item: DisplayItem): string {
     const size = formatSize(item.bytes?.length ?? 0);
-    const kind =
-        item.presentation === 'code' && item.language
-            ? item.language
-            : KIND_LABELS[item.presentation] || 'Item';
+    const kind = item.presentation === 'code' && item.language ? item.language : kindLabel(item);
     return `${kind} · ${size}`;
 }
 
@@ -126,12 +128,12 @@ export function renderItemContent(item: DisplayItem, options: RenderOptions): Te
     }
     if (item.presentation === 'download') {
         return html`<div class="cb-card cb-file-card">
-            <p class="cb-lede">
-                Files are never previewed. It was decrypted in your browser and is saved exactly as
-                the sender added it.
-            </p>
+            <p class="cb-lede">${t('item.filePreviewNote')}</p>
             <button type="button" class="cb-btn" @click=${() => downloadItem(item, options.index)}>
-                Download ${downloadName(item, options.index)} (${formatSize(item.bytes?.length ?? 0)})
+                ${t('item.downloadFile', {
+                    name: downloadName(item, options.index),
+                    size: formatSize(item.bytes?.length ?? 0),
+                })}
             </button>
         </div>`;
     }

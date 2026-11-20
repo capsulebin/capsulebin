@@ -29,7 +29,10 @@ clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
 # Operator legal texts (imprint, privacy notice, terms) only; raw HTML is escaped.
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
-rust-embed = "8"
+# Without `debug-embed` a debug build reads `web/dist` from disk on every access.
+# The pages are put together once at startup, so after a web build they would
+# name scripts that are gone: every profile embeds, and `build.rs` recompiles.
+rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -44,6 +47,9 @@ tower-http = { version = "0.7", features = ["limit", "set-header", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = "3"
+# Already in the build through sqlx. Used for the path of `server.public_url`
+# as every client's URL parser normalizes it.
+url = "2"
 # Property-based tests for the parsers that read request data (dev only).
 proptest = { version = "1", default-features = false, features = ["std"] }
 

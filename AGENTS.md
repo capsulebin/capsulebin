@@ -14,6 +14,8 @@ Version 1.0 (protocol v1 frozen, see ADR-003 and `CHANGELOG.md`). A multi-item e
 create, describe, retrieve, delete, burn-after-retrieval, password protection, Markdown/code
 rendering, file items, retention/pruning, rate limiting, idempotent create, the CLI
 (`put`/`get`/`delete`), abuse reports and the operator moderation commands are all implemented.
+The web interface is in English and German: the default language without a path prefix, the other
+under its prefix (`/de/`).
 
 ## Repository layout
 
@@ -29,12 +31,13 @@ capsulebin/
 │                         (no DOM, no build step; shared by web client and CLI)
 ├── migrations/         SQLite migrations (0001–0003), embedded into server binary
 ├── docs/
-│   ├── adr/            15 Architecture Decision Records (see below)
+│   ├── adr/            16 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
 │   ├── crypto-profile.md        Binding crypto specification (primitives, derivation, verifiers)
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   ├── privacy-notice.md        What an instance processes; template for the operator's notice
+│   ├── i18n.md                  Interface languages: paths, default, catalogues, adding a language
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
 │                         reproducible-web.sh — builds the web client twice and compares;
@@ -139,6 +142,15 @@ Versioned in the path: `/api/v1/pastes`.
 Errors are `application/problem+json` with a stable `code` field and `X-Request-Id`.
 Clients branch on `code`, never on `title`.
 
+Every page exists once per known language (ADR-016, [`docs/i18n.md`](docs/i18n.md)): `/`,
+`/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms` in the default language
+(`i18n.default_language`), and the same paths under `/{lang}/` for every other language. Paths
+under the default language's prefix answer `302` (`no-store`) to the path without it; a prefix that
+is not a known language is the generic `404`. The server does not read `Accept-Language` and sends
+no `Vary` for it: the browser language is applied by `language-init.js`. Share and management links
+are created without a prefix. API, `/health/*` and static assets have no prefix, and no `*.html` is
+served directly.
+
 ## Configuration
 
 See `capsulebin.example.toml` for all settings with defaults.
@@ -147,7 +159,14 @@ Critical rules:
 - **Unknown keys are a startup error** — a typo must not silently disable a security setting.
 - **Every setting has an env equivalent:** `CAPSULEBIN__<TABLE>__<KEY>`.
 - **`server.public_url` is required, no default** — it appears in `problem+json` type URIs
-  and share links, so it must come from configuration, not a request header.
+  and share links, so it must come from configuration, not a request header. It must not carry a
+  query or fragment, also an empty one (`…/team?`, `…#`): paths are appended to it as text
+  (`has_query_or_fragment` in `config/model.rs`, `hasQueryOrFragment` in core `links.ts`; CLI `put`
+  refuses such a `--server` too). Its path must not end in a known language code (`…/team/de`,
+  also after dot segments are resolved: `…/team/de/.`): links below it would be ambiguous with the
+  language prefix. CLI `put` refuses such a `--server` by the same rule (`trailing_language` in
+  `config/model.rs`, `trailingLanguage` in core `links.ts`). Both rules are kept equal on both
+  sides by the shared vectors `src/core/tests/fixtures/base-language.json`.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
   must not be an open write target.
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
@@ -155,6 +174,11 @@ Critical rules:
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
   privacy notice and terms (`legal/defaults.rs`) describe what the server stores and
   logs: change them together with any such behaviour.
+- **`[i18n] default_language` is the only language setting** (default `en`) — it chooses the
+  language whose pages have no path prefix; an unknown code or any other key in `[i18n]` is a
+  startup error. Every language in `KNOWN_LANGUAGES` is always offered. The known languages exist
+  three times (server `config/model.rs`, core `languages.ts`, catalogue files in
+  `src/server/web/src/i18n/`), kept equal by `tests/languages.rs` and `i18n-catalogues.test.ts`.
 
 ### Retention (purge)
 
@@ -255,9 +279,12 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids; moderated pastes look like unknown ones. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair. |
+| `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
+| `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue; generated shells keep the server markers, start every internal link with the prefix token and carry the default token only in the languages meta. |
+| `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the language switch and the head script's language choice (`i18n.e2e.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -278,6 +305,7 @@ npm run e2e -w @capsulebin/web
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
 | 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts filled in from the configuration; restricted Markdown rendered at startup; code still only from the binary |
+| 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
 
 ## Source code map
 
@@ -288,7 +316,7 @@ npm run e2e -w @capsulebin/web
 | `src/main.rs` | Binary entry point, CLI argument parsing (clap) |
 | `src/lib.rs` | `AppState`, `router()` — layer order is security-critical (see comments) |
 | `src/config.rs` | Config loading: TOML + env override, validation, `Resolved` |
-| `src/config/model.rs` | Config struct definitions |
+| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()` |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner |
@@ -307,8 +335,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Asset serving (embedded or from disk); puts the legal footer links into every shell and legal pages into `legal.html` |
-| `src/legal.rs` | `[legal]` resolution: imprint, privacy notice, terms; footer links (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
+| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`, turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` |
+| `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs`: built-in texts) |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |
@@ -317,7 +345,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
 | `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |
-| `build.rs` | Embeds `web/dist` and `migrations/` into the binary |
+| `build.rs` | Creates `web/dist` if missing and makes Cargo recompile when it changes; `rust-embed` (with `debug-embed`: every profile) embeds it at compile time |
 
 ### TypeScript core (`src/core/`)
 
@@ -328,11 +356,12 @@ npm run e2e -w @capsulebin/web
 | `src/paste.ts` | High-level create/retrieve/delete operations |
 | `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`) |
 | `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI) |
-| `src/links.ts` | Share/management link and fragment parsing |
+| `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in; `hasQueryOrFragment()`: a base URL with a `?` or `#` |
+| `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
 | `src/public_header.ts` | Protocol constants, public header type and its canonical serialization |
 | `src/helpers/bytes.ts` | Byte array utilities (base64url, hex, concatenation) |
 | `src/helpers/ulid.ts` | ULID generation |
-| `src/helpers/format.ts` | Size and date formatting |
+| `src/helpers/format.ts` | Size and date formatting (English; the web client uses `language.ts`) |
 
 ### Web client (`src/server/web/`)
 
@@ -344,25 +373,35 @@ npm run e2e -w @capsulebin/web
 | `src/pages/open-capsule.ts` | Password prompt + decrypt flow |
 | `src/pages/render-items.ts` | Item rendering dispatch |
 | `src/pages/item-tabs.ts` | Shared item tab behaviour (keyboard, reveal) for create and view |
-| `src/pages/shell.ts` | Page shell (theme, layout) |
+| `src/pages/shell.ts` | Page shell (theme, layout, language switch; `languageFromNextPage`/`isLeavingPage` keep the switch and a retrieval, deletion or draft from interfering) |
+| `src/pages/errors.ts` | Catalogue error texts by HTTP status and problem `code` |
 | `src/pages/report.ts` | Abuse report form (strips the fragment, only the id is sent) |
 | `src/pages/legal.ts` | Legal pages: shell only, the server renders the text (ADR-015) |
 | `src/render-markdown.ts` | Markdown rendering (marked + DOMPurify) |
 | `src/render-code.ts` | Code rendering (highlight.js) |
 | `src/theme.ts` | Theme switching |
+| `src/language.ts` | Page language from `<html lang>`, `register()` and `t()`/`tn()` over the registered catalogue, `Intl` formatting, paths in a language (default from the meta's `data-default`), switch logic |
+| `src/language-prefix.ts` | `languagePrefix(defaultLanguage, language)`: the one prefix rule (none for the default language, `/<lang>` otherwise), no imports and no DOM; shared by `language.ts`, the shell generator (and through `fillServerTokens()` the dev server), tests |
+| `src/i18n/<lang>.json` | Catalogues (plain text, plural keys `<key>#<category>`) |
+| `src/i18n/register-<lang>.ts` | Catalogue module of one language; its shells load it before the page script |
+| `src/i18n/language-next-page.ts` | The switch's "applies from the next page" notice in every language (shown in the chosen language) |
+| `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
+| `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix and default language |
+| `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
+| `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
 | `src/styles/tokens.css` | Design tokens |
 | `src/styles/base.css` | Base styles |
 | `src/styles/code.css` | Code block styles |
 | `src/styles/prose.css` | Prose/typography styles |
-| `*.html` | Entry points: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
+| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{prefix}}`/`{{default}}`/`{{<key>}}` placeholders: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
 
 ### CLI (`src/cli/`)
 
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
-| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code |
+| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code |
 | `src/commands/{put,get,delete}.ts` | The three commands |
 | `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping |
 | `src/items.ts` | Presentation/language inference for input files |
@@ -431,6 +470,11 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
   be outermost so they reach every response, including rejections.
 - **Indistinguishable error responses** — don't add different status codes or messages for
   "not found" vs "wrong capability" vs "expired" vs "moderated".
+- **Page routes and the redirect from the default language's prefix never inspect the path id** —
+  same bytes for every id under `/p/{id}` and `/{lang}/p/{id}`, same redirect, no retrieval
+  (ADR-004, ADR-016).
+- **Catalogue values are plain text** — the shell generator escapes them, pages insert them as
+  text; never as HTML.
 - **Report text is personal data** — never log it; it has its own retention (`abuse.report_retention`).
 - **The public header is canonical JSON** — field order and whitespace are fixed because it's
   AES-GCM AAD. Changing serialization breaks all existing capsules.

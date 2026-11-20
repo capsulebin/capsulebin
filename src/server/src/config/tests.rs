@@ -29,6 +29,7 @@ fn valid(directory: &Path) -> Config {
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
+        i18n: Default::default(),
     }
 }
 
@@ -80,6 +81,230 @@ fn rejects_relative_or_trailing_slash_public_url() {
         config.server.public_url = Some(bad.to_owned());
         assert!(config.validate().is_err(), "public_url {bad:?} should be rejected");
     }
+}
+
+/// A link like `https://example.org/team/de/p/<id>` could be a sub-path ending
+/// in `de` or the `/de/` language prefix, so such a base URL is refused.
+#[test]
+fn rejects_public_url_ending_in_a_language_code() {
+    let dir = tempdir("language-url");
+
+    for bad in [
+        "https://example.org/de",
+        "https://example.org/team/de",
+        "https://example.org/team/en",
+        "https://example.org/de/",
+        "http://example.org:8080/team/de//",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("language"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
+/// Base URL vectors shared with `@capsulebin/core`.
+const BASE_FIXTURE: &str = include_str!("../../../core/tests/fixtures/base-language.json");
+
+/// The server and the clients decide by one rule which base URL ends in a
+/// language code; the vectors are shared with `@capsulebin/core`.
+#[test]
+fn trailing_language_matches_the_vectors_shared_with_the_clients() {
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        vectors: Vec<Vector>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        base: String,
+        language: Option<String>,
+    }
+
+    let fixture: Fixture = serde_json::from_str(BASE_FIXTURE).expect("fixture parses");
+    assert!(!fixture.vectors.is_empty());
+
+    for Vector { base, language } in fixture.vectors {
+        let url = url::Url::parse(&base).expect("vector base parses");
+        assert_eq!(model::trailing_language(&url), language.as_deref(), "base {base:?}");
+    }
+}
+
+/// The server and the clients decide by one rule which base URL carries a query
+/// or fragment, and `validate` refuses exactly those, naming the key.
+#[test]
+fn refuses_public_url_with_query_or_fragment_by_the_vectors_shared_with_the_clients() {
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        query_or_fragment: Vec<Vector>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        base: String,
+        refused: bool,
+    }
+
+    let dir = tempdir("query-fragment-url");
+    let fixture: Fixture = serde_json::from_str(BASE_FIXTURE).expect("fixture parses");
+    assert!(!fixture.query_or_fragment.is_empty());
+
+    for Vector { base, refused } in fixture.query_or_fragment {
+        let url = url::Url::parse(&base).expect("vector base parses");
+        assert_eq!(model::has_query_or_fragment(&url), refused, "base {base:?}");
+
+        let mut config = valid(&dir);
+        config.server.public_url = Some(base.clone());
+        let named = config.validate().is_err_and(|err| {
+            let message = err.to_string();
+            message.contains("server.public_url") && message.contains("must not contain a query or fragment")
+        });
+        assert_eq!(named, refused, "base {base:?}");
+    }
+}
+
+/// Text with an http(s) prefix that no URL parser accepts is refused at
+/// startup instead of passing every later check unexamined.
+#[test]
+fn rejects_unparseable_public_url() {
+    let dir = tempdir("unparseable-url");
+
+    for bad in ["https://exa mple.org/team/de", "https://", "http://example.org:port"] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("not a valid URL"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
+/// A share or management link pasted into `public_url` by mistake must not
+/// reach stderr and the service log through the error: no message about the
+/// key repeats its value, whichever check refuses it.
+#[test]
+fn public_url_errors_never_repeat_the_value() {
+    const ID: &str = "01JMARKERPASTEID0000000000";
+    const SECRET: &str = "MarkerLinkSecret-0123456789";
+    let dir = tempdir("url-not-repeated");
+
+    for (bad, reason) in [
+        (format!("paste.example/p/{ID}#v1.{SECRET}"), "absolute http(s) URL"),
+        (format!("https://paste .example/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}/de"), "language code"),
+        (format!("https://paste.example/p/{ID}/"), "end with a slash"),
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad);
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains(reason),
+            "{reason}: {message}"
+        );
+        for marker in [ID, SECRET, "paste.example"] {
+            assert!(!message.contains(marker), "{reason}: {marker} repeated: {message}");
+        }
+    }
+}
+
+/// A file that is not valid TOML is reported by position and reason, without
+/// the offending line: the parser's own rendering would quote a link written
+/// without quotes, fragment included.
+#[test]
+fn toml_syntax_errors_do_not_quote_the_file() {
+    let dir = tempdir("toml-syntax");
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(
+        &path,
+        "[server]\npublic_url = https://paste.example/p/01JMARKERPASTEID#v1.MarkerLinkSecret\n",
+    )
+    .expect("write config");
+
+    let message = Config::load(Some(&path)).expect_err("must be rejected").to_string();
+    assert!(message.contains("not valid TOML: line 2, column 14: "), "{message}");
+    for marker in ["paste.example", "01JMARKERPASTEID", "MarkerLinkSecret"] {
+        assert!(!message.contains(marker), "{marker} repeated: {message}");
+    }
+}
+
+/// A base that only ends in a language code once the URL parser of a client
+/// has resolved its dot segments is refused like one that plainly does.
+#[test]
+fn rejects_public_url_normalized_to_a_language_code() {
+    let dir = tempdir("language-url-normalized");
+
+    for bad in [
+        "https://example.org/team/de/.",
+        "https://example.org/team/x/../de",
+        "https://example.org/team/%2e/de",
+        "https://example.org/team/de/x/%2E%2e",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains("language"),
+            "unexpected error for {bad:?}: {message}"
+        );
+    }
+}
+
+/// Only an exact known code is a language segment, as in `parseLink`.
+#[test]
+fn accepts_public_url_with_a_segment_that_is_not_a_language_code() {
+    let dir = tempdir("not-language-url");
+
+    for good in [
+        "https://de.example.org",
+        "https://example.org/team",
+        "https://example.org/de/team",
+        "https://example.org/deutsch",
+        "https://example.org/de-at",
+        "https://example.org/DE",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(good.to_owned());
+        assert!(config.validate().is_ok(), "public_url {good:?} should be accepted");
+    }
+}
+
+#[test]
+fn rejects_public_url_ending_in_a_language_code_from_file_and_env() {
+    let dir = tempdir("language-url-sources");
+    let database = dir.join("capsulebin.db").display().to_string();
+
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[server]\npublic_url = \"https://example.org/team/de\"\n\n[database]\npath = {database:?}\n\n\
+             [creation]\nmode = \"public\"\n"
+        ),
+    )
+    .expect("write config");
+    let config = Config::load(Some(&path)).expect("file loads");
+    assert!(error(&config).contains("server.public_url"));
+
+    let mut table = toml::Table::new();
+    apply_env(
+        &mut table,
+        [
+            ("CAPSULEBIN__SERVER__PUBLIC_URL".to_owned(), "https://example.org/de/".to_owned()),
+            ("CAPSULEBIN__DATABASE__PATH".to_owned(), database),
+            ("CAPSULEBIN__CREATION__MODE".to_owned(), "public".to_owned()),
+        ],
+    )
+    .expect("overlay applies");
+    let config: Config = table.try_into().expect("deserialise");
+    let message = error(&config);
+    assert!(
+        message.contains("server.public_url") && message.contains("language"),
+        "unexpected error: {message}"
+    );
 }
 
 #[test]
@@ -566,4 +791,60 @@ fn removed_content_limits_are_rejected() {
         let toml = format!("[pastes]\n{key}\n");
         assert!(toml::from_str::<Config>(&toml).is_err(), "{key} was accepted");
     }
+}
+
+#[test]
+fn offers_every_known_language() {
+    let dir = tempdir("languages");
+    let resolved = valid(&dir).validate().expect("valid configuration");
+
+    let offered: Vec<&str> = resolved.legal.iter().map(|(code, _)| *code).collect();
+    assert_eq!(offered, KNOWN_LANGUAGES);
+}
+
+/// `[i18n]` chooses the default language and nothing else: from the file or
+/// the environment, `en` without it.
+#[test]
+fn the_default_language_is_configurable() {
+    let dir = tempdir("i18n-default");
+    assert_eq!(valid(&dir).validate().expect("valid configuration").default_language, "en");
+
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(&path, "[i18n]\ndefault_language = \"de\"\n").expect("write config");
+    let mut config = valid(&dir);
+    config.i18n = Config::load(Some(&path)).expect("[i18n] refused").i18n;
+    assert_eq!(config.validate().expect("valid configuration").default_language, "de");
+
+    let mut table = toml::Table::new();
+    apply_env(&mut table, [("CAPSULEBIN__I18N__DEFAULT_LANGUAGE".to_owned(), "de".to_owned())]).expect("overlay");
+    assert_eq!(table.try_into::<Config>().expect("overlay refused").i18n.default_language, "de");
+}
+
+/// A default language that is not a known one stops the start, naming the key:
+/// its pages would not exist.
+#[test]
+fn rejects_an_unknown_default_language() {
+    let dir = tempdir("i18n-unknown");
+    for code in ["fr", "", "DE", "de-AT", "en "] {
+        let mut config = valid(&dir);
+        config.i18n.default_language = code.to_owned();
+        let error = config.validate().expect_err("unknown default language accepted");
+        assert!(error.to_string().contains("i18n.default_language"), "{code:?}: {error}");
+    }
+}
+
+/// Which languages are offered is not configurable: any other key in `[i18n]`,
+/// in the file or from the environment, stops the start like any unknown key.
+#[test]
+fn rejects_other_keys_in_the_i18n_table() {
+    let dir = tempdir("i18n-table");
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(&path, "[i18n]\ndefault_language = \"en\"\nlanguages = [\"en\"]\n").expect("write config");
+    let error = Config::load(Some(&path)).expect_err("i18n.languages accepted");
+    assert!(error.to_string().contains("languages"), "unexpected error: {error}");
+
+    let mut table = toml::Table::new();
+    apply_env(&mut table, [("CAPSULEBIN__I18N__LANGUAGES".to_owned(), r#"["en"]"#.to_owned())]).expect("overlay");
+    let error = table.try_into::<Config>().expect_err("CAPSULEBIN__I18N__LANGUAGES accepted");
+    assert!(error.to_string().contains("languages"), "unexpected error: {error}");
 }

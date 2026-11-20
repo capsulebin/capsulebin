@@ -19,8 +19,8 @@ mod env;
 mod model;
 
 pub use model::{
-    AbuseConfig, Config, CreationConfig, CreationMode, DatabaseConfig, LegalConfig, LegalSection, PastesConfig, PurgeConfig, ServerConfig,
-    Synchronous,
+    AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES, LegalConfig,
+    LegalSection, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
 };
 
 use std::path::{Path, PathBuf};
@@ -46,12 +46,12 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{path} is not valid TOML: {source}")]
-    Parse {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
-    },
+    /// Position and reason only. The parser's own rendering quotes the
+    /// offending line, which may hold a secret - a share link pasted without
+    /// quotes as `public_url`, a token hash -, and this text reaches stderr and
+    /// the service log.
+    #[error("{path} is not valid TOML: {reason}")]
+    Parse { path: PathBuf, reason: String },
     #[error("environment overlay is not valid: {0}")]
     Env(String),
     #[error("invalid configuration: {0}")]
@@ -67,8 +67,22 @@ pub struct Resolved {
     pub creation_tokens: Vec<Verifier>,
     /// Largest accepted request body, including base64 overhead.
     pub max_body_bytes: usize,
-    /// The legal pages and footer links, read and rendered.
-    pub legal: crate::legal::LegalPages,
+    /// The legal pages and footer links of every interface language, read
+    /// and rendered, in the order of [`KNOWN_LANGUAGES`].
+    pub legal: Vec<(&'static str, crate::legal::LegalPages)>,
+    /// `i18n.default_language`: the language of the pages without a prefix.
+    pub default_language: &'static str,
+}
+
+/// Where and why `text` is not valid TOML, without quoting any of it.
+fn parse_reason(text: &str, error: &toml::de::Error) -> String {
+    let message = error.message();
+    let Some(before) = error.span().and_then(|span| text.get(..span.start)) else {
+        return message.to_owned();
+    };
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |last| last.chars().count()) + 1;
+    format!("line {line}, column {column}: {message}")
 }
 
 impl Config {
@@ -84,9 +98,9 @@ impl Config {
                     path: path.to_owned(),
                     source,
                 })?;
-                toml::from_str::<toml::Table>(&text).map_err(|source| ConfigError::Parse {
+                toml::from_str::<toml::Table>(&text).map_err(|error| ConfigError::Parse {
                     path: path.to_owned(),
-                    source,
+                    reason: parse_reason(&text, &error),
                 })?
             }
             Some(path) => {
@@ -111,7 +125,12 @@ impl Config {
         self.abuse.validate()?;
         self.rate_limits.validate()?;
         let creation_tokens = self.creation.validate()?;
-        let legal = crate::legal::resolve(self)?;
+        // Before the legal pages: their links depend on the default language.
+        let default_language = self.i18n.validate()?;
+        let legal = KNOWN_LANGUAGES
+            .iter()
+            .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))
+            .collect::<Result<_, ConfigError>>()?;
         self.database.validate()?;
 
         Ok(Resolved {
@@ -119,6 +138,7 @@ impl Config {
             config: self.clone(),
             creation_tokens,
             legal,
+            default_language,
         })
     }
 }

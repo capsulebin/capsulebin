@@ -28,12 +28,35 @@ preview and source, and manages object URLs for downloads.
 Vite builds this through `rolldownOptions.input` with five entries. Shared code (`shell.ts`,
 `theme.ts`, styles) automatically ends up in a common chunk.
 
-**The server does not inspect the path id.** `GET /p/{id}` returns byte-identical HTML for every
-syntactically valid id. This is a security property, not convenience: a link scanner cannot infer
-from status code, length or content whether the capsule exists, and it does not burn a one-time
-paste. Retrieval is an explicit `POST` carrying the capabilities derived from the fragment
-(ADR-001). An integration test (`view_shell_is_identical_for_every_id`) and the acceptance script
-both assert the byte equality.
+**Amendment (ADR-016):** every route above exists once per known interface language, served from
+a shell generated for that language. The default language (`i18n.default_language`, `en` unless
+configured) keeps the paths above; every other language has them under its prefix:
+
+| Route | Document |
+| --- | --- |
+| `GET /`, `/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms` | `dist/{default}/index.html`, `p.html`, `manage.html`, `report.html`, `legal.html` |
+| `GET /{lang}/` | `dist/{lang}/index.html` |
+| `GET /{lang}/p/{id}` | `dist/{lang}/p.html` |
+| `GET /{lang}/manage/{id}` | `dist/{lang}/manage.html` |
+| `GET /{lang}/report` | `dist/{lang}/report.html` |
+| `GET /{lang}/imprint`, `/privacy`, `/terms` | `dist/{lang}/legal.html` |
+| `GET /{lang}` | `302` to `/{lang}/` |
+| `GET /{default}`, `/{default}/…` (every page path under the default language's prefix) | `302` to the same path without the prefix |
+
+One Vite build takes the five generated shells of every language as inputs. Each shell loads the
+catalogue module of its language (`src/i18n/register-{lang}.ts`) before its page entry; the page
+entries and all other chunks are shared by the languages and served under `/assets/`. The
+byte-identity rule below holds for `GET /p/{id}`, for `GET /{lang}/p/{id}` and for the redirect
+from `/{default}/p/{id}`; `view_shell_is_identical_for_every_id` and the acceptance script check
+the path with and without a prefix.
+
+**The server does not inspect the path id.** `GET /p/{id}` and `GET /{lang}/p/{id}` return
+byte-identical HTML for every syntactically valid id, and the redirect away from the default
+language's prefix only copies the path. This is a security property, not
+convenience: a link scanner cannot infer from status code, length or content whether the capsule
+exists, and it does not burn a one-time paste. Retrieval is an explicit `POST` carrying the
+capabilities derived from the fragment (ADR-001). An integration test
+(`view_shell_is_identical_for_every_id`) and the acceptance script both assert the byte equality.
 
 **[Lit](https://lit.dev/) (`lit` 3) renders views with non-trivial state** — today the recipient
 view (`pages/view.ts`, `pages/render-items.ts`). Within these constraints:
@@ -76,8 +99,10 @@ Pages without meaningful state may stay plain DOM code.
 
 - Switching between views is a real page load. With four views and no shared state that costs
   nothing.
-- A new route needs an entry in three places: `vite.config.ts`, the server route, and `Shell` in
-  `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the mapping down.
+- A new route needs an entry in `SHELLS` in `scripts/shells.ts`, the dev server's routes in
+  `vite.config.ts`, and `PAGES` (from which the routes of every language and the redirects are
+  built) and `Shell` in `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the
+  mapping down.
 - Each document loads its own entry bundle, which keeps the shells small — the create page loads no
   Markdown renderer, the view page no editor.
 - `lit` is a runtime dependency of `@capsulebin/web` and part of the dependency review (`npm audit`)

@@ -1,5 +1,125 @@
-import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { posix, resolve } from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
+
+import {
+    GENERATED_DIR,
+    SHELLS,
+    catalogueLanguages,
+    fillServerTokens,
+    generateShells,
+    generatedPath,
+    type ShellName,
+} from './scripts/shells.ts';
+import { DEFAULT_LANGUAGE } from './src/default-language.ts';
+
+/**
+ * The shells are generated per language from the templates in this directory and
+ * the catalogues in src/i18n/ (scripts/shells.ts) before Vite sees them. Vite
+ * builds the generated files, all languages in one build; this plugin puts them
+ * at `dist/<lang>/<shell>.html` and, in the dev server, answers the page routes
+ * the way the server does with `DEFAULT_LANGUAGE` as its default language: that
+ * language's pages without a prefix, every other under `/<lang>/`, and the
+ * shells' server tokens filled in accordingly. Paths under the default
+ * language's prefix get a 404 there instead of the server's redirect.
+ */
+function languageShells(): Plugin {
+    /** The shell a page path without language prefix shows, e.g. `/p/x` -> `p`. */
+    const shellForPage = (path: string): ShellName | null => {
+        if (path === '/') return 'index';
+        if (path === '/report') return 'report';
+        if (/^\/(imprint|privacy|terms)$/.test(path)) return 'legal';
+        if (/^\/p\/[^/]+$/.test(path)) return 'p';
+        if (/^\/manage\/[^/]+$/.test(path)) return 'manage';
+        return null;
+    };
+    const shellForRoute = (path: string): { lang: string; shell: ShellName } | null => {
+        const match = /^\/([a-z]{2,3})(\/.*)$/.exec(path);
+        const [, prefix = '', tail = ''] = match ?? [];
+        const prefixed = prefix !== DEFAULT_LANGUAGE && catalogueLanguages().includes(prefix);
+        const shell = shellForPage(prefixed ? tail : path);
+        return shell ? { lang: prefixed ? prefix : DEFAULT_LANGUAGE, shell } : null;
+    };
+    /** The language of a generated shell by its dev server path (`/.shells/de/p.html`). */
+    const languageOfShell = (path: string): string | null =>
+        new RegExp(`^/${GENERATED_DIR}/([^/]+)/`).exec(path)?.[1] ?? null;
+    /**
+     * Paths that would otherwise get a raw template (`{{lang}}` unfilled): the
+     * bare prefix (`/de`) and whatever Vite's HTML fallback resolves to a
+     * template - its name with or without `.html` (`/p`, `/p.html`), also
+     * percent-encoded or behind dot segments. The name decides, not the
+     * directory, so the same holds under any prefix (`/de/p.html`); only the
+     * generated shells keep these names.
+     */
+    const wouldServeTemplate = (pathname: string): boolean => {
+        let path: string;
+        try {
+            path = posix.normalize(decodeURIComponent(pathname));
+        } catch {
+            return false;
+        }
+        if (catalogueLanguages().some((lang) => path === `/${lang}`)) return true;
+        if (path.startsWith(`/${GENERATED_DIR}/`)) return false;
+        const name = path.endsWith('/') ? 'index' : posix.basename(path.toLowerCase(), '.html');
+        return SHELLS.some((shell) => shell === name);
+    };
+
+    return {
+        name: 'capsulebin-language-shells',
+        enforce: 'post',
+        config() {
+            const shells = generateShells();
+            return {
+                build: {
+                    rolldownOptions: {
+                        input: shells.map((path) => resolve(import.meta.dirname, path)),
+                    },
+                },
+            };
+        },
+        generateBundle(_, bundle) {
+            const prefix = `${GENERATED_DIR}/`;
+            for (const file of Object.values(bundle)) {
+                if (file.fileName.startsWith(prefix)) {
+                    file.fileName = file.fileName.slice(prefix.length);
+                }
+            }
+        },
+        configureServer(server) {
+            const sources = [
+                ...SHELLS.map((shell) => resolve(import.meta.dirname, `${shell}.html`)),
+                resolve(import.meta.dirname, 'src/i18n'),
+            ];
+            server.watcher.add(sources);
+            server.watcher.on('change', (file) => {
+                if (sources.some((source) => file.startsWith(source))) {
+                    generateShells();
+                    server.ws.send({ type: 'full-reload' });
+                }
+            });
+            server.middlewares.use((req, res, next) => {
+                const url = new URL(req.url ?? '/', 'http://dev');
+                const route = shellForRoute(url.pathname);
+                if (route) {
+                    req.url = `/${generatedPath(route.lang, route.shell)}${url.search}`;
+                } else if (wouldServeTemplate(url.pathname)) {
+                    res.statusCode = 404;
+                    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                    res.end(
+                        `Not found. The dev server serves ${DEFAULT_LANGUAGE} pages without a ` +
+                            `prefix (/) and every other language under its own (/<lang>/).\n`,
+                    );
+                    return;
+                }
+                next();
+            });
+        },
+        transformIndexHtml(html, ctx) {
+            // Only the dev server: in a build the tokens stay for the server to fill.
+            const lang = ctx.server ? languageOfShell(ctx.path) : null;
+            return lang ? fillServerTokens(html, lang, DEFAULT_LANGUAGE) : html;
+        },
+    };
+}
 
 /**
  * Vite is only a dev server and bundler - there is no SPA runtime. Hence a
@@ -8,6 +128,10 @@ import { defineConfig } from 'vite';
  */
 export default defineConfig({
     root: import.meta.dirname,
+    base: '/',
+    // No SPA fallback: an unknown path is a 404, not the raw index.html template.
+    appType: 'mpa',
+    plugins: [languageShells()],
 
     build: {
         outDir: 'dist',
@@ -31,15 +155,6 @@ export default defineConfig({
         // No source maps in production: the bundle ships inside the binary and source
         // maps would only widen the attack surface.
         sourcemap: false,
-        rolldownOptions: {
-            input: {
-                index: resolve(import.meta.dirname, 'index.html'),
-                p: resolve(import.meta.dirname, 'p.html'),
-                manage: resolve(import.meta.dirname, 'manage.html'),
-                report: resolve(import.meta.dirname, 'report.html'),
-                legal: resolve(import.meta.dirname, 'legal.html'),
-            },
-        },
     },
 
     server: {

@@ -18,7 +18,7 @@ jurisdiction, and the operator stays responsible for what their instance publish
 | Capsules | The stored data, the legal basis, and when a capsule is deleted | `pastes.maximum_expiry`, `pastes.allow_permanent`, `purge.*` |
 | IP addresses and server logs | Whether the client address is processed in memory for rate limits; what the log contains | `rate_limits.*` |
 | Reports | What a report stores, the legal basis, how long it is kept | `abuse.enabled`, `abuse.report_retention` |
-| Cookies and third parties | No cookies; the theme choice in local storage; no third-party requests | Fixed by the software |
+| Cookies and third parties | No cookies; the theme and language choice in local storage; no third-party requests | Fixed by the software |
 | Your rights | Data subject rights; how to find a capsule by its id without sending the key | Fixed by the software |
 
 ## What the operator has to add
@@ -61,6 +61,7 @@ What it processes:
 The server's own log contains the request method, the path with ids replaced by placeholders, the
 status and the latency - no IP addresses, capsule ids, tokens, bodies or report text.
 
-In the browser there are no cookies; the only stored value is the colour theme, in `localStorage`
-(`capsulebin.theme`). Pages load nothing from third parties, and images referenced in Markdown are
-shown as links. Every page sends `Referrer-Policy: no-referrer`.
+In the browser there are no cookies; the only stored values are the colour theme and the interface
+language, in `localStorage` (`capsulebin.theme`, `capsulebin.language`). Pages load nothing from
+third parties, and images referenced in Markdown are shown as links. Every page sends
+`Referrer-Policy: no-referrer`.

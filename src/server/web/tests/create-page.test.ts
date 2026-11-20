@@ -4,11 +4,9 @@
  * ends up in the capsule.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const html = readFileSync(resolve(__dirname, '../index.html'), 'utf8');
+import { servedShell, setPageLanguage } from './page-language';
 
 function el<T extends HTMLElement>(attr: string): T {
     return document.querySelector<T>(`[data-${attr}]`)!;
@@ -25,20 +23,21 @@ function tabs(): string[] {
 function type(text: string): void {
     const area = el<HTMLTextAreaElement>('item-text');
     area.value = text;
-    area.dispatchEvent(new Event('input'));
+    area.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function add(kind: 'plain' | 'code' | 'markdown'): void {
+function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
     el<HTMLButtonElement>('item-add').click();
     document.querySelector<HTMLButtonElement>(`[data-add-type="${kind}"]`)!.click();
 }
 
-async function loadPage(): Promise<void> {
+async function loadPage(lang: 'en' | 'de' = 'en'): Promise<void> {
     document.documentElement.innerHTML = new DOMParser().parseFromString(
-        html,
+        servedShell('index', lang),
         'text/html',
     ).documentElement.innerHTML;
     vi.resetModules();
+    await setPageLanguage(lang);
     await import('../src/pages/create');
 }
 
@@ -167,11 +166,168 @@ describe('create page item tabs', () => {
     });
 });
 
+describe('create page language switch', () => {
+    // AC27: the notice is in the chosen language, on an English page too.
+    const GERMAN_NOTICE = 'Die Sprache gilt ab der nächsten Seite.';
+
+    function chooseGerman(): void {
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="de"]')!.click();
+    }
+
+    function notice(): string | null | undefined {
+        return document.querySelector('[data-language-notice]')?.textContent;
+    }
+
+    afterEach(() => {
+        localStorage.clear();
+    });
+
+    // jsdom cannot navigate and location.replace cannot be spied on: the notice
+    // shows the switch's mode here, e2e/i18n.e2e.ts covers the navigation itself.
+    it('navigates on an empty form', () => {
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice once an item holds text', () => {
+        type('draft');
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('draft');
+    });
+
+    it('only stores the choice once an item has a name', () => {
+        const name = el<HTMLInputElement>('item-name');
+        name.value = 'todo.txt';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        chooseGerman();
+        expect(notice()).toBe(GERMAN_NOTICE);
+    });
+
+    // AC24 acceptance: "any item holds content (text, name or a file)".
+    it('only stores the choice once a file is chosen', async () => {
+        const input = el<HTMLInputElement>('item-file');
+        const file = new File([new Uint8Array([1, 2, 3])], 'data.bin');
+        Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+        input.dispatchEvent(new Event('change'));
+        await vi.waitFor(() => expect(tabs()).toEqual(['data.bin *']));
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect(tabs()).toEqual(['data.bin *']);
+    });
+
+    it('only stores the choice once a file is dropped on the form', async () => {
+        const form = el<HTMLFormElement>('create-form');
+        const drop = new Event('drop', { bubbles: true, cancelable: true });
+        Object.defineProperty(drop, 'dataTransfer', {
+            value: { files: [new File(['x'], 'dropped.txt')], types: ['Files'] },
+        });
+        form.dispatchEvent(drop);
+        await vi.waitFor(() => expect(tabs()).toEqual(['dropped.txt *']));
+        chooseGerman();
+        expect(notice()).toBe(GERMAN_NOTICE);
+    });
+
+    it('still navigates after only adding further empty items', () => {
+        add('code');
+        add('markdown');
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    // AC24: any other form field changed from its default is a draft too.
+    function change(
+        id: string,
+        set: (control: HTMLInputElement & HTMLSelectElement) => void,
+    ): void {
+        const control = document.getElementById(id) as HTMLInputElement & HTMLSelectElement;
+        set(control);
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    it.each([
+        ['the title', 'create-title', 'Meeting notes'],
+        ['the password', 'create-password', 'secret'],
+        ['the expiry', 'create-expiry', '3600'],
+        ['no expiry', 'create-expiry', ''],
+    ])('only stores the choice once %s is set', (_field, id, value) => {
+        change(id, (control) => (control.value = value));
+        chooseGerman();
+        expect(localStorage.getItem('capsulebin.language')).toBe('de');
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect((document.getElementById(id) as HTMLInputElement).value).toBe(value);
+    });
+
+    it('only stores the choice once burn after reading is ticked', () => {
+        change('create-burn', (control) => (control.checked = true));
+        chooseGerman();
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect((document.getElementById('create-burn') as HTMLInputElement).checked).toBe(true);
+    });
+
+    it('still navigates when a field is back at its default', () => {
+        change('create-expiry', (control) => (control.value = '604800'));
+        change('create-burn', (control) => (control.checked = false));
+        change('create-title', (control) => (control.value = ''));
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('still navigates after only changing the type of an empty item', () => {
+        change('create-item-type', (control) => (control.value = 'code'));
+        change('create-item-lang', (control) => (control.value = 'rust'));
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice in a German page too, with the notice in the chosen language', async () => {
+        await loadPage('de');
+        type('Entwurf');
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!.click();
+        expect(localStorage.getItem('capsulebin.language')).toBe('en');
+        expect(notice()).toBe('The language applies from the next page on.');
+        expect(document.querySelector('[data-language-notice]')!.getAttribute('lang')).toBe('en');
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('Entwurf');
+    });
+});
+
 describe('create page title', () => {
     it('offers an optional title field', () => {
         const title = document.querySelector<HTMLInputElement>('[data-capsule-title]')!;
         expect(title).not.toBeNull();
         expect(title.required).toBe(false);
         expect(title.maxLength).toBe(200);
+    });
+});
+
+describe('create page in German', () => {
+    beforeEach(async () => {
+        await loadPage('de');
+    });
+
+    it('counts sizes and items in German', () => {
+        type('x');
+        expect(el('size-meter').textContent).toBe('1 B von 9,9 MiB');
+        add('plain');
+        expect(el('size-meter').textContent).toBe('2 von 16 Elementen · 1 B von 9,9 MiB');
+    });
+
+    it('labels the item controls in German', () => {
+        add('code');
+        expect(el<HTMLTextAreaElement>('item-text').placeholder).toBe('Code einfügen…');
+        expect(document.querySelector('[role="tab"] .cb-itemtab-kind')!.textContent).toBe('Code');
+
+        type('fn main() {}');
+        add('download');
+        const remove = document.querySelector<HTMLButtonElement>('[data-remove-id]')!;
+        expect(remove.getAttribute('aria-label')).toBe('snippet.txt entfernen');
+        expect(el<HTMLInputElement>('item-name').placeholder).toBe('Dateiname');
+        expect(el('item-drop-label').textContent).toBe(
+            'Datei hierher oder irgendwo auf dieses Formular ziehen',
+        );
+        expect(tabs()).toEqual(['snippet.txt', 'Datei *']);
     });
 });

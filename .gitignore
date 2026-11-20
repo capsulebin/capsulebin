@@ -3,6 +3,8 @@
 /src/*/node_modules
 /src/server/web/node_modules
 /src/server/web/dist
+# Per-language shells generated from the templates (src/server/web/scripts/shells.ts).
+/src/server/web/.shells
 /src/cli/dist
 
 # Local development data - contains ciphertext and is never part of the repo.

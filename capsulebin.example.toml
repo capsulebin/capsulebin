@@ -19,7 +19,13 @@ bind = "127.0.0.1:8080"
 # Required, no default. The externally reachable base URL, without a trailing
 # slash. It appears in problem+json "type" URIs and in generated share links, so
 # it is taken from configuration rather than from a request header - a Host header
-# is attacker-controlled.
+# is attacker-controlled. The web interface needs the instance at the root of its
+# own host: it loads /assets/, calls /api/ and creates links directly under the
+# origin. A query or fragment, also an empty one (https://example.org/team?), is
+# refused at startup: paths are appended to the URL as text. The path must not
+# end in an interface language code (exactly "en" or "de", e.g.
+# https://example.org/team/de): links below it would be ambiguous with the
+# /<lang>/ prefix of the pages, so the server refuses to start.
 public_url = "https://paste.example"
 
 # Development only: serve assets from a directory instead of the embedded copy.
@@ -203,11 +209,20 @@ enabled = true
 # stay until they are closed.
 report_retention = "90d"
 
+[i18n]
+# The default interface language, one of "en" and "de". Its pages have no
+# language prefix (/, /p/<id>, /report); every other language is always offered
+# under its prefix (/de/, /de/p/<id>). Paths under the prefix of the default
+# language are redirected to the ones without it. This is the only key here:
+# which languages are offered is not configurable.
+default_language = "en"
+
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
-# served by CapsuleBin at /imprint, /privacy and /terms and linked from the
-# footer of every page. An instance open to the public in the EU usually needs
-# at least an imprint and a privacy notice.
+# served by CapsuleBin at /imprint, /privacy and /terms (and under the prefix of
+# every other language, /de/imprint) and linked from the footer of every page;
+# the texts are English in every language. An instance open to the public in
+# the EU usually needs at least an imprint and a privacy notice.
 #
 # Each text is Markdown, given inline (text = """...""") or read from a file at
 # startup (file = "..."), or a link to a page hosted elsewhere (url = "...").

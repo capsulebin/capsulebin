@@ -47,6 +47,14 @@ deferred). The solution is `src/server/web/public/theme-init.js`: external, clas
 it blocks the parser and is guaranteed to run before the first paint, and being self-hosted it is
 covered by `script-src 'self'`.
 
+**A `color-scheme` meta for documents that are never styled.** Every shell carries
+`<meta name="color-scheme" content="light dark">` before its head scripts. `theme-init.js`, the
+first head script, narrows it to a stored `light`/`dark` choice. A document that is replaced before
+its stylesheet applies (for example when `language-init.js` moves the page to another language) is
+then painted in the theme's colour scheme instead of the browser's default light canvas, which would
+be a bright flash in dark mode. The script sets the meta with `setAttribute`; nothing is inline and
+the CSP is unchanged. Once the stylesheet applies, `color-scheme` in `tokens.css` takes precedence.
+
 ## Rejected
 
 - **A web font from a CDN.** Blocked by the CSP. The `<link>` would fail silently and the page

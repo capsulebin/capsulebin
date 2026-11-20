@@ -1,17 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}">
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="robots" content="noindex, nofollow, noarchive" />
         <meta name="referrer" content="no-referrer" />
         <title>CapsuleBin</title>
+        <meta name="capsulebin-languages" content="{{languages}}" data-default="{{default}}" />
+        <meta name="color-scheme" content="light dark" />
         <script src="/theme-init.js"></script>
+        <script src="/language-init.js"></script>
+        <script type="module" src="/src/i18n/register-{{lang}}.ts"></script>
         <script type="module" src="/src/pages/create.ts"></script>
     </head>
     <body>
         <header class="cb-head">
-            <a class="cb-logo" href="/">
+            <a class="cb-logo" href="{{prefix}}/">
                 <svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true">
                     <path
                         d="M9 1.2 16.4 5.4v9.2L9 18.8 1.6 14.6V5.4L9 1.2Z"
@@ -26,55 +30,58 @@
                 </svg>
                 CapsuleBin
             </a>
-            <span class="cb-claim">Paste it. Seal it. Share it.</span>
-            <button
-                type="button"
-                class="cb-btn-icon cb-push"
-                data-theme-toggle
-                aria-label="Switch theme"
-            >
-                ◐
-            </button>
+            <span class="cb-claim">{{create.claim}}</span>
+            <span class="cb-push cb-head-tools">
+                <nav
+                    class="cb-segmented"
+                    aria-label="{{shell.language}}"
+                    data-language-switch
+                    hidden
+                ></nav>
+                <button
+                    type="button"
+                    class="cb-btn-icon"
+                    data-theme-toggle
+                    aria-label="{{theme.switch}}"
+                >
+                    ◐
+                </button>
+            </span>
         </header>
 
         <main class="cb-main" data-create-root></main>
 
         <noscript>
             <div class="cb-main">
-                <h1 class="cb-h1">This page needs JavaScript</h1>
-                <p class="cb-lede">
-                    CapsuleBin encrypts content exclusively in your browser before it is sent
-                    anywhere. Without JavaScript there is nowhere for that to happen, so the editor
-                    cannot be shown.
-                </p>
+                <h1 class="cb-h1">{{shell.needsJavaScript}}</h1>
+                <p class="cb-lede">{{create.noscript}}</p>
             </div>
         </noscript>
 
         <footer class="cb-foot">
-            <span>Encrypted in your browser.</span>
+            <span>{{shell.encryptedInBrowser}}</span>
             <span class="cb-push cb-foot-links">
-                <a href="/report">Report content</a>
-                <!--capsulebin:legal-links-->
+                <a href="{{prefix}}/report">{{shell.reportContent}}</a>
+                <!--capsulebin:legal-link:imprint:{{shell.imprint}}-->
+                <!--capsulebin:legal-link:privacy:{{shell.privacy}}-->
+                <!--capsulebin:legal-link:terms:{{shell.terms}}-->
             </span>
         </footer>
 
         <!-- templates ----------------------------------------------------------- -->
 
         <template id="tmpl-edit">
-            <h1 class="cb-h1">Share encrypted, without an account</h1>
-            <p class="cb-lede">
-                Text is encrypted in your browser. The server stores ciphertext only and knows
-                neither the content nor the key.
-            </p>
+            <h1 class="cb-h1">{{create.heading}}</h1>
+            <p class="cb-lede">{{create.lede}}</p>
             <form class="cb-form cb-form--full" data-create-form novalidate>
-                <label class="cb-sr-only" for="create-title">Title (optional)</label>
+                <label class="cb-sr-only" for="create-title">{{create.titleLabel}}</label>
                 <input
                     id="create-title"
                     class="cb-input cb-title-input"
                     type="text"
                     maxlength="200"
                     autocomplete="off"
-                    placeholder="Title (optional)"
+                    placeholder="{{create.titleLabel}}"
                     data-capsule-title
                 />
                 <div class="cb-viewer-head">
@@ -82,7 +89,7 @@
                         <div
                             class="cb-itemtabs"
                             role="tablist"
-                            aria-label="Items in this capsule"
+                            aria-label="{{create.items}}"
                             data-item-tabs
                         ></div>
                         <div class="cb-more" data-more hidden>
@@ -94,7 +101,7 @@
                                 aria-controls="cb-more-menu"
                                 data-more-btn
                             >
-                                ☰ more
+                                {{create.more}}
                             </button>
                             <div
                                 id="cb-more-menu"
@@ -113,37 +120,37 @@
                                 aria-controls="cb-add-menu"
                                 data-item-add
                             >
-                                + Add item
+                                {{create.addItem}}
                             </button>
                             <div id="cb-add-menu" class="cb-menu" role="menu" data-add-menu hidden>
                                 <button type="button" role="menuitem" data-add-type="plain">
-                                    Text
+                                    {{create.type.plain}}
                                 </button>
                                 <button type="button" role="menuitem" data-add-type="code">
-                                    Code
+                                    {{create.type.code}}
                                 </button>
                                 <button type="button" role="menuitem" data-add-type="markdown">
-                                    Markdown
+                                    {{create.type.markdown}}
                                 </button>
                                 <button type="button" role="menuitem" data-add-type="download">
-                                    File
+                                    {{create.type.download}}
                                 </button>
                             </div>
                         </div>
                     </div>
                     <div class="cb-itembar">
-                        <label class="cb-sr-only" for="create-item-type">Item type</label>
+                        <label class="cb-sr-only" for="create-item-type">{{create.itemType}}</label>
                         <select
                             id="create-item-type"
                             class="cb-input cb-select cb-input-sm"
                             data-item-type
                         >
-                            <option value="plain">Text</option>
-                            <option value="code">Code</option>
-                            <option value="markdown">Markdown</option>
-                            <option value="download">File</option>
+                            <option value="plain">{{create.type.plain}}</option>
+                            <option value="code">{{create.type.code}}</option>
+                            <option value="markdown">{{create.type.markdown}}</option>
+                            <option value="download">{{create.type.download}}</option>
                         </select>
-                        <label class="cb-sr-only" for="create-item-name">Item name</label>
+                        <label class="cb-sr-only" for="create-item-name">{{create.itemName}}</label>
                         <input
                             id="create-item-name"
                             class="cb-input cb-input-sm cb-item-name-input"
@@ -151,17 +158,19 @@
                             maxlength="200"
                             spellcheck="false"
                             autocomplete="off"
-                            placeholder="Name"
+                            placeholder="{{create.itemNamePlaceholder}}"
                             data-item-name
                         />
-                        <label class="cb-sr-only" for="create-item-lang">Language</label>
+                        <label class="cb-sr-only" for="create-item-lang"
+                            >{{create.codeLanguage}}</label
+                        >
                         <select
                             id="create-item-lang"
                             class="cb-input cb-select cb-input-sm"
                             data-item-lang
                             hidden
                         >
-                            <option value="plaintext">Plain text</option>
+                            <option value="plaintext">{{create.plainText}}</option>
                             <option value="bash">Bash</option>
                             <option value="css">CSS</option>
                             <option value="diff">Diff</option>
@@ -180,19 +189,19 @@
                             <span
                                 class="cb-segmented"
                                 role="group"
-                                aria-label="Markdown editor"
+                                aria-label="{{create.markdownEditor}}"
                                 data-preview-switch
                                 hidden
                             >
                                 <button type="button" aria-pressed="true" data-preview-write>
-                                    Write
+                                    {{create.write}}
                                 </button>
                                 <button type="button" aria-pressed="false" data-preview-show>
-                                    Preview
+                                    {{create.preview}}
                                 </button>
                             </span>
                             <button type="button" class="cb-btn-secondary" data-item-remove hidden>
-                                Remove
+                                {{create.remove}}
                             </button>
                         </span>
                     </div>
@@ -203,15 +212,15 @@
                         class="cb-input cb-textarea cb-item-text"
                         rows="10"
                         maxlength="10485760"
-                        placeholder="Start typing&hellip;"
-                        aria-label="Item content"
+                        placeholder="{{create.textPlaceholder}}"
+                        aria-label="{{create.itemContent}}"
                         data-item-text
                     ></textarea>
                     <div class="cb-item-preview" data-item-preview hidden></div>
                     <div class="cb-drop" data-item-drop hidden>
-                        <p data-item-drop-label>Drop a file here</p>
+                        <p data-item-drop-label>{{create.drop}}</p>
                         <button type="button" class="cb-btn-secondary" data-item-choose>
-                            Choose file
+                            {{create.chooseFile}}
                         </button>
                         <input type="file" class="cb-item-file" data-item-file hidden multiple />
                     </div>
@@ -219,60 +228,55 @@
                 <p class="cb-size-meter" data-size-meter></p>
 
                 <div class="cb-form-row">
-                    <label class="cb-label" for="create-expiry">Expires</label>
+                    <label class="cb-label" for="create-expiry">{{create.expires}}</label>
                     <select id="create-expiry" class="cb-input cb-select">
-                        <option value="3600">1 hour</option>
-                        <option value="86400">1 day</option>
-                        <option value="604800" selected>1 week</option>
-                        <option value="2592000">30 days</option>
-                        <option value="7776000">90 days</option>
-                        <option value="">No expiry</option>
+                        <option value="3600">{{create.expiry.hour}}</option>
+                        <option value="86400">{{create.expiry.day}}</option>
+                        <option value="604800" selected>{{create.expiry.week}}</option>
+                        <option value="2592000">{{create.expiry.30days}}</option>
+                        <option value="7776000">{{create.expiry.90days}}</option>
+                        <option value="">{{expiry.none}}</option>
                     </select>
                 </div>
                 <label class="cb-check">
                     <input type="checkbox" id="create-burn" />
-                    <span>Delete after first retrieval (burn)</span>
+                    <span>{{create.burn}}</span>
                 </label>
                 <div class="cb-form-row">
-                    <label class="cb-label" for="create-password">Password (optional)</label>
+                    <label class="cb-label" for="create-password">{{create.password}}</label>
                     <input
                         type="password"
                         id="create-password"
                         class="cb-input"
-                        placeholder="Leave blank for no password"
+                        placeholder="{{create.passwordPlaceholder}}"
                         autocomplete="new-password"
                     />
-                    <span class="cb-label-note">
-                        The password never leaves your browser. Choose a strong passphrase — the
-                        link alone will not open this capsule.
-                    </span>
+                    <span class="cb-label-note"> {{create.passwordNote}} </span>
                 </div>
-                <button type="submit" class="cb-btn" data-create-submit>Encrypt and share</button>
+                <button type="submit" class="cb-btn" data-create-submit>{{create.submit}}</button>
             </form>
         </template>
 
         <template id="tmpl-encrypting">
-            <h1 class="cb-h1">Encrypting&hellip;</h1>
+            <h1 class="cb-h1">{{create.encrypting}}</h1>
             <div class="cb-spinner"></div>
-            <p class="cb-lede cb-pulse">Generating keys and encrypting your content locally.</p>
+            <p class="cb-lede cb-pulse">{{create.encryptingLede}}</p>
         </template>
 
         <template id="tmpl-done">
-            <h1 class="cb-h1">Your capsule is ready</h1>
-            <p class="cb-lede">
-                Copy the link now. It is shown only once — the server does not store it.
-            </p>
+            <h1 class="cb-h1">{{create.done}}</h1>
+            <p class="cb-lede">{{create.doneLede}}</p>
             <div class="cb-callout">
-                <label class="cb-label" for="share-link">Share link</label>
+                <label class="cb-label" for="share-link">{{create.shareLink}}</label>
                 <div class="cb-copy-row">
                     <input id="share-link" class="cb-input" type="text" readonly data-share-link />
                     <button type="button" class="cb-btn cb-btn-sm" data-copy="share-link">
-                        Copy
+                        {{create.copy}}
                     </button>
                 </div>
             </div>
             <div class="cb-callout">
-                <label class="cb-label" for="delete-link">Delete link (keep this private)</label>
+                <label class="cb-label" for="delete-link">{{create.deleteLink}}</label>
                 <div class="cb-copy-row">
                     <input
                         id="delete-link"
@@ -282,19 +286,19 @@
                         data-delete-link
                     />
                     <button type="button" class="cb-btn cb-btn-sm" data-copy="delete-link">
-                        Copy
+                        {{create.copy}}
                     </button>
                 </div>
             </div>
             <p>
-                <a href="/" class="cb-btn">Create another</a>
+                <a href="{{prefix}}/" class="cb-btn">{{create.another}}</a>
             </p>
         </template>
 
         <template id="tmpl-error">
-            <h1 class="cb-h1">Something went wrong</h1>
+            <h1 class="cb-h1">{{create.error}}</h1>
             <p class="cb-lede" data-error-message></p>
-            <p><button type="button" class="cb-btn" data-retry-btn>Try again</button></p>
+            <p><button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button></p>
         </template>
     </body>
 </html>

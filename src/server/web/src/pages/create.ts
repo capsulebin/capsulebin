@@ -5,16 +5,19 @@
  * The server sees ciphertext only.
  */
 
+import { MAX_ITEM_BYTES, MAX_ITEMS, Paste, PasteApi, generateUlid } from '@capsulebin/core';
 import {
-    MAX_ITEM_BYTES,
-    MAX_ITEMS,
-    Paste,
-    PasteApi,
-    generateUlid,
-    formatSize,
-} from '@capsulebin/core';
-import { byAttr, byId, initShell, setValue, showTemplate, setText } from './shell';
+    byAttr,
+    byId,
+    initShell,
+    languageFromNextPage,
+    setValue,
+    showTemplate,
+    setText,
+} from './shell';
+import { apiErrorText } from './errors';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
+import { formatSize, t, type TextKey } from '../language';
 import { renderMarkdown } from '../render-markdown';
 import { trustedHtml } from '../trusted-html';
 
@@ -62,11 +65,11 @@ function endEditSession(): void {
     tabsObserver = undefined;
 }
 
-const KIND_BADGE: Record<Presentation, string> = {
-    plain: 'Text',
-    code: 'Code',
-    markdown: 'MD',
-    download: 'File',
+const KIND_BADGE: Record<Presentation, TextKey> = {
+    plain: 'item.badge.plain',
+    code: 'item.badge.code',
+    markdown: 'item.badge.markdown',
+    download: 'item.badge.download',
 };
 
 const LANG_EXTENSIONS: Record<string, string> = {
@@ -134,6 +137,43 @@ function isItemEmpty(item: ItemState): boolean {
     return item.presentation === 'download' ? !item.fileBytes : item.text.trim().length === 0;
 }
 
+/** The item editor's controls show the active item and are set by the script;
+ *  what the user did to the items is in `items`. */
+const ITEM_CONTROLS =
+    '[data-item-type], [data-item-name], [data-item-lang], [data-item-text], [data-item-file]';
+
+/** Whether a form control no longer holds the value the template gave it. */
+function isChanged(control: Element): boolean {
+    if (control instanceof HTMLInputElement) {
+        return control.type === 'checkbox' || control.type === 'radio'
+            ? control.checked !== control.defaultChecked
+            : control.value !== control.defaultValue;
+    }
+    if (control instanceof HTMLSelectElement) {
+        const options = [...control.options];
+        const initial = options.find((option) => option.defaultSelected) ?? options[0];
+        return control.value !== (initial?.value ?? '');
+    }
+    return control instanceof HTMLTextAreaElement && control.value !== control.defaultValue;
+}
+
+/** A draft is worth keeping once an item has content or a name the user gave it,
+ *  or any other field of the form (title, expiry, burn, password) was changed. */
+function hasDraft(): boolean {
+    if (items.some((item) => !isItemEmpty(item) || item.nameEdited)) return true;
+    const form = document.querySelector<HTMLFormElement>('[data-create-form]');
+    return [...(form?.elements ?? [])].some(
+        (control) => !control.matches(ITEM_CONTROLS) && isChanged(control),
+    );
+}
+
+/** Reloading the page under another prefix would discard the draft: from the
+ *  first input on, the language switch only stores the choice. Stays so even
+ *  if the form is emptied again (and on the done page, which holds the links). */
+function keepDraftOnLanguageSwitch(): void {
+    if (hasDraft()) languageFromNextPage(shell);
+}
+
 function itemByteLength(item: ItemState): number {
     return item.presentation === 'download'
         ? (item.fileBytes?.length ?? 0)
@@ -145,7 +185,12 @@ function totalPayloadBytes(): number {
 }
 
 function displayName(item: ItemState, index: number): string {
-    return item.name || (item.presentation === 'download' ? 'File' : `Item ${index + 1}`);
+    return (
+        item.name ||
+        (item.presentation === 'download'
+            ? t('item.kind.download')
+            : `${t('item.kind.other')} ${index + 1}`)
+    );
 }
 
 // --- phases ------------------------------------------------------------------
@@ -163,6 +208,11 @@ function showEdit(): void {
     overflow = [];
 
     const form = byAttr<HTMLFormElement>('create-form');
+    // Bubbles up after the field handlers below have updated the items; added
+    // files and type changes go through render(). Checkboxes and selects fire
+    // `input` too, but `change` is what every browser sends for them.
+    form.addEventListener('input', keepDraftOnLanguageSwitch);
+    form.addEventListener('change', keepDraftOnLanguageSwitch);
 
     // Tabs: selection, removal and keyboard navigation (delegated, since the
     // tab list is re-rendered).
@@ -385,7 +435,7 @@ function showEdit(): void {
             showDone(shareUrl, deleteUrl);
         } catch (err) {
             console.error(err);
-            showError(err instanceof Error ? err.message : '');
+            showError(apiErrorText(err));
         }
     });
 
@@ -461,7 +511,7 @@ function changeType(item: ItemState, presentation: Presentation): void {
 function addFiles(files: FileList): void {
     for (const file of Array.from(files)) {
         if (file.size > MAX_FILE_BYTES) {
-            alert(`${file.name} exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MiB limit.`);
+            alert(t('create.fileTooLarge', { name: file.name, limit: formatSize(MAX_FILE_BYTES) }));
             continue;
         }
         const active = getActive();
@@ -474,7 +524,7 @@ function addFiles(files: FileList): void {
                 ? active
                 : addItem('download');
         if (!target) {
-            alert(`A capsule holds at most ${MAX_ITEMS} items.`);
+            alert(t('create.tooManyItems', { max: MAX_ITEMS }));
             return;
         }
         target.presentation = 'download';
@@ -520,13 +570,14 @@ function refreshSizeMeter(): void {
     const totalBytes = totalPayloadBytes();
     const overBudget = totalBytes > MAX_ITEM_BYTES;
 
+    const size = { size: formatSize(totalBytes), max: formatSize(MAX_ITEM_BYTES) };
     const parts = [];
-    if (items.length > 1) parts.push(`${items.length} of ${MAX_ITEMS} items`);
+    if (items.length > 1)
+        parts.push(t('create.itemCount', { count: items.length, max: MAX_ITEMS }));
     parts.push(
         overBudget
-            ? `${formatSize(totalBytes)} of ${formatSize(MAX_ITEM_BYTES)} — over the limit by ` +
-                  `${formatSize(totalBytes - MAX_ITEM_BYTES)}. Remove or shrink an item to continue.`
-            : `${formatSize(totalBytes)} of ${formatSize(MAX_ITEM_BYTES)}`,
+            ? t('create.sizeOver', { ...size, over: formatSize(totalBytes - MAX_ITEM_BYTES) })
+            : t('create.size', size),
     );
 
     const meter = byAttr<HTMLElement>('size-meter');
@@ -537,6 +588,7 @@ function refreshSizeMeter(): void {
 }
 
 function render(): void {
+    keepDraftOnLanguageSwitch();
     if (!getActive()) activeId = items[0]?.id ?? null;
     renderTabs();
     renderEditor(getActive());
@@ -562,7 +614,7 @@ function layoutTabs(): void {
         byAttr<HTMLElement>('more'),
         Math.max(0, index),
     );
-    byAttr<HTMLElement>('more-btn').textContent = `☰ ${overflow.length} more`;
+    byAttr<HTMLElement>('more-btn').textContent = t('items.more', { count: overflow.length });
     // Once anything overflows, the menu lists every item - one complete list is
     // easier to navigate than "whatever did not fit".
     byAttr<HTMLElement>('more-menu').replaceChildren(
@@ -574,7 +626,7 @@ function layoutTabs(): void {
             option.dataset.moreId = item.id;
             const kind = document.createElement('span');
             kind.className = 'cb-itemtab-kind';
-            kind.textContent = KIND_BADGE[item.presentation];
+            kind.textContent = t(KIND_BADGE[item.presentation]);
             const name = document.createElement('span');
             name.className = 'cb-itemtab-name';
             name.textContent = displayName(item, i);
@@ -607,7 +659,7 @@ function renderTabs(): void {
 
             const kind = document.createElement('span');
             kind.className = 'cb-itemtab-kind';
-            kind.textContent = KIND_BADGE[item.presentation];
+            kind.textContent = t(KIND_BADGE[item.presentation]);
             const name = document.createElement('span');
             name.className = 'cb-itemtab-name';
             name.textContent = displayName(item, index);
@@ -621,8 +673,8 @@ function renderTabs(): void {
                 remove.dataset.removeId = item.id;
                 remove.tabIndex = -1;
                 remove.textContent = '×';
-                remove.title = `Remove ${displayName(item, index)}`;
-                remove.setAttribute('aria-label', `Remove ${displayName(item, index)}`);
+                remove.title = t('create.removeItem', { name: displayName(item, index) });
+                remove.setAttribute('aria-label', remove.title);
                 wrap.append(remove);
             }
             return wrap;
@@ -665,7 +717,7 @@ function renderEditor(active: ItemState | undefined): void {
     typeSelect.value = active.presentation;
     renderTypeOptions(active);
     if (document.activeElement !== nameInput) nameInput.value = active.name;
-    nameInput.placeholder = isFile ? 'File name' : 'Name';
+    nameInput.placeholder = t(isFile ? 'create.fileNamePlaceholder' : 'create.itemNamePlaceholder');
     langSelect.hidden = !isCode;
     if (isCode) langSelect.value = active.codeLang;
     previewSwitch.hidden = !isMarkdown;
@@ -676,16 +728,18 @@ function renderEditor(active: ItemState | undefined): void {
     drop.hidden = !isFile;
     dropLabel.textContent = active.fileBytes
         ? `${active.name} (${formatSize(itemByteLength(active))})`
-        : 'Drop a file here, or anywhere on this form';
+        : t('create.dropAnywhere');
 
     const showText = !isFile && !(isMarkdown && active.previewActive);
     textArea.hidden = !showText;
     if (!isFile) textArea.value = active.text;
-    textArea.placeholder = isCode
-        ? 'Paste code…'
-        : isMarkdown
-          ? 'Write Markdown…'
-          : 'Start typing…';
+    textArea.placeholder = t(
+        isCode
+            ? 'create.codePlaceholder'
+            : isMarkdown
+              ? 'create.markdownPlaceholder'
+              : 'create.textPlaceholder',
+    );
 
     previewArea.hidden = !(isMarkdown && active.previewActive);
     if (isMarkdown && active.previewActive) updatePreview(active);
@@ -783,5 +837,5 @@ async function encryptAndShare(
 
 // --- boot --------------------------------------------------------------------
 
-initShell();
+const shell = initShell();
 showEdit();

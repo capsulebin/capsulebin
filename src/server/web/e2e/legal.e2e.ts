@@ -1,3 +1,4 @@
+import { prefixOf } from './create';
 import { expect, test } from './guard';
 
 /**
@@ -7,28 +8,48 @@ import { expect, test } from './guard';
  * violation or console error.
  */
 
-const LINKS = [
-    ['Imprint', '/imprint'],
-    ['Privacy', '/privacy'],
-    ['Terms', '/terms'],
-] as const;
+/** The footer labels of each language, from its catalogue. */
+const LINKS = {
+    en: [
+        ['Imprint', '/imprint'],
+        ['Privacy', '/privacy'],
+        ['Terms', '/terms'],
+    ],
+    de: [
+        ['Impressum', '/imprint'],
+        ['Datenschutz', '/privacy'],
+        ['Nutzungsbedingungen', '/terms'],
+    ],
+} as const;
 
-for (const path of [
-    '/',
-    '/p/2pS3xQ7Rk9mNpLz4AbCdEA',
-    '/manage/2pS3xQ7Rk9mNpLz4AbCdEA',
-    '/report',
-    '/imprint',
-]) {
-    test(`the footer of ${path} links to the legal pages`, async ({ page }) => {
-        await page.goto(path);
+for (const [language, locale] of [
+    ['en', 'en-US'],
+    ['de', 'de-DE'],
+] as const) {
+    const prefix = prefixOf(language);
 
-        const footer = page.locator('footer');
-        for (const [name, href] of LINKS) {
-            await expect(footer.getByRole('link', { name, exact: true })).toHaveAttribute(
-                'href',
-                href,
-            );
+    test.describe(`in ${language}`, () => {
+        // A browser in that language, so language-init.js stays on the page.
+        test.use({ locale });
+
+        for (const path of [
+            '/',
+            '/p/2pS3xQ7Rk9mNpLz4AbCdEA',
+            '/manage/2pS3xQ7Rk9mNpLz4AbCdEA',
+            '/report',
+            '/imprint',
+        ]) {
+            test(`the footer of ${prefix}${path} links to the legal pages`, async ({ page }) => {
+                await page.goto(`${prefix}${path}`);
+
+                const footer = page.locator('footer');
+                for (const [name, href] of LINKS[language]) {
+                    await expect(footer.getByRole('link', { name, exact: true })).toHaveAttribute(
+                        'href',
+                        `${prefix}${href}`,
+                    );
+                }
+            });
         }
     });
 }
@@ -51,11 +72,11 @@ test('the built-in privacy notice and terms point to each other and to the impri
     await expect(page.locator('article.cb-legal h1')).toHaveText('Terms of use');
 
     await page.locator('article.cb-legal').getByRole('link', { name: 'privacy notice' }).click();
-    await expect(page).toHaveURL(/\/privacy$/);
+    await expect(page).toHaveURL(/^[a-z]+:\/\/[^/]+\/privacy$/);
     const privacy = page.locator('article.cb-legal');
     await expect(privacy.getByRole('heading', { name: 'Controller' })).toBeVisible();
     await expect(privacy).toContainText('Art. 28 GDPR');
 
     await privacy.getByRole('link', { name: 'imprint' }).click();
-    await expect(page).toHaveURL(/\/imprint$/);
+    await expect(page).toHaveURL(/^[a-z]+:\/\/[^/]+\/imprint$/);
 });

@@ -30,6 +30,8 @@ pub struct Config {
     pub abuse: AbuseConfig,
     #[serde(default)]
     pub legal: LegalConfig,
+    #[serde(default)]
+    pub i18n: I18nConfig,
 }
 
 fn default_bind() -> String {
@@ -142,9 +144,30 @@ impl ServerConfig {
             .as_deref()
             .ok_or_else(|| invalid("server.public_url is required".to_owned()))?;
 
+        // No message below repeats the value: a share or management link pasted
+        // here by mistake would put its paste id and link secret into stderr and
+        // the service log.
         if !(public_url.starts_with("https://") || public_url.starts_with("http://")) {
+            return Err(invalid("server.public_url must be an absolute http(s) URL".to_owned()));
+        }
+
+        // The prefix alone lets text through that no client can use as a URL.
+        let Ok(url) = url::Url::parse(public_url) else {
+            return Err(invalid("server.public_url is not a valid URL".to_owned()));
+        };
+
+        // Checked before the trailing slash, which may follow either ("...?x=/").
+        if has_query_or_fragment(&url) {
+            return Err(invalid(
+                "server.public_url must not contain a query or fragment: paths are appended to it".to_owned(),
+            ));
+        }
+
+        // Checked before the trailing slash, so ".../de/" is told the real reason.
+        if let Some(language) = trailing_language(&url) {
             return Err(invalid(format!(
-                "server.public_url must be an absolute http(s) URL, got {public_url:?}"
+                "server.public_url must not end in the language code {language:?}: links below it \
+                 would be ambiguous with the /{language}/ language prefix of the pages"
             )));
         }
 
@@ -155,6 +178,29 @@ impl ServerConfig {
 
         Ok(())
     }
+}
+
+/// True if the parsed `public_url` carries a query or a fragment, also an empty
+/// one (`.../team?`, `.../team#`). Share links, problem type URIs and the
+/// clients' request URLs append a path to the base as text, which would end up
+/// inside the query or fragment. The same rule as `hasQueryOrFragment` in
+/// `@capsulebin/core`, which the CLI applies to `put --server` (both are
+/// checked against `src/core/tests/fixtures/base-language.json`).
+pub(super) fn has_query_or_fragment(public_url: &url::Url) -> bool {
+    public_url.query().is_some() || public_url.fragment().is_some()
+}
+
+/// The known language code the path of the parsed `public_url` ends in, if
+/// any. The same rule as `trailingLanguage` in `@capsulebin/core`, which the
+/// CLI applies to `put --server` (both are checked against
+/// `src/core/tests/fixtures/base-language.json`): the path as the WHATWG URL
+/// parser normalizes it - a link built on `/team/de/.` reaches every client as
+/// `/team/de/...` -, its last non-empty segment, compared exactly as
+/// `parseLink` does when it drops a language segment before `p`/`manage`.
+/// `/DE`, `/de-at` or `/deutsch` are not language codes.
+pub(super) fn trailing_language(public_url: &url::Url) -> Option<&'static str> {
+    let last = public_url.path_segments()?.rfind(|segment| !segment.is_empty())?;
+    KNOWN_LANGUAGES.iter().copied().find(|&language| language == last)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -578,4 +624,61 @@ pub struct LegalSection {
     /// Markdown appended to the built-in text, read from this file at startup.
     #[serde(default)]
     pub extra_file: Option<PathBuf>,
+}
+
+/// Interface languages the server offers: a shell is built for each of them
+/// (`src/server/web/src/i18n/<code>.json`). The same list lives in
+/// `@capsulebin/core` (`languages.ts`); a test keeps the three in step.
+pub const KNOWN_LANGUAGES: &[&str] = &["en", "de"];
+
+/// The default of `i18n.default_language`.
+pub const DEFAULT_LANGUAGE: &str = "en";
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_owned()
+}
+
+/// `[i18n]`: which known language is the default one. Every known language is
+/// always offered; the default one has its pages at the paths without a
+/// prefix (`/p/{id}`), every other one under its prefix (`/de/p/{id}`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct I18nConfig {
+    #[serde(default = "default_language")]
+    pub default_language: String,
+}
+
+impl Default for I18nConfig {
+    fn default() -> Self {
+        Self {
+            default_language: default_language(),
+        }
+    }
+}
+
+impl I18nConfig {
+    /// The default language as the known code it names.
+    pub(super) fn validate(&self) -> Result<&'static str, ConfigError> {
+        KNOWN_LANGUAGES
+            .iter()
+            .copied()
+            .find(|&language| language == self.default_language)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "i18n.default_language must be one of {}, got {:?}",
+                    KNOWN_LANGUAGES.join(", "),
+                    self.default_language
+                ))
+            })
+    }
+}
+
+/// The path prefix of the pages in `language`: none for the default language,
+/// `/<language>` for every other one.
+pub fn language_prefix(default_language: &str, language: &str) -> String {
+    if language == default_language {
+        String::new()
+    } else {
+        format!("/{language}")
+    }
 }

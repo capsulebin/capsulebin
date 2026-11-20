@@ -93,6 +93,13 @@ body {
     margin-left: auto;
 }
 
+/* Language switch and theme toggle, together at the end of the header. */
+.cb-head-tools {
+    display: flex;
+    align-items: center;
+    gap: var(--cb-space-2);
+}
+
 /* --- Content --- */
 
 .cb-main {
@@ -760,7 +767,8 @@ cb-view-page {
     border-left: 1px solid var(--cb-border-strong);
 }
 
-.cb-segmented button[aria-pressed="true"] {
+.cb-segmented button[aria-pressed="true"],
+.cb-segmented button[aria-current="true"] {
     color: var(--cb-accent-text);
     background: var(--cb-accent);
 }

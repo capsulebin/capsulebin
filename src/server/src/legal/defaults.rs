@@ -1,7 +1,7 @@
 //! The built-in privacy notice and terms of use.
 //!
-//! English only, like the rest of the interface; translations come with the
-//! localisation of the whole service.
+//! English only, in the pages of every language; the article says so in a shell
+//! of another language (`lang="en"`).
 //!
 //! What CapsuleBin does with data is fixed by the software and its
 //! configuration, so these texts state it concretely - the retention periods
@@ -24,6 +24,8 @@ pub struct Facts {
     pub imprint_href: Option<String>,
     /// Where the privacy notice is, for the terms to refer to.
     pub privacy_href: String,
+    /// Where the report form is, for the terms to refer to.
+    pub report_href: String,
     pub hosting: bool,
     /// Whether any limit keyed by the client address is on.
     pub client_ip_limits: bool,
@@ -38,10 +40,14 @@ pub struct Facts {
 }
 
 impl Facts {
-    pub fn from_config(config: &Config, imprint_href: Option<String>, hosting: bool) -> Self {
+    /// `prefix` is the language prefix of the shell the texts are shown in
+    /// (`/de`, empty for the default language), for the links to pages served
+    /// here.
+    pub fn from_config(config: &Config, prefix: &str, imprint_href: Option<String>, hosting: bool) -> Self {
         Self {
             imprint_href,
-            privacy_href: "/privacy".to_owned(),
+            privacy_href: format!("{prefix}/privacy"),
+            report_href: format!("{prefix}/report"),
             hosting,
             client_ip_limits: config.rate_limits.uses_client_ip(),
             purge: config.purge.enabled,
@@ -168,8 +174,10 @@ pub fn privacy(f: &Facts, extra: Option<&str>) -> String {
 
     text.push_str(
         "\n\n## Cookies and third parties\n\n\
-         This service sets no cookies. The only thing stored in your browser is the colour theme you \
-         choose, in its local storage; it is never sent to us. Pages load nothing from third parties: \
+         This service sets no cookies. The only things stored in your browser are the colour theme \
+         and the language you choose, in its local storage (`capsulebin.theme`, \
+         `capsulebin.language`); they are not sent to us, but the language is part of the \
+         address of each page you open. Pages load nothing from third parties: \
          no analytics, no external fonts, no tracking. Images in capsules are shown as links and only \
          loaded if you follow them.",
     );
@@ -202,7 +210,7 @@ pub fn terms(f: &Facts, extra: Option<&str>) -> String {
          ## Reports and moderation\n\n",
     );
     if f.reports {
-        text.push_str("Anyone can report a capsule on the [report page](/report). ");
+        text.push_str(&format!("Anyone can report a capsule on the [report page]({}). ", f.report_href));
     }
     text.push_str(
         &"As capsules are encrypted, we cannot check their content. On a justified notice, we block or \

@@ -72,6 +72,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         rate_limits: Default::default(),
         abuse: Default::default(),
         legal: Default::default(),
+        i18n: Default::default(),
     }
 }
 
@@ -143,34 +144,96 @@ pub async fn harness_from_dump(name: &str, dump: &'static str, now: i64) -> Harn
     }
 }
 
+/// What the web build writes into the `<head>` of every shell: all known
+/// languages, and a token where the server puts the configured default.
+const LANGUAGES_META: &str = r#"<meta name="capsulebin-languages" content="en de" data-default="%%capsulebin:default%%">"#;
+
+/// [`LANGUAGES_META`] as a server with the default language `default` serves it.
+pub fn languages_meta(default: &str) -> String {
+    LANGUAGES_META.replace("%%capsulebin:default%%", default)
+}
+
+/// An internal link as the web build writes it into every shell, with a token
+/// where the server puts the language prefix.
+const REPORT_LINK: &str = r#"<a href="%%capsulebin:prefix%%/report">report</a>"#;
+
+/// [`REPORT_LINK`] as served in a shell under `prefix` (`""` or `/de`).
+pub fn report_link(prefix: &str) -> String {
+    REPORT_LINK.replace("%%capsulebin:prefix%%", prefix)
+}
+
+/// Each possible `i18n.default_language` with the path prefix every known
+/// language then has: none for the default language itself.
+pub const LAYOUTS: [(&str, [(&str, &str); 2]); 2] = [("en", [("en", ""), ("de", "/de")]), ("de", [("en", "/en"), ("de", "")])];
+
+/// A token-mode harness with `default` as `i18n.default_language`.
+pub async fn harness_with_default_language(name: &str, default: &str) -> Harness {
+    harness_with(name, |config| config.i18n.default_language = default.to_owned()).await
+}
+
+/// A legal section configured as Markdown text.
+pub fn legal_text(markdown: &str) -> Option<capsulebin_server::config::LegalSection> {
+    Some(capsulebin_server::config::LegalSection {
+        text: Some(markdown.to_owned()),
+        ..Default::default()
+    })
+}
+
+/// The headers of an answer without the one that differs per request.
+pub fn stable_headers(answer: &Answer) -> axum::http::HeaderMap {
+    let mut headers = answer.headers.clone();
+    headers.remove("x-request-id");
+    headers
+}
+
 /// The asset directory doubles as the shell source, so the tests do not depend on
-/// a frontend build having happened.
+/// a frontend build having happened. Like the build, it has the shells of every
+/// known language under `<language>/`, each with the language list in its
+/// head, an internal link and the footer markers with the labels of its
+/// catalogue - and the tokens the server fills in where the build writes them.
 pub fn write_shells(dir: &Path) {
-    for (file, marker) in [
-        ("index.html", "create"),
-        ("p.html", "view"),
-        ("manage.html", "manage"),
-        ("report.html", "report"),
-    ] {
+    for language in capsulebin_server::config::KNOWN_LANGUAGES {
+        let shells = dir.join(language);
+        std::fs::create_dir_all(&shells).unwrap();
+        let head = format!(r#"<!doctype html><html lang="{language}"><head>{LANGUAGES_META}"#);
+        let footer = format!("<nav>{REPORT_LINK}</nav><footer>{}</footer>", legal_link_markers(language));
+        for (file, marker) in [
+            ("index.html", "create"),
+            ("p.html", "view"),
+            ("manage.html", "manage"),
+            ("report.html", "report"),
+        ] {
+            std::fs::write(shells.join(file), format!("{head}<title>{marker}</title></head>{footer}")).unwrap();
+        }
         std::fs::write(
-            dir.join(file),
-            format!("<!doctype html><title>{marker}</title><footer><!--capsulebin:legal-links--></footer>"),
+            shells.join("legal.html"),
+            format!(
+                "{head}<title><!--capsulebin:legal-title--></title></head><header><!--capsulebin:legal-title--></header>\
+                 <main><!--capsulebin:legal-content--></main>{footer}"
+            ),
         )
         .unwrap();
     }
-    std::fs::write(
-        dir.join("legal.html"),
-        "<!doctype html><title><!--capsulebin:legal-title--></title><header><!--capsulebin:legal-title--></header>\
-         <main><!--capsulebin:legal-content--></main><footer><!--capsulebin:legal-links--></footer>",
-    )
-    .unwrap();
 }
 
-/// A server whose asset directory is empty, for the degraded readiness path.
+/// The footer markers as the web build writes them into the shells of
+/// `language`: one per legal page, labelled from the catalogue.
+pub fn legal_link_markers(language: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("web/src/i18n/{language}.json"));
+    let catalogue: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    ["imprint", "privacy", "terms"]
+        .map(|page| {
+            let label = catalogue[format!("shell.{page}")].as_str().unwrap();
+            format!("<!--capsulebin:legal-link:{page}:{label}-->")
+        })
+        .concat()
+}
+
+/// A server whose asset directory has no shells, for the degraded readiness path.
 pub async fn harness_without_assets(name: &str) -> Harness {
     let harness = harness_with_mode(name, CreationMode::Token).await;
-    for file in ["index.html", "p.html", "manage.html", "report.html"] {
-        let _ = std::fs::remove_file(harness.dir.join(file));
+    for language in capsulebin_server::config::KNOWN_LANGUAGES {
+        let _ = std::fs::remove_dir_all(harness.dir.join(language));
     }
     harness
 }
@@ -179,9 +242,19 @@ pub async fn harness_with_mode(name: &str, mode: CreationMode) -> Harness {
     harness_with(name, |config| config.creation.mode = mode).await
 }
 
+/// A server on the assets embedded into this build instead of an asset
+/// directory: the shells of the web build, or none if it has not run.
+pub async fn harness_with_embedded_assets(name: &str) -> Harness {
+    harness_on(name, |_| {}, |_| AssetSource::Embedded).await
+}
+
 /// A token-mode harness with one configuration change applied, for tests about a
 /// specific setting.
 pub async fn harness_with(name: &str, adjust: impl FnOnce(&mut Config)) -> Harness {
+    harness_on(name, adjust, |dir| AssetSource::Directory(dir.to_path_buf())).await
+}
+
+async fn harness_on(name: &str, adjust: impl FnOnce(&mut Config), assets: impl FnOnce(&Path) -> AssetSource) -> Harness {
     let dir = tempdir(name);
 
     write_shells(&dir);
@@ -196,12 +269,7 @@ pub async fn harness_with(name: &str, adjust: impl FnOnce(&mut Config)) -> Harne
     let pool = capsulebin_server::db::connect(&resolved.config.database).await.expect("connect");
 
     let clock = FixedClock::at(START);
-    let state = AppState::new(
-        &resolved,
-        pool.clone(),
-        AssetSource::Directory(dir.clone()),
-        Arc::new(clock.clone()),
-    );
+    let state = AppState::new(&resolved, pool.clone(), assets(&dir), Arc::new(clock.clone()));
 
     Harness {
         app: router(state),
@@ -230,6 +298,11 @@ impl Answer {
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
+
+    /// A response header as text, if present.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|value| value.to_str().ok())
+    }
 }
 
 impl Harness {
@@ -244,7 +317,15 @@ impl Harness {
     }
 
     pub async fn get(&self, path: &str) -> Answer {
-        self.send(Request::builder().uri(path).body(Body::empty()).unwrap()).await
+        self.get_with_headers(path, &[]).await
+    }
+
+    pub async fn get_with_headers(&self, path: &str, headers: &[(&str, &str)]) -> Answer {
+        let mut builder = Request::builder().uri(path);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        self.send(builder.body(Body::empty()).unwrap()).await
     }
 
     /// The descriptor of `id` (base64url), with the harness's describe token.

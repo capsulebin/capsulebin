@@ -139,6 +139,29 @@ describe('openPaste', () => {
         expect((await openPaste(api, share.id, share.secret)).kind).toBe('success');
     });
 
+    it('sends no retrieve request when beforeRetrieve stops', async () => {
+        const { share } = await publish({ burnAfterRetrieval: true });
+        const api = new PasteApi(share.base);
+        const retrieves = () => server.requests.filter((r) => r.url.endsWith('/retrieve'));
+
+        const stopped = await openPaste(api, share.id, share.secret, {
+            beforeRetrieve: () => false,
+        });
+        expect(stopped.kind).toBe('aborted');
+        expect(retrieves()).toHaveLength(0);
+
+        let asked = 0;
+        const opened = await openPaste(api, share.id, share.secret, {
+            beforeRetrieve: () => {
+                asked += 1;
+                return true;
+            },
+        });
+        expect(opened.kind).toBe('success');
+        expect(asked).toBe(1);
+        expect(retrieves()).toHaveLength(1);
+    });
+
     it('reports a tampered ciphertext as decrypt_failed', async () => {
         const { share } = await publish();
         const stored = server.pastes.get(share.id)!;

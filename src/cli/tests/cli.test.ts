@@ -108,6 +108,18 @@ describe('put → get → delete', () => {
         expect(await run(['get', created.share_url], testIo())).toBe(3);
     });
 
+    it('accepts links with a language prefix, as copied from the address bar', async () => {
+        const created = await putText('hallo');
+        const withPrefix = (url: string) => url.replace(`${SERVER}/`, `${SERVER}/de/`);
+
+        const io = testIo();
+        expect(await run(['get', withPrefix(created.share_url)], io), io.err()).toBe(0);
+        expect(io.out()).toBe('hallo');
+
+        expect(await run(['delete', withPrefix(created.delete_url)], testIo())).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+    });
+
     it('packs several files into one capsule and writes them back to a directory', async () => {
         await writeFile(join(cwd, 'notes.md'), '# Notes\n');
         await writeFile(join(cwd, 'main.rs'), 'fn main() {}\n');
@@ -316,6 +328,48 @@ describe('errors and output', () => {
         const io = testIo({ stdin: 'x' });
         expect(await run(['put'], io)).toBe(2);
         expect(io.err()).toContain('CAPSULEBIN_SERVER');
+    });
+
+    // Links below such a base would lose the code to the link parser: `delete`
+    // would send the delete secret to the base without it.
+    it.each([
+        'https://paste.example/team/de',
+        'https://paste.example/team/de/',
+        'https://paste.example/team/de/.',
+        'https://paste.example/team/x/../de',
+        'https://paste.example/team/%2e/en',
+    ])('refuses the server %s, which ends in a language code', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base], io)).toBe(2);
+        expect(io.err()).toContain('--server must not end in the language code');
+        expect(server.requests).toHaveLength(0);
+
+        const fromEnv = testIo({ stdin: 'x', env: { CAPSULEBIN_SERVER: base } });
+        expect(await run(['put'], fromEnv)).toBe(2);
+        expect(fromEnv.err()).toContain('language code');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    // The API path is appended to the base as text: behind a query or fragment
+    // the request, and a creation token with it, would go to the base's path.
+    it.each([
+        'https://paste.example/team?lang=/de',
+        'https://paste.example/team#/de',
+        'https://paste.example/team?',
+        'https://paste.example/team#',
+        'https://paste.example/team?x=1/',
+        'https://paste.example/team#x//',
+        'https://paste.example?',
+    ])('refuses the server %s, which has a query or fragment', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base], io)).toBe(2);
+        expect(io.err()).toContain('--server must not contain a query or fragment');
+        expect(server.requests).toHaveLength(0);
+
+        const fromEnv = testIo({ stdin: 'x', env: { CAPSULEBIN_SERVER: base } });
+        expect(await run(['put'], fromEnv)).toBe(2);
+        expect(fromEnv.err()).toContain('must not contain a query or fragment');
+        expect(server.requests).toHaveLength(0);
     });
 
     it('does not dump a binary single item onto a terminal', async () => {

@@ -16,7 +16,7 @@ mod markdown;
 
 use std::path::Path;
 
-use crate::config::{Config, ConfigError, LegalSection};
+use crate::config::{Config, ConfigError, LegalSection, language_prefix};
 
 pub use markdown::render as render_markdown;
 
@@ -28,14 +28,38 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 /// Longest accepted `url`.
 const MAX_URL_BYTES: usize = 2048;
 
-/// Everything the legal routes and the footer need, rendered.
+/// The language of the legal texts: the built-in ones are English, and the
+/// operator's text for a page is served in the pages of every language.
+const TEXT_LANGUAGE: &str = "en";
+
+/// Everything the legal routes and the footer of one interface language need,
+/// rendered.
 #[derive(Debug, Clone, Default)]
 pub struct LegalPages {
-    /// The footer links as HTML, empty when there are none.
-    pub footer: String,
+    /// Where the footer links point; `None` omits a link. The labels come
+    /// from the shell, written by the web build in its language.
+    pub footer: FooterLinks,
     pub imprint: Option<Page>,
     pub privacy: Option<Page>,
     pub terms: Option<Page>,
+}
+
+/// The target of each footer link, `None` for a page that is not configured.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FooterLinks {
+    pub imprint: Option<String>,
+    pub privacy: Option<String>,
+    pub terms: Option<String>,
+}
+
+impl FooterLinks {
+    pub fn href(&self, which: Which) -> Option<&str> {
+        match which {
+            Which::Imprint => self.imprint.as_deref(),
+            Which::Privacy => self.privacy.as_deref(),
+            Which::Terms => self.terms.as_deref(),
+        }
+    }
 }
 
 /// One page served by CapsuleBin.
@@ -43,7 +67,8 @@ pub struct LegalPages {
 pub struct Page {
     /// Plain text, for `<title>` and the header.
     pub title: &'static str,
-    /// The `<article>` with heading and rendered text.
+    /// The `<article>` with heading and rendered text; it carries `lang` when
+    /// the text is not in the language of the shell it is served in.
     pub html: String,
 }
 
@@ -53,6 +78,20 @@ pub enum Which {
     Imprint,
     Privacy,
     Terms,
+}
+
+impl Which {
+    pub const ALL: [Self; 3] = [Self::Imprint, Self::Privacy, Self::Terms];
+
+    /// The page's path below the language prefix (if any), and its name in the
+    /// shell's footer marker.
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Imprint => "imprint",
+            Self::Privacy => "privacy",
+            Self::Terms => "terms",
+        }
+    }
 }
 
 impl LegalPages {
@@ -72,10 +111,15 @@ enum Target {
     Elsewhere(String),
 }
 
-/// Reads, checks and renders the legal pages. Called by `Config::validate`, so
-/// `capsulebin check` reports a missing file or a bad combination too.
-pub fn resolve(config: &Config) -> Result<LegalPages, ConfigError> {
+/// Reads, checks and renders the legal pages for the shells of `language`:
+/// links to the pages served here carry its prefix (`/de/privacy`, or
+/// `/privacy` for the default language). Called by
+/// `Config::validate` for every known language, so `capsulebin check`
+/// reports a missing file or a bad combination too.
+pub fn resolve(config: &Config, language: &str) -> Result<LegalPages, ConfigError> {
     let legal = &config.legal;
+    let prefix = language_prefix(&config.i18n.default_language, language);
+    let page = |title: &'static str, markdown: &str| page(title, markdown, language);
 
     if legal.hosting.is_some() && legal.operator.is_none() {
         return Err(invalid("legal.hosting needs legal.operator: the imprint names the operator first"));
@@ -115,31 +159,31 @@ pub fn resolve(config: &Config) -> Result<LegalPages, ConfigError> {
         }
     };
 
-    let imprint_href = match &imprint {
-        Target::Here(_) => Some("/imprint".to_owned()),
-        Target::Elsewhere(url) => Some(url.clone()),
+    let href = |which: Which, target: &Target| match target {
         Target::None => None,
+        Target::Here(_) => Some(format!("{prefix}/{}", which.path())),
+        Target::Elsewhere(url) => Some(url.clone()),
     };
-    let mut facts = defaults::Facts::from_config(config, imprint_href, legal.hosting.is_some());
+    let mut facts = defaults::Facts::from_config(config, &prefix, href(Which::Imprint, &imprint), legal.hosting.is_some());
 
-    let privacy = document(legal.privacy.as_ref(), "privacy", "Privacy notice", &facts, defaults::privacy)?;
+    let privacy = document(
+        legal.privacy.as_ref(),
+        "privacy",
+        "Privacy notice",
+        &facts,
+        defaults::privacy,
+        &page,
+    )?;
     if let Target::Elsewhere(url) = &privacy {
         facts.privacy_href.clone_from(url);
     }
-    let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms)?;
+    let terms = document(legal.terms.as_ref(), "terms", "Terms of use", &facts, defaults::terms, &page)?;
 
-    let footer = [
-        ("Imprint", "/imprint", &imprint),
-        ("Privacy", "/privacy", &privacy),
-        ("Terms", "/terms", &terms),
-    ]
-    .into_iter()
-    .filter_map(|(label, path, target)| match target {
-        Target::None => None,
-        Target::Here(_) => Some(link(path, label)),
-        Target::Elsewhere(url) => Some(link(url, label)),
-    })
-    .collect();
+    let footer = FooterLinks {
+        imprint: href(Which::Imprint, &imprint),
+        privacy: href(Which::Privacy, &privacy),
+        terms: href(Which::Terms, &terms),
+    };
 
     let served = |target: Target| match target {
         Target::Here(page) => Some(page),
@@ -161,6 +205,7 @@ fn document(
     title: &'static str,
     facts: &defaults::Facts,
     built_in: fn(&defaults::Facts, Option<&str>) -> String,
+    page: &dyn Fn(&'static str, &str) -> Page,
 ) -> Result<Target, ConfigError> {
     let section_or_default = section.cloned().unwrap_or_default();
     match source(&section_or_default, key, true)? {
@@ -278,19 +323,22 @@ fn is_acceptable_url(url: &str) -> bool {
     absolute || local_path
 }
 
-fn page(title: &'static str, markdown: &str) -> Page {
+/// A page for the shell of `language`. The `lang` attribute lets a screen
+/// reader pronounce an English text in a German shell as English.
+fn page(title: &'static str, markdown: &str, language: &str) -> Page {
+    let lang = if language == TEXT_LANGUAGE {
+        String::new()
+    } else {
+        format!(r#" lang="{TEXT_LANGUAGE}""#)
+    };
     Page {
         title,
         html: format!(
-            r#"<article class="cb-prose cb-legal"><h1>{}</h1>{}</article>"#,
+            r#"<article class="cb-prose cb-legal"{lang}><h1>{}</h1>{}</article>"#,
             escape(title),
             render_markdown(markdown)
         ),
     }
-}
-
-fn link(href: &str, label: &str) -> String {
-    format!(r#"<a href="{}">{}</a>"#, escape(href), escape(label))
 }
 
 /// HTML escaping for text and attribute values.

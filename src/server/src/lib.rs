@@ -22,7 +22,7 @@ use axum::Router;
 use sqlx::SqlitePool;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use api::assets::AssetSource;
+use api::assets::{AssetSource, LegalByLanguage};
 use config::{AbuseConfig, CreationMode, PastesConfig, PurgeConfig, Resolved};
 use domain::{Clock, Verifier};
 use repository::sqlite::SqlitePasteRepository;
@@ -54,9 +54,12 @@ pub struct AppState {
     pub trusted_proxies: Vec<String>,
     pub rate_limits: crate::api::rate_limit::RateLimitConfig,
     pub abuse: AbuseConfig,
-    /// The operator's legal pages and footer links, rendered once from
-    /// `[legal]` (see [`legal`] and [`api::assets`]).
-    pub legal: Arc<legal::LegalPages>,
+    /// The operator's legal pages and footer links for every interface
+    /// language, rendered once from `[legal]` (see
+    /// [`legal`] and [`api::assets`]).
+    pub legal: Arc<LegalByLanguage>,
+    /// `i18n.default_language`: the language of the pages without a prefix.
+    pub default_language: &'static str,
 }
 
 impl AppState {
@@ -81,14 +84,15 @@ impl AppState {
             trusted_proxies: resolved.config.server.trusted_proxies.clone(),
             rate_limits: resolved.config.rate_limits.clone(),
             abuse: resolved.config.abuse.clone(),
-            legal: Arc::new(resolved.legal.clone()),
+            legal: Arc::new(LegalByLanguage::new(resolved.legal.clone())),
+            default_language: resolved.default_language,
         }
     }
 
-    /// Whether the application can be served, used by `/health/ready`.
-    /// `index.html` is the minimum - without it there is no application.
+    /// Whether the application can be served, used by `/health/ready`: every
+    /// shell of every known language.
     pub fn assets_ready(&self) -> bool {
-        self.assets.exists("index.html")
+        self.assets.has_shells()
     }
 }
 
@@ -116,7 +120,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api::health::routes())
         .merge(api::pastes::routes())
         .merge(api::reports::routes())
-        .merge(api::assets::routes())
+        .merge(api::assets::routes(&state))
         // `.layer()` wraps, so the *later* call runs *first*: the client IP is
         // resolved before the rate limiter reads it. In the opposite order every
         // client shared one bucket (`tests/rate_limits.rs` pins this down).

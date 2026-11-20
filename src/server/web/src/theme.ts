@@ -11,6 +11,8 @@
  * application, not just this module.
  */
 
+import { type TextKey, t } from './language';
+
 const STORAGE_KEY = 'capsulebin.theme';
 
 export type ThemeChoice = 'light' | 'dark' | 'auto';
@@ -50,6 +52,10 @@ function writeChoice(choice: ThemeChoice): void {
 /**
  * Sets or removes `data-theme` on the root element. For `auto` the attribute is
  * removed so that the media query in tokens.css takes over again.
+ *
+ * `<meta name="color-scheme">` (set by public/theme-init.js) is left alone: once
+ * the stylesheet applies, `color-scheme` in tokens.css overrides it, and the next
+ * document runs theme-init.js again with the new choice.
  */
 export function applyChoice(choice: ThemeChoice): void {
     const root = document.documentElement;
@@ -73,10 +79,10 @@ export function initTheme(): void {
     applyChoice(readChoice());
 }
 
-const LABEL: Record<ThemeChoice, string> = {
-    light: 'Theme: light',
-    dark: 'Theme: dark',
-    auto: 'Theme: automatic',
+const LABEL: Record<ThemeChoice, TextKey> = {
+    light: 'theme.light',
+    dark: 'theme.dark',
+    auto: 'theme.auto',
 };
 
 /**
@@ -92,7 +98,7 @@ export function mountThemeToggle(button: HTMLButtonElement): void {
 
     const render = (choice: ThemeChoice): void => {
         button.dataset.theme = choice;
-        button.setAttribute('aria-label', LABEL[choice]);
+        button.setAttribute('aria-label', t(LABEL[choice]));
         button.textContent = choice === 'auto' ? '◐' : choice === 'light' ? '☀' : '☾';
     };
 

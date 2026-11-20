@@ -34,6 +34,12 @@ export interface OpenHooks {
     passwordKey?(header: PublicHeader): Promise<Uint8Array>;
     /** About to derive keys and decrypt (e.g. to show progress). */
     onDecrypting?(): void;
+    /**
+     * Called right before the retrieve request, with nothing asynchronous in
+     * between. Return `false` to stop: nothing is sent, the capsule is not
+     * consumed.
+     */
+    beforeRetrieve?(): boolean;
 }
 
 export type OpenOutcome =
@@ -53,7 +59,7 @@ export type OpenOutcome =
     | { kind: 'decrypt_failed' }
     /** Decrypted, but not a valid Capsule File Format v1 container. */
     | { kind: 'invalid_capsule'; message: string }
-    /** A hook rejected; nothing was retrieved after that point. */
+    /** A hook rejected or stopped the retrieval; nothing was retrieved after that point. */
     | { kind: 'aborted' };
 
 /** Derives the password key for `header` (PBKDF2 with the header's salt and
@@ -108,6 +114,8 @@ export async function openPaste(
     } catch {
         return { kind: 'decrypt_failed' };
     }
+
+    if (hooks.beforeRetrieve?.() === false) return { kind: 'aborted' };
 
     let retrieved;
     try {

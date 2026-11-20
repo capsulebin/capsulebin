@@ -169,6 +169,11 @@ server {
 }
 ```
 
+Pages and the redirect away from the default language's prefix (see
+[Interface languages](#interface-languages)) are sent with `Cache-Control: no-store`; a caching
+proxy or CDN must honour it. No page response depends on `Accept-Language`, so nothing has to be
+keyed on it.
+
 **`trusted_proxies` must list the proxy, not the clients.** Too broad a range lets clients pick
 their own address for rate limiting by sending `X-Forwarded-For`; empty behind a proxy makes every
 client share the proxy's bucket.
@@ -177,6 +182,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
+| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -188,11 +194,14 @@ client share the proxy's bucket.
 ## Legal pages
 
 CapsuleBin serves an imprint, a privacy notice and terms of use at `/imprint`, `/privacy` and
-`/terms`, and links them from the footer of every page, once `[legal.operator]` is set:
+`/terms` in the default interface language and under the prefix of every other one
+(`/de/imprint`), and links them from the footer of every page, once `[legal.operator]` is set. The
+texts are English in every language; in a shell of another language the text is marked
+`lang="en"`.
 
 - **Imprint**: the operator's own Markdown (`text` or `file`), followed by a "Hosting" block from
   `[legal.hosting]` if someone else hosts the instance.
-- **Privacy notice and terms**: built in, in English like the rest of the interface. The privacy
+- **Privacy notice and terms**: built in, in English. The privacy
   notice states what CapsuleBin processes and how long it keeps it, taken from the running
   configuration (retention rules, report retention, whether limits use the client address), and
   names the hosting provider as processor. What it cannot know - the reverse proxy's logs,
@@ -205,11 +214,43 @@ changed file takes effect on restart. In the container, mount them read-only, e.
 The built-in texts are a careful default, not legal advice: you are responsible for what your
 instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state.
 
+## Interface languages
+
+Every page is served in English and German; both are always offered. The pages of the default
+language have no path prefix (`/`, `/p/{id}`, `/report`), the other language lives under its
+prefix (`/de/`, `/de/p/{id}`, `/de/report`).
+
+```toml
+[i18n]
+default_language = "en"   # or "de"; env CAPSULEBIN__I18N__DEFAULT_LANGUAGE
+```
+
+`default_language` is the only key in `[i18n]`; a code that is not a known language or any other
+key there is a startup error (`capsulebin check` reports it). With `"de"`, German is prefix-less
+and English is under `/en/`.
+
+- Paths under the prefix of the default language (`/en/p/{id}` with the default `en`) are
+  redirected (`302`) to the same path without it.
+- The server does not read `Accept-Language`. In the browser, a language the user picked in the
+  switch (kept in `localStorage`), else a supported browser language, moves the page to that
+  language; the key in the fragment stays in the browser.
+- Share and management links are always created without a prefix, so they open in the default
+  language first. Changing `default_language` later does not break them, but moves the pages of
+  the previous default under its prefix.
+- Any other prefix is an unknown path (`404`).
+- `server.public_url` must not end in a language code (see
+  [Settings that matter](#settings-that-matter)); the CLI's `put` refuses such a `--server` by
+  the same rule. For an existing instance with such an address see [Upgrades](#upgrades).
+- The footer link labels follow the page language; the CLI, the API's error texts and the legal
+  texts stay English.
+
+See [i18n.md](i18n.md) for the rules in detail.
+
 ## Health and logs
 
 - `GET /health/live` — the process runs.
-- `GET /health/ready` — configuration, database, schema and embedded assets are usable. Use this
-  for load balancer checks.
+- `GET /health/ready` — configuration, database, schema and embedded assets (every page of every
+  interface language) are usable. Use this for load balancer checks.
 - `capsulebin healthcheck` probes `/health/ready` on the address from `server.bind` and exits
   non-zero unless it answers `200` — for container health checks, where there is no `curl`.
   `--live` probes `/health/live` instead; use that where an unhealthy container gets restarted,
@@ -218,6 +259,10 @@ instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state
 - Logs go to stderr. `CAPSULEBIN_LOG` sets the filter (default `info,tower_http=info,sqlx=warn`).
   The access log contains method, redacted path (`/api/v1/pastes/{id}`), status and latency —
   never paste ids, bodies, tokens or report text.
+- Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
+  reason without repeating the value, and a file that is not valid TOML is reported as
+  `line L, column C: <reason>` without the offending line — a share link pasted there by mistake
+  does not end up in the service log.
 
 ## Routine tasks
 
@@ -258,6 +303,32 @@ Migrations only move forward. To roll back, restore the backup from step 1 with 
 The test suite upgrades a database written by 1.0 on every change: a released migration cannot
 change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable.
 
+#### A `public_url` whose path ends in a language code
+
+An instance whose `server.public_url` has a path ending in an interface language code
+(`https://example.org/team/de`, `…/team/en`) does not start. The same holds when the path only
+ends in a code once its dot segments are resolved, as every client's URL parser does
+(`…/team/de/.`, `…/team/x/../de`). `capsulebin --config … check` reports it, naming
+`server.public_url`, so step 3 above fails before the service is started.
+
+Share and management links already issued under such a base are ambiguous: the CLI reads the
+language code in them as the language prefix of a page and drops it, so `get` and `delete` would
+address the base without it (`https://example.org/team` instead of `https://example.org/team/de`).
+Do not use these links with the CLI.
+
+What to do:
+
+1. Move the instance to a host of its own, served at `/` (`https://paste.example.org`), and set
+   `server.public_url` to it. That is the setup the web interface needs: the server answers
+   pages, `/assets/…` and `/api/…` at the root of its address only, the pages load their scripts
+   and styles from `/assets/`, call `/api/`, and create share and management links directly under
+   the origin. Below a path (`https://example.org/team/paste`) the web interface does not work,
+   whatever the path ends in. Only the API and the CLI build on a base with a path — `put`
+   appends `/api/v1/…`, `/p/<id>` and `/manage/<id>` to its `--server` — and only if the reverse
+   proxy removes that path before it forwards the request; no test covers such a setup.
+2. Links handed out under the old base keep pointing there. Whether and how they are mapped to
+   the new base is up to the operator; CapsuleBin does not do it.
+
 ### Retention
 
 The purge job runs at start and then daily; `capsulebin prune` applies it once on demand (for
@@ -271,7 +342,8 @@ and restart. Existing capsules are unaffected — the token only authorizes crea
 
 ## Abuse handling runbook
 
-Reports arrive through `/report`. Only reports about capsules that currently exist reach the queue.
+Reports arrive through the report form (`/report`, `/de/report`). Only reports about capsules that
+currently exist reach the queue.
 
 ```sh
 capsulebin reports list                             # open reports, oldest first

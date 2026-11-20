@@ -1,16 +1,21 @@
 /**
- * The report page wired to its real HTML: what is sent, and that the key in a
- * pasted link never is.
+ * The report page wired to its real HTML: what is sent, that the key in a
+ * pasted link never is, and that a refusal is explained from the catalogue by
+ * its problem `code`, never with the server's (English) `detail`.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import de from '../src/i18n/de.json';
+import en from '../src/i18n/en.json';
+import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
+import { LANGUAGE_STORAGE_KEY } from '../src/language';
+import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const KEY = 'v1.c2VjcmV0LWtleS1ub3QtdG8tYmUtc2VudA';
 
-const html = readFileSync(resolve(__dirname, '../report.html'), 'utf8');
+const CATALOGUES = { en, de };
 
 interface Sent {
     url: string;
@@ -20,26 +25,27 @@ interface Sent {
 
 let sent: Sent[];
 
-function stubServer(policy: { enabled: boolean; contact: string | null }, reportStatus = 202) {
+function stubServer(
+    policy: { enabled: boolean; contact: string | null },
+    reportStatus = 202,
+    reportBody: object = { status: 'received' },
+) {
     sent = [];
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
         sent.push({ url, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
         if ((init?.method ?? 'GET') === 'GET') {
             return new Response(JSON.stringify(policy), { status: 200 });
         }
-        return new Response(JSON.stringify({ status: 'received', code: 'x' }), {
-            status: reportStatus,
-        });
+        return new Response(JSON.stringify(reportBody), { status: reportStatus });
     });
 }
 
-async function loadPage(search = ''): Promise<void> {
-    document.documentElement.innerHTML = new DOMParser().parseFromString(
-        html,
-        'text/html',
-    ).documentElement.innerHTML;
-    window.history.replaceState(null, '', `/report${search}`);
+async function loadPage(search = '', lang: 'en' | 'de' = 'en'): Promise<void> {
+    const page = new DOMParser().parseFromString(servedShell('report', lang), 'text/html');
+    document.documentElement.innerHTML = page.documentElement.innerHTML;
+    window.history.replaceState(null, '', `/${lang}/report${search}`);
     vi.resetModules();
+    await setPageLanguage(lang);
     await import('../src/pages/report');
     await flush();
 }
@@ -115,6 +121,33 @@ describe('report page', () => {
         expect(field('report-error').textContent).toMatch(/too many reports/i);
     });
 
+    // Like a draft on the create page; the prefilled id alone is no started report.
+    it.each(['report-paste', 'report-reason', 'report-description', 'report-contact'])(
+        'keeps a started report on a language choice: first edit of %s',
+        async (attr) => {
+            localStorage.clear();
+            sessionStorage.clear();
+            await loadPage(`?id=${ID}`, 'de');
+            expect(document.querySelector('[data-language-notice]')).toBeNull();
+
+            field<HTMLTextAreaElement>('report-description').value = 'phishing page';
+            field(attr).dispatchEvent(new Event('input', { bubbles: true }));
+            document
+                .querySelector<HTMLButtonElement>('[data-language-switch] [lang="en"]')!
+                .click();
+
+            expect(window.location.pathname + window.location.search).toBe(`/de/report?id=${ID}`);
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe('phishing page');
+            expect(field<HTMLTextAreaElement>('report-description').disabled).toBe(false);
+            const notice = document.querySelector('[data-language-notice]')!;
+            expect(notice.textContent).toBe(LANGUAGE_NEXT_PAGE.en);
+            expect(notice.getAttribute('lang')).toBe('en');
+            // Only the choice is stored, nothing of the report.
+            expect(Object.keys(localStorage)).toEqual([LANGUAGE_STORAGE_KEY]);
+            expect(sessionStorage).toHaveLength(0);
+        },
+    );
+
     it('shows the contact address and the disabled state', async () => {
         stubServer({ enabled: true, contact: 'abuse@paste.example' });
         await loadPage();
@@ -125,5 +158,73 @@ describe('report page', () => {
         await loadPage();
         expect(document.querySelector('h1')!.textContent).toBe('Reports are not accepted here');
         expect(document.querySelector('[data-report-form]')).toBeNull();
+    });
+});
+
+describe('report page errors', () => {
+    const DETAIL = 'detail from the server';
+
+    /** Every code the report endpoint (and the limits in front of it) answers with. */
+    const CODES = [
+        { status: 400, code: 'malformed_request', key: 'report.error.rejected' },
+        { status: 400, code: 'invalid_id', key: 'report.error.invalidId' },
+        { status: 413, code: 'payload_too_large', key: 'report.error.tooLarge' },
+        { status: 429, code: 'rate_limited', key: 'report.error.rateLimited' },
+        { status: 500, code: 'internal_error', key: 'report.error.server' },
+        { status: 400, code: 'something_new', key: 'report.error.generic' },
+    ] as const;
+
+    async function refuse(lang: 'en' | 'de', status: number, body: object): Promise<string> {
+        stubServer({ enabled: true, contact: null }, status, body);
+        await loadPage(`?id=${ID}`, lang);
+        field<HTMLTextAreaElement>('report-description').value = 'spam';
+        await submit();
+        expect(field('report-error').hidden).toBe(false);
+        return field('report-error').textContent!;
+    }
+
+    for (const lang of ['en', 'de'] as const) {
+        for (const { status, code, key } of CODES) {
+            it(`explains ${code} in ${lang} from the catalogue, never with the detail`, async () => {
+                const text = await refuse(lang, status, { status, code, detail: DETAIL });
+                expect(text).toBe(CATALOGUES[lang][key]);
+                expect(document.body.textContent).not.toContain(DETAIL);
+            });
+        }
+    }
+
+    it('takes a 429 without a code for a rate limit', async () => {
+        expect(await refuse('de', 429, {})).toBe(de['report.error.rateLimited']);
+    });
+
+    it('falls back to the general text without a problem body', async () => {
+        expect(await refuse('en', 502, {})).toBe(en['report.error.generic']);
+    });
+
+    it('shows the disabled state for reports_disabled', async () => {
+        stubServer({ enabled: true, contact: null }, 403, { code: 'reports_disabled' });
+        await loadPage(`?id=${ID}`, 'de');
+        field<HTMLTextAreaElement>('report-description').value = 'spam';
+        await submit();
+        expect(document.querySelector('h1')!.textContent).toBe(de['report.disabled']);
+    });
+
+    it('explains a network failure', async () => {
+        await loadPage(`?id=${ID}`, 'de');
+        vi.stubGlobal('fetch', async () => {
+            throw new TypeError('offline');
+        });
+        field<HTMLTextAreaElement>('report-description').value = 'spam';
+        await submit();
+        expect(field('report-error').textContent).toBe(de['report.error.network']);
+    });
+
+    it('checks the form in the page language', async () => {
+        await loadPage('', 'de');
+        await submit();
+        expect(field('report-error').textContent).toBe(de['report.error.noId']);
+        field<HTMLInputElement>('report-paste').value = ID;
+        await submit();
+        expect(field('report-error').textContent).toBe(de['report.error.noDescription']);
     });
 });
