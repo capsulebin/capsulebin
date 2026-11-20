@@ -412,6 +412,8 @@ fn ac25_check_rejects_a_public_url_with_a_query_or_fragment() {
 fn ac25_check_never_repeats_a_rejected_public_url() {
     const ID: &str = "01JMARKERPASTEID0000000000";
     const SECRET: &str = "MarkerLinkSecret-0123456789";
+    const USER: &str = "MarkerUser";
+    const PASSWORD: &str = "MarkerPassword";
 
     let dir = tempdir("acc-public-url-echo");
     let assets = dir.join("assets");
@@ -444,7 +446,7 @@ fn ac25_check_never_repeats_a_rejected_public_url() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{case}: accepted");
         assert!(stderr.contains(reason), "{case}: reason {reason:?} not named: {stderr}");
-        for marker in [ID, SECRET, "paste.example"] {
+        for marker in [ID, SECRET, USER, PASSWORD, "paste.example"] {
             assert!(!stderr.contains(marker), "{case}: {marker} in stderr: {stderr}");
             assert!(!stdout.contains(marker), "{case}: {marker} in stdout: {stdout}");
         }
@@ -455,7 +457,14 @@ fn ac25_check_never_repeats_a_rejected_public_url() {
     // itself a reason, so the later checks see the id in the path only.
     for (index, (url, reason)) in [
         (format!("paste.example/p/{ID}#v1.{SECRET}"), "absolute http(s) URL"),
-        (format!("https://paste .example/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (
+            format!("https://paste .example/p/{ID}#v1.{SECRET}"),
+            "whitespace or control characters",
+        ),
+        (format!("https://paste.example/p/{ID}\n"), "whitespace or control characters"),
+        (format!("https://paste.example/p/\t{ID}"), "whitespace or control characters"),
+        (format!("https://paste.example:port/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (format!("https://{USER}:{PASSWORD}@paste.example"), "user information"),
         (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
         (
             format!("https://paste.example/manage/{ID}#v1.{SECRET}.{SECRET}"),
@@ -468,7 +477,8 @@ fn ac25_check_never_repeats_a_rejected_public_url() {
     .into_iter()
     .enumerate()
     {
-        let file = config_with(&format!("\"{url}\""), &format!("bad-{index}.toml"));
+        // Debug formatting escapes newline and tab as TOML does.
+        let file = config_with(&format!("{url:?}"), &format!("bad-{index}.toml"));
         for (output, source) in [(check(&file, None), "file"), (check(&ok, Some(&url)), "env")] {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             assert!(stderr.contains("server.public_url"), "{reason} ({source}): key not named: {stderr}");
@@ -495,9 +505,9 @@ fn ac25_check_never_repeats_a_rejected_public_url() {
 }
 
 /// AC25: the rule is a startup error, not only a finding of `check`. `serve`
-/// with a `public_url` that ends in a language code or carries a query or
-/// fragment ends by itself with a failure, names the key and does not repeat
-/// the value - from the file and from the environment.
+/// with a `public_url` that ends in a language code, carries a query or
+/// fragment or user information ends by itself with a failure, names the key
+/// and does not repeat the value - from the file and from the environment.
 #[test]
 fn ac25_serve_does_not_start_with_a_rejected_public_url() {
     use std::process::{Command, Stdio};
@@ -505,6 +515,8 @@ fn ac25_serve_does_not_start_with_a_rejected_public_url() {
 
     const ID: &str = "01JMARKERPASTEID0000000000";
     const SECRET: &str = "MarkerLinkSecret-0123456789";
+    const USER: &str = "MarkerUser";
+    const PASSWORD: &str = "MarkerPassword";
 
     let dir = tempdir("acc-public-url-serve");
     let assets = dir.join("assets");
@@ -550,6 +562,7 @@ fn ac25_serve_does_not_start_with_a_rejected_public_url() {
         (format!("https://paste.example/p/{ID}/de"), "language code"),
         (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
         (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
+        (format!("https://{USER}:{PASSWORD}@paste.example"), "user information"),
     ]
     .into_iter()
     .enumerate()
@@ -562,7 +575,7 @@ fn ac25_serve_does_not_start_with_a_rejected_public_url() {
             assert!(!output.status.success(), "{reason} ({source}): ended without a failure");
             assert!(stderr.contains("server.public_url"), "{reason} ({source}): key not named: {stderr}");
             assert!(stderr.contains(reason), "{reason} ({source}): reason not named: {stderr}");
-            for marker in [ID, SECRET, "paste.example"] {
+            for marker in [ID, SECRET, USER, PASSWORD, "paste.example"] {
                 assert!(!stderr.contains(marker), "{reason} ({source}): {marker} in stderr: {stderr}");
                 assert!(!stdout.contains(marker), "{reason} ({source}): {marker} in stdout: {stdout}");
             }

@@ -150,6 +150,16 @@ impl ServerConfig {
         // No message below repeats the value: a share or management link pasted
         // here by mistake would put its paste id and link secret into stderr and
         // the service log.
+        //
+        // Checked on the text as configured, before the URL parser silently
+        // strips leading and trailing spaces and controls and inner tabs and
+        // newlines: the text itself is the prefix of the problem type URIs.
+        if public_url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(invalid(
+                "server.public_url must not contain whitespace or control characters".to_owned(),
+            ));
+        }
+
         if !(public_url.starts_with("https://") || public_url.starts_with("http://")) {
             return Err(invalid("server.public_url must be an absolute http(s) URL".to_owned()));
         }
@@ -158,6 +168,12 @@ impl ServerConfig {
         let Ok(url) = url::Url::parse(public_url) else {
             return Err(invalid("server.public_url is not a valid URL".to_owned()));
         };
+
+        // Credentials would reach every share link and problem type URI. Also
+        // covers percent-encoded user information.
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(invalid("server.public_url must not contain user information".to_owned()));
+        }
 
         // Checked before the trailing slash, which may follow either ("...?x=/").
         if has_query_or_fragment(&url) {

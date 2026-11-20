@@ -171,7 +171,7 @@ fn refuses_public_url_with_query_or_fragment_by_the_vectors_shared_with_the_clie
 fn rejects_unparseable_public_url() {
     let dir = tempdir("unparseable-url");
 
-    for bad in ["https://exa mple.org/team/de", "https://", "http://example.org:port"] {
+    for bad in ["https://[exa/team/de", "https://", "http://example.org:port"] {
         let mut config = valid(&dir);
         config.server.public_url = Some(bad.to_owned());
         let message = error(&config);
@@ -193,7 +193,12 @@ fn public_url_errors_never_repeat_the_value() {
 
     for (bad, reason) in [
         (format!("paste.example/p/{ID}#v1.{SECRET}"), "absolute http(s) URL"),
-        (format!("https://paste .example/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (
+            format!("https://paste .example/p/{ID}#v1.{SECRET}"),
+            "whitespace or control characters",
+        ),
+        (format!("https://paste.example:port/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (format!("https://{ID}:{SECRET}@paste.example"), "user information"),
         (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
         (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
         (format!("https://paste.example/p/{ID}/de"), "language code"),
@@ -209,6 +214,73 @@ fn public_url_errors_never_repeat_the_value() {
         for marker in [ID, SECRET, "paste.example"] {
             assert!(!message.contains(marker), "{reason}: {marker} repeated: {message}");
         }
+    }
+}
+
+/// User information in `public_url` would reach every share link and problem
+/// type URI; whitespace and control characters are stripped or kept by the URL
+/// parser while the configured text is the type URI prefix. Both are refused,
+/// without repeating the user name, the password or the host.
+#[test]
+fn public_url_with_credentials_whitespace_or_controls_is_refused() {
+    const USER: &str = "MarkerUser";
+    const PASSWORD: &str = "MarkerPassword";
+    const HOST: &str = "marker-host.example";
+    let dir = tempdir("url-credentials-controls");
+
+    let credentials = [
+        format!("https://{USER}@{HOST}"),
+        format!("https://{USER}:{PASSWORD}@{HOST}"),
+        format!("https://:{PASSWORD}@{HOST}"),
+        format!("https://%4Darker%55ser:%4Darker%50assword@{HOST}"),
+    ];
+    let controls = [
+        format!(" https://{HOST}"),
+        format!("https://{HOST} "),
+        format!("https://{HOST}\n"),
+        format!("https://{HOST}/te\tam"),
+        format!("https://{HOST}/te\r\nam"),
+        format!("https://{HOST}/te\u{a0}am"),
+        format!("https://{HOST}/te\u{0}am"),
+        format!("https://{HOST}/te\u{1b}am"),
+        format!("https://{HOST}/te\u{7f}am"),
+        format!("https://{HOST}/te\u{85}am"),
+    ];
+    let cases = credentials.into_iter().map(|bad| (bad, "must not contain user information")).chain(
+        controls
+            .into_iter()
+            .map(|bad| (bad, "must not contain whitespace or control characters")),
+    );
+
+    for (bad, reason) in cases {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad.clone());
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains(reason),
+            "unexpected error for {bad:?}: {message}"
+        );
+        for marker in [USER, PASSWORD, "Marker", HOST] {
+            assert!(!message.contains(marker), "{bad:?}: {marker} repeated: {message}");
+        }
+    }
+}
+
+/// Plain origins, with an IP address, a path or a port, stay accepted.
+#[test]
+fn accepts_public_url_without_credentials_or_controls() {
+    let dir = tempdir("url-plain");
+
+    for good in [
+        "https://paste.example",
+        "http://127.0.0.1:8081",
+        "https://example.org/team",
+        "https://example.org:8443",
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(good.to_owned());
+        assert!(config.validate().is_ok(), "public_url {good:?} should be accepted");
+        assert_eq!(config.server.public_url.as_deref(), Some(good));
     }
 }
 

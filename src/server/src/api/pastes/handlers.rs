@@ -11,7 +11,7 @@ use super::codec::{decode, encode, encoded_len, from_json_rejection};
 use super::wire::{CreateRequest, CreateResponse, DeleteRequest, DescribeRequest, DescriptorResponse, RetrieveRequest, RetrieveResponse};
 use crate::AppState;
 use crate::api::problem::{ApiError, Problem};
-use crate::api::rate_limit::{PasswordAttempts, with_retry_after};
+use crate::api::rate_limit::with_retry_after;
 use crate::api::request_id::RequestId;
 use crate::config::CreationMode;
 use crate::domain::NewPaste;
@@ -221,7 +221,6 @@ pub(super) async fn retrieve(
     State(state): State<AppState>,
     Path(id): Path<String>,
     id_extension: Option<Extension<RequestId>>,
-    password_attempts: Option<Extension<PasswordAttempts>>,
     body: Result<Json<RetrieveRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id(id_extension);
@@ -261,10 +260,9 @@ pub(super) async fn retrieve(
         // The caller holds the link, so a wrong reveal token from here on is a
         // wrong password. Those are limited per paste, from any address; a
         // caller with only the id never gets this far, so it can neither use up
-        // the attempts nor observe the `429`.
-        if let Some(Extension(attempts)) = &password_attempts
-            && let Err(seconds) = attempts.attempt(!reveal_ok)
-        {
+        // the attempts nor observe the `429`. Keyed on `id`, the one the paste
+        // was looked up by, so every spelling of it in the URI shares a budget.
+        if let Err(seconds) = state.limiter.password_attempt(id, !reveal_ok) {
             retry_after = Some(seconds);
             return Err(ApiError::RateLimited);
         }
