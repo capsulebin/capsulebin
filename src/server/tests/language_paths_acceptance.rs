@@ -18,8 +18,10 @@ fn all_legal_pages(config: &mut capsulebin_server::config::Config) {
 
 /// AC2 + AC17: the legal pages answer `200`, HTML, `no-store`, with the security
 /// headers and `<html lang>` of their language - without a prefix for the
-/// default language, under `/L/` for every other one; in a German shell the
-/// English text is marked `lang="en"` - for the terms as well.
+/// default language, under `/L/` for every other one; in the shell of another
+/// language the operator's texts (imprint, terms) are marked with the default
+/// language, the built-in privacy notice is in the shell's language and
+/// unmarked.
 #[tokio::test]
 async fn ac2_ac17_every_legal_page_in_every_language() {
     for (default, languages) in LAYOUTS {
@@ -45,8 +47,12 @@ async fn ac2_ac17_every_legal_page_in_every_language() {
                 assert!(!text.contains("<!--capsulebin:"), "{path}: marker left");
                 assert!(!text.contains("%%capsulebin:"), "{path}: token left");
 
-                let marked = text.contains(r#"<article class="cb-prose cb-legal" lang="en">"#);
-                assert_eq!(marked, language != "en", "{path}: article lang: {text}");
+                let article = if page != "privacy" && language != default {
+                    format!(r#"<article lang="{default}">"#)
+                } else {
+                    "<article>".to_owned()
+                };
+                assert!(text.contains(&format!("</h1>{article}")), "{path}: article lang: {text}");
             }
             assert!(h.get(&format!("{prefix}/terms")).await.text().contains("Own terms of use."));
         }

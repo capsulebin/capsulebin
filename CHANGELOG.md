@@ -60,8 +60,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   are a startup error.
 - Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an
   imprint from the operator's Markdown with an optional hosting provider block, and a privacy
-  notice and terms of use with built-in texts filled in from the configuration;
-  each replaceable by own text, a file or a link, and linked from every page's footer.
+  notice and terms of use with built-in English and German texts filled in from the configuration;
+  each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
+  page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
+  without one the default language's text is shown, marked with its `lang`.
 
 ### Web client
 
@@ -72,6 +74,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   how long to wait.
 - Management page for deleting a capsule and checking its status; report page that strips the key
   from a pasted link.
+- An English and a German interface: the default language (`[i18n] default_language`) without a
+  path prefix, the other under its prefix (`/de/`), chosen by a language switch or the browser
+  language ([ADR-016](docs/adr/ADR-016-language-paths.md)); share and management links carry no
+  prefix.
 - Light and dark themes from design tokens, WCAG contrast verified by tests.
 - Reproducible assets: building the same source twice gives byte-identical files, checked on every
   change, so the client a server embeds can be compared with a rebuild of the release tag.

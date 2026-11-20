@@ -26,9 +26,8 @@ binary.
 
 - The imprint is the operator's Markdown (`[legal.operator]`, as `text` or `file`), followed by a
   "Hosting" block from `[legal.hosting]`. With `url` instead, the footer links to a page elsewhere.
-- The privacy notice and the terms have **built-in texts**, in English like the rest of the
-  interface; translations come with the localisation of the whole service. The privacy notice is
-  filled in from the running configuration - retention
+- The privacy notice and the terms have **built-in texts**, in every interface language (see the
+  amendment below). The privacy notice is filled in from the running configuration - retention
   rules, report retention, whether limits use the client address, the hosting provider - so it
   stays true when the configuration changes. `extra` adds what the software cannot know (the
   reverse proxy's logs, backups); `text`, `file` or `url` replace a text entirely.
@@ -47,6 +46,28 @@ combination that cannot be meant.
 script, stylesheet or shell; the CSP (`script-src 'self'`, Trusted Types) would refuse an inline
 script even if one got through. The shells still do not depend on the path id, and capsule content
 is never rendered by the server.
+
+**Amendment (ADR-016, legal texts per language):** every legal page exists in every interface
+language, at `/imprint`, `/privacy`, `/terms` for the default language and under `/{lang}/` for
+every other ([i18n.md](../i18n.md#legal-pages) has the rules in detail):
+
+- The built-in privacy notice and terms exist in English and German, with the same facts, headings
+  and links, and are always served in the page language. Their links carry the page language's
+  prefix.
+- `[legal.*]` is the text of `i18n.default_language`. `[legal.<lang>.operator|hosting|privacy|terms]`
+  gives a section for another known language, with the same keys and rules. For the pages of a
+  language, each section is its own `[legal.<lang>.*]` table as a whole if there is one, otherwise
+  the `[legal.*]` one - a fallback rather than a startup error, so an operator need not write every
+  text twice; an empty `[legal.de.privacy]` therefore means the German built-in notice.
+- `[legal.<default language>]`, a table that is not a known language, and a translated `operator`
+  or `hosting` without its `[legal.*]` counterpart are startup errors: the latter keeps the imprint
+  and the named processors the same in every language.
+- Every block of a page (operator text, hosting block, the operator's `extra`, a replacement text)
+  carries the language it was configured in and is marked with `lang` where that differs from the
+  page; built-in texts are never marked.
+- Title, header and `<h1>` are the footer labels from the interface catalogue ("Privacy", "Terms",
+  "Datenschutz", …), which the server reads from the page's own footer marker in the shell. The
+  server holds no page titles, and the `<h1>` is part of the shell, outside the rendered article.
 
 ## Rejected
 
@@ -69,6 +90,7 @@ is never rendered by the server.
   browser tests under the CSP guard.
 - `pulldown-cmark` is a new server dependency, used for nothing else.
 - The built-in texts are part of the product: a change to what the server stores or logs must
-  update them (`legal/defaults.rs`) and [privacy-notice.md](../privacy-notice.md). They are a careful
+  update them in every language (`legal/defaults/{en,de}.rs`) and
+  [privacy-notice.md](../privacy-notice.md). They are a careful
   default, not legal advice; the operator stays responsible for what the instance publishes.
 - A changed text takes effect on restart, like every other setting.

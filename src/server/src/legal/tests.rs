@@ -2,7 +2,7 @@
 //! which combinations are refused, and what the built-in texts state.
 
 use super::*;
-use crate::config::{Config, LegalSection};
+use crate::config::{Config, LegalSection, LegalTexts};
 
 fn text(markdown: &str) -> Option<LegalSection> {
     Some(LegalSection {
@@ -57,15 +57,15 @@ fn an_operator_brings_the_imprint_and_both_built_in_texts() {
 
     assert_eq!(pages.footer, links(Some("/imprint"), Some("/privacy"), Some("/terms")));
     let imprint = pages.imprint.expect("imprint");
-    assert_eq!(imprint.title, "Imprint");
     assert!(imprint.html.contains("Example GmbH<br />"), "{}", imprint.html);
     assert!(pages.privacy.expect("privacy").html.contains("<h2>Controller</h2>"));
     assert!(pages.terms.expect("terms").html.contains("<h2>What you may not share</h2>"));
 }
 
 /// Links to pages served here carry the prefix of the shell they are shown in,
-/// none for the default language; links elsewhere stay as configured. The text
-/// itself stays English, marked as such inside a shell of another language.
+/// none for the default language; links elsewhere stay as configured. The
+/// built-in texts are in the shell's language; the operator's text stays in
+/// the default language, marked as such inside a shell of another language.
 #[test]
 fn links_follow_the_language_of_the_shell() {
     let mut config = with_operator();
@@ -74,12 +74,12 @@ fn links_follow_the_language_of_the_shell() {
 
     assert_eq!(pages.footer, links(Some("/de/imprint"), Some("/privacy-notice"), Some("/de/terms")));
     let terms = pages.terms.expect("terms").html;
-    assert!(terms.starts_with(r#"<article class="cb-prose cb-legal" lang="en">"#), "{terms}");
+    assert!(terms.starts_with("<article><p>Mit diesem Dienst teilst du"), "{terms}");
     assert!(terms.contains(r#"href="/de/report""#), "{terms}");
-    assert!(pages.imprint.expect("imprint").html.contains(r#" lang="en">"#));
+    assert!(pages.imprint.expect("imprint").html.starts_with(r#"<article lang="en">"#));
 
     let english = resolved(&config).terms.expect("terms").html;
-    assert!(english.starts_with(r#"<article class="cb-prose cb-legal">"#), "{english}");
+    assert!(english.starts_with("<article><p>This service lets you share"), "{english}");
     assert!(english.contains(r#"href="/report""#), "{english}");
 
     // With German as the default it is English that has the prefix.
@@ -87,9 +87,11 @@ fn links_follow_the_language_of_the_shell() {
     let pages = resolve(&config, "de").expect("legal configuration must resolve");
     assert_eq!(pages.footer, links(Some("/imprint"), Some("/privacy-notice"), Some("/terms")));
     assert!(pages.terms.expect("terms").html.contains(r#"href="/report""#));
+    assert!(pages.imprint.expect("imprint").html.starts_with("<article>"));
     let pages = resolved(&config);
     assert_eq!(pages.footer, links(Some("/en/imprint"), Some("/privacy-notice"), Some("/en/terms")));
     assert!(pages.terms.expect("terms").html.contains(r#"href="/en/report""#));
+    assert!(pages.imprint.expect("imprint").html.starts_with(r#"<article lang="de">"#));
 }
 
 #[test]
@@ -328,6 +330,149 @@ fn refuses_urls_that_run_script_or_leave_the_site_unnoticed() {
     }
 }
 
+fn german() -> LegalTexts {
+    LegalTexts::default()
+}
+
+fn with_german(config: &mut Config, adjust: impl FnOnce(&mut LegalTexts)) {
+    adjust(config.legal.languages.entry("de".to_owned()).or_insert_with(german));
+}
+
+/// The values of the `lang` attributes of a page, in order.
+fn langs(html: &str) -> Vec<&str> {
+    html.split(" lang=\"").skip(1).filter_map(|rest| rest.split('"').next()).collect()
+}
+
+/// AC4: an `extra` in the default language is the one marked block of a
+/// German built-in text, between its two parts.
+#[test]
+fn an_extra_in_another_language_is_marked_on_its_own() {
+    let mut config = with_operator();
+    config.legal.privacy = Some(LegalSection {
+        extra: Some("## Web server logs\n\nOur proxy keeps IP addresses for 7 days.".to_owned()),
+        ..LegalSection::default()
+    });
+    let privacy = resolve(&config, "de").expect("resolve").privacy.expect("privacy").html;
+
+    assert!(privacy.starts_with("<article><h2>Verantwortlicher</h2>"), "{privacy}");
+    assert_eq!(langs(&privacy), ["en"], "{privacy}");
+    let extra = privacy
+        .find("<div lang=\"en\"><h2>Web server logs</h2>\n<p>Our proxy keeps IP addresses for 7 days.</p>\n</div>")
+        .expect("the extra in its own block");
+    let rights = privacy.find("<h2>Deine Rechte</h2>").expect("rights");
+    assert!(extra < rights, "{privacy}");
+
+    // In the default language's pages nothing is marked.
+    let english = resolved(&config).privacy.expect("privacy").html;
+    assert!(
+        langs(&english).is_empty() && english.contains("<h2>Web server logs</h2>"),
+        "{english}"
+    );
+}
+
+/// AC4: the operator's German text is unmarked in the German imprint, the
+/// hosting block falling back to the default language is marked, heading
+/// included.
+#[test]
+fn a_hosting_block_in_another_language_is_marked_on_its_own() {
+    let mut config = with_operator();
+    config.legal.hosting = text("Hoster AG");
+    with_german(&mut config, |de| de.operator = text("Beispiel GmbH"));
+    let imprint = resolve(&config, "de").expect("resolve").imprint.expect("imprint").html;
+
+    assert_eq!(
+        imprint,
+        "<article><p>Beispiel GmbH</p>\n<div lang=\"en\"><h2>Hosting</h2>\n<p>Hoster AG</p>\n</div></article>"
+    );
+    // Each language's own imprint where both are set.
+    with_german(&mut config, |de| de.hosting = text("Hoster AG, Deutschland"));
+    let imprint = resolve(&config, "de").expect("resolve").imprint.expect("imprint").html;
+    assert!(
+        langs(&imprint).is_empty() && imprint.contains("Hoster AG, Deutschland"),
+        "{imprint}"
+    );
+    let english = resolved(&config).imprint.expect("imprint").html;
+    assert!(langs(&english).is_empty() && english.contains("Example GmbH"), "{english}");
+}
+
+/// AC5: a language's section replaces the default one as a whole.
+#[test]
+fn a_language_section_replaces_the_default_one_as_a_whole() {
+    let mut config = with_operator();
+    config.legal.privacy = text("Our own notice.");
+    config.legal.terms = Some(LegalSection {
+        extra: Some("English extra.".to_owned()),
+        ..LegalSection::default()
+    });
+    with_german(&mut config, |de| {
+        de.privacy = Some(LegalSection::default());
+        de.terms = Some(LegalSection {
+            extra: Some("Deutscher Zusatz.".to_owned()),
+            ..LegalSection::default()
+        });
+    });
+    let pages = resolve(&config, "de").expect("resolve");
+
+    let privacy = pages.privacy.expect("privacy").html;
+    assert!(
+        privacy.contains("<h2>Verantwortlicher</h2>") && !privacy.contains("Our own notice."),
+        "{privacy}"
+    );
+    let terms = pages.terms.expect("terms").html;
+    assert!(
+        terms.contains("<p>Deutscher Zusatz.</p>") && !terms.contains("English extra."),
+        "{terms}"
+    );
+    assert!(langs(&terms).is_empty(), "{terms}");
+
+    let english = resolved(&config);
+    assert!(english.privacy.expect("privacy").html.contains("Our own notice."));
+    assert!(english.terms.expect("terms").html.contains("English extra."));
+}
+
+/// AC7: a `url` per language decides the footer and the controller of the
+/// built-in privacy notice in that language.
+#[test]
+fn urls_are_per_language() {
+    let mut config = Config::default();
+    config.legal.operator = url("https://example.org/imprint");
+    with_german(&mut config, |de| de.operator = url("https://example.org/impressum"));
+
+    let german = resolve(&config, "de").expect("resolve");
+    assert_eq!(german.footer.imprint.as_deref(), Some("https://example.org/impressum"));
+    let privacy = german.privacy.expect("privacy").html;
+    assert!(privacy.contains(r#"href="https://example.org/impressum""#), "{privacy}");
+    assert!(german.imprint.is_none());
+
+    let english = resolved(&config);
+    assert_eq!(english.footer.imprint.as_deref(), Some("https://example.org/imprint"));
+    assert!(english.imprint.is_none());
+}
+
+/// D5: the imprint's rules apply to the sections in effect for a language,
+/// and the error names the keys that clash.
+#[test]
+fn the_imprint_rules_apply_to_the_sections_of_each_language() {
+    let mut config = with_operator();
+    config.legal.hosting = text("Hoster AG");
+    with_german(&mut config, |de| de.operator = url("https://example.org/impressum"));
+    assert!(resolve(&config, "en").is_ok());
+    let error = resolve(&config, "de").expect_err("a url with hosting accepted").to_string();
+    assert!(error.contains("legal.hosting needs legal.de.operator as text or file"), "{error}");
+
+    // The keys of a language section in its own errors.
+    let mut config = with_operator();
+    with_german(&mut config, |de| {
+        de.terms = Some(LegalSection {
+            text: Some("a".to_owned()),
+            url: Some("https://example.org/agb".to_owned()),
+            ..LegalSection::default()
+        })
+    });
+    let error = resolve(&config, "de").expect_err("text and url accepted").to_string();
+    assert!(error.contains("legal.de.terms: set one of text, file and url"), "{error}");
+}
+
 #[test]
 fn durations_read_naturally() {
     use super::defaults::Facts;
@@ -337,7 +482,109 @@ fn durations_read_naturally() {
     config.purge.inactive_after = crate::config::units::HumanDuration::parse("1d").expect("duration");
     let facts = Facts::from_config(&config, "/en", Some("/en/imprint".to_owned()), false);
 
-    let privacy = defaults::privacy(&facts, None);
+    let privacy = defaults::privacy(&facts, "en").join(None);
     assert!(privacy.contains("rounded to 1 hour."), "{privacy}");
     assert!(privacy.contains("1 day after its last retrieval"), "{privacy}");
+}
+
+/// AC1: a language's sections follow the same rules as their `[legal.*]`
+/// counterparts: one of text/file/url, `extra` only on built-in texts, size
+/// and URL limits; the error names the language's key.
+#[test]
+fn language_sections_follow_the_rules_of_the_default_sections() {
+    type Adjust = Box<dyn Fn(&mut LegalTexts)>;
+    let cases: Vec<(&str, &str, Adjust)> = vec![
+        (
+            "text and url",
+            "legal.de.privacy",
+            Box::new(|de| {
+                de.privacy = Some(LegalSection {
+                    text: Some("a".to_owned()),
+                    url: Some("https://example.org/datenschutz".to_owned()),
+                    ..LegalSection::default()
+                })
+            }),
+        ),
+        (
+            "extra on an own text",
+            "legal.de.terms",
+            Box::new(|de| {
+                de.terms = Some(LegalSection {
+                    text: Some("a".to_owned()),
+                    extra: Some("b".to_owned()),
+                    ..LegalSection::default()
+                })
+            }),
+        ),
+        (
+            "extra on the operator",
+            "legal.de.operator",
+            Box::new(|de| {
+                de.operator = Some(LegalSection {
+                    text: Some("a".to_owned()),
+                    extra: Some("b".to_owned()),
+                    ..LegalSection::default()
+                })
+            }),
+        ),
+        (
+            "too long",
+            "legal.de.operator",
+            Box::new(|de| de.operator = text(&"a".repeat(MAX_TEXT_BYTES + 1))),
+        ),
+        (
+            "too long extra",
+            "legal.de.privacy",
+            Box::new(|de| {
+                de.privacy = Some(LegalSection {
+                    extra: Some("a".repeat(MAX_TEXT_BYTES + 1)),
+                    ..LegalSection::default()
+                })
+            }),
+        ),
+        (
+            "script url",
+            "legal.de.privacy",
+            Box::new(|de| de.privacy = url("javascript:alert(1)")),
+        ),
+        (
+            "protocol-relative url",
+            "legal.de.terms",
+            Box::new(|de| de.terms = url("//evil.example/agb")),
+        ),
+        (
+            "too long url",
+            "legal.de.operator",
+            Box::new(|de| de.operator = url(&format!("https://example.org/{}", "a".repeat(MAX_URL_BYTES)))),
+        ),
+        ("blank text", "legal.de.operator", Box::new(|de| de.operator = text("  \n"))),
+        (
+            "hosting as url",
+            "legal.de.hosting",
+            Box::new(|de| de.hosting = url("https://hoster.example")),
+        ),
+    ];
+
+    for (name, key, adjust) in cases {
+        let mut config = with_operator();
+        config.legal.hosting = text("Hoster AG");
+        with_german(&mut config, |de| adjust(de));
+        let error = match resolve(&config, "de") {
+            Ok(_) => panic!("{name} accepted in [legal.de]"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(key), "{name}: {key} not named: {error}");
+    }
+
+    // The same values within the limits are accepted.
+    let mut config = with_operator();
+    with_german(&mut config, |de| {
+        de.operator = text(&"a".repeat(MAX_TEXT_BYTES));
+        de.privacy = url("https://example.org/datenschutz");
+        de.terms = Some(LegalSection {
+            extra: Some("Zusatz.".to_owned()),
+            ..LegalSection::default()
+        });
+    });
+    assert!(resolve(&config, "de").is_ok());
 }

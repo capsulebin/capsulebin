@@ -220,9 +220,9 @@ default_language = "en"
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
 # served by CapsuleBin at /imprint, /privacy and /terms (and under the prefix of
-# every other language, /de/imprint) and linked from the footer of every page;
-# the texts are English in every language. An instance open to the public in
-# the EU usually needs at least an imprint and a privacy notice.
+# every other language, /de/imprint) and linked from the footer of every page.
+# An instance open to the public in the EU usually needs at least an imprint
+# and a privacy notice.
 #
 # Each text is Markdown, given inline (text = """...""") or read from a file at
 # startup (file = "..."), or a link to a page hosted elsewhere (url = "...").
@@ -254,3 +254,24 @@ default_language = "en"
 # `extra` / `extra_file` add to them.
 # [legal.terms]
 # url = "https://example.org/terms"
+
+# Texts in another interface language: [legal.<lang>.operator], .hosting,
+# .privacy and .terms, for every known language except i18n.default_language,
+# with the same keys and rules as above (env: CAPSULEBIN__LEGAL__DE__OPERATOR__TEXT).
+# [legal.*] itself is the text of the default language; [legal.en] with the
+# default "en" is an error. A section of its own replaces the [legal.*] one as
+# a whole in that language's pages - an empty [legal.de.privacy] means the
+# built-in German notice, without the [legal.privacy] text or extra. Where a
+# language has no section of its own, the [legal.*] section is shown, marked
+# with the default language (lang="en") for screen readers. The built-in
+# privacy notice and terms always come in the page's language.
+# [legal.de.operator] and [legal.de.hosting] need [legal.operator] and
+# [legal.hosting]: every language names the same operator and hosting provider.
+# [legal.de.operator]
+# file = "/etc/capsulebin/legal/operator.de.md"
+#
+# [legal.de.privacy]
+# extra = """
+# ## Logs des Webservers
+# Unser Reverse Proxy speichert IP-Adressen 7 Tage lang, um Angriffe abzuwehren.
+# """

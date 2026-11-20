@@ -3,6 +3,7 @@
 //! Each table validates itself; [`super::Config::validate`] only sequences the
 //! calls and folds the results into a [`super::Resolved`].
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::Verifier;
@@ -583,9 +584,12 @@ impl AbuseConfig {
 /// controller is worse than none. Without `[legal.operator]` and without
 /// explicit privacy or terms there are no legal pages and no footer links.
 ///
+/// These are the texts of `i18n.default_language`; `[legal.<lang>]` holds
+/// the texts of another known language ([`LegalTexts`]), each section falling
+/// back to its `[legal.*]` counterpart.
+///
 /// Resolved, read and rendered once at startup by [`crate::legal::resolve`].
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct LegalConfig {
     /// Who runs the instance: the imprint (e.g. the German "Impressum").
     #[serde(default)]
@@ -600,6 +604,141 @@ pub struct LegalConfig {
     /// Replaces or extends (`extra`) the built-in terms of use.
     #[serde(default)]
     pub terms: Option<LegalSection>,
+    /// `[legal.<lang>]`: every other key of `[legal]`. Collected here instead
+    /// of refused by `deny_unknown_fields` (which `flatten` does not support);
+    /// [`LegalConfig::validate`] refuses every key that is not a known language
+    /// other than the default one, so a typo still stops the start.
+    #[serde(flatten, deserialize_with = "legal_languages")]
+    pub languages: BTreeMap<String, LegalTexts>,
+}
+
+/// `[legal.<lang>]`: the sections of `[legal]` in another language. A section
+/// set here replaces its `[legal.*]` counterpart as a whole in the pages of
+/// that language.
+#[derive(Debug, Clone, Default)]
+pub struct LegalTexts {
+    pub operator: Option<LegalSection>,
+    pub hosting: Option<LegalSection>,
+    pub privacy: Option<LegalSection>,
+    pub terms: Option<LegalSection>,
+}
+
+impl LegalTexts {
+    /// A section of `[legal.<lang>]`, if set.
+    pub fn section(&self, which: LegalSectionKind) -> Option<&LegalSection> {
+        match which {
+            LegalSectionKind::Operator => self.operator.as_ref(),
+            LegalSectionKind::Hosting => self.hosting.as_ref(),
+            LegalSectionKind::Privacy => self.privacy.as_ref(),
+            LegalSectionKind::Terms => self.terms.as_ref(),
+        }
+    }
+
+    fn section_mut(&mut self, which: LegalSectionKind) -> &mut Option<LegalSection> {
+        match which {
+            LegalSectionKind::Operator => &mut self.operator,
+            LegalSectionKind::Hosting => &mut self.hosting,
+            LegalSectionKind::Privacy => &mut self.privacy,
+            LegalSectionKind::Terms => &mut self.terms,
+        }
+    }
+}
+
+/// A section of `[legal]` and of `[legal.<lang>]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegalSectionKind {
+    Operator,
+    Hosting,
+    Privacy,
+    Terms,
+}
+
+impl LegalSectionKind {
+    const ALL: [Self; 4] = [Self::Operator, Self::Hosting, Self::Privacy, Self::Terms];
+
+    /// Its key in `[legal]`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::Hosting => "hosting",
+            Self::Privacy => "privacy",
+            Self::Terms => "terms",
+        }
+    }
+}
+
+/// Reads `[legal.<lang>]` section by section, so that an error names the
+/// whole key (`legal.de.operator`): the error of a flattened map would only
+/// name the field.
+fn legal_languages<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<String, LegalTexts>, D::Error> {
+    BTreeMap::<String, toml::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(language, value)| Ok((language.clone(), legal_texts(&language, value).map_err(serde::de::Error::custom)?)))
+        .collect()
+}
+
+fn legal_texts(language: &str, value: toml::Value) -> Result<LegalTexts, String> {
+    let toml::Value::Table(table) = value else {
+        return Err(format!("legal.{language} must be a table of operator, hosting, privacy and terms"));
+    };
+    let mut texts = LegalTexts::default();
+    for (name, section) in table {
+        let Some(which) = LegalSectionKind::ALL.into_iter().find(|which| which.name() == name) else {
+            return Err(format!(
+                "legal.{language}.{name} is unknown; [legal.{language}] takes operator, hosting, privacy and terms"
+            ));
+        };
+        let section = section
+            .try_into::<LegalSection>()
+            .map_err(|error| format!("legal.{language}.{name}: {}", error.message()))?;
+        *texts.section_mut(which) = Some(section);
+    }
+    Ok(texts)
+}
+
+impl LegalConfig {
+    /// A section of `[legal.*]`, the default language's texts.
+    pub fn section(&self, which: LegalSectionKind) -> Option<&LegalSection> {
+        match which {
+            LegalSectionKind::Operator => self.operator.as_ref(),
+            LegalSectionKind::Hosting => self.hosting.as_ref(),
+            LegalSectionKind::Privacy => self.privacy.as_ref(),
+            LegalSectionKind::Terms => self.terms.as_ref(),
+        }
+    }
+
+    /// Refuses `[legal.<lang>]` tables that cannot be meant: a code that is not
+    /// a known language, the default language (whose texts are `[legal.*]`),
+    /// and a translated imprint or hosting provider the default language's
+    /// pages would not have.
+    pub(super) fn validate(&self, default_language: &str) -> Result<(), ConfigError> {
+        let invalid = |message: String| Err(ConfigError::Invalid(message));
+        for (language, texts) in &self.languages {
+            if !KNOWN_LANGUAGES.contains(&language.as_str()) {
+                return invalid(format!(
+                    "legal.{language} is not a known language; [legal.<lang>] takes one of {}",
+                    KNOWN_LANGUAGES.join(", ")
+                ));
+            }
+            if language == default_language {
+                return invalid(format!(
+                    "legal.{language}: {language} is i18n.default_language, whose texts are [legal.*] \
+                     (legal.operator, legal.hosting, legal.privacy, legal.terms)"
+                ));
+            }
+            if texts.operator.is_some() && self.operator.is_none() {
+                return invalid(format!(
+                    "legal.{language}.operator needs legal.operator: the pages of the default language need the imprint too"
+                ));
+            }
+            if texts.hosting.is_some() && self.hosting.is_none() {
+                return invalid(format!(
+                    "legal.{language}.hosting needs legal.hosting: every language must name the same hosting provider"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One legal text. At most one of `text`, `file` and `url`; `extra` and

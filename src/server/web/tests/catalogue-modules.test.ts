@@ -206,8 +206,9 @@ describe('catalogue modules in the build output', () => {
             it("keeps the server's markers: legal title and content, one footer link per page", () => {
                 const html = built();
                 const catalogue = readCatalogue(lang);
+                // <title>, header claim and <h1>.
                 expect(count(html, '<!--capsulebin:legal-title-->')).toBe(
-                    shell === 'legal' ? 2 : 0,
+                    shell === 'legal' ? 3 : 0,
                 );
                 expect(count(html, '<!--capsulebin:legal-content-->')).toBe(
                     shell === 'legal' ? 1 : 0,

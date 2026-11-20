@@ -51,9 +51,9 @@ const ALLOWED_LITERALS = new Set([
     'YAML',
 ]);
 
-/** The server's markers and how often each shell carries them. */
+/** The server's markers and how often each shell carries them (title: `<title>`, header, `<h1>`). */
 const MARKERS = {
-    '<!--capsulebin:legal-title-->': (shell: string) => (shell === 'legal' ? 2 : 0),
+    '<!--capsulebin:legal-title-->': (shell: string) => (shell === 'legal' ? 3 : 0),
     '<!--capsulebin:legal-content-->': (shell: string) => (shell === 'legal' ? 1 : 0),
 };
 

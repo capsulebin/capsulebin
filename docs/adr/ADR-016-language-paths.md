@@ -97,15 +97,17 @@ language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the Engli
 - The set of known languages is in three places — `KNOWN_LANGUAGES` in the server
   (`config/model.rs`) and in core (`languages.ts`), and the catalogue files — because the three are
   built separately. Tests fail when they differ. A new language is a catalogue file, its
-  `register-<lang>.ts`, an entry in `language-next-page.ts` and two list entries; every instance
+  `register-<lang>.ts`, an entry in `language-next-page.ts`, two list entries and the built-in
+  legal texts `src/server/src/legal/defaults/<code>.rs` (see `docs/i18n.md`); every instance
   running that binary offers it.
 - The web build generates `languages × shells` documents as inputs of one Vite build; the
   generator is deterministic, so the reproducible-build check holds. The Vite dev server fills the
   tokens itself, with the default `en`.
 - No cache or proxy in front of the server has to treat page responses specially: none varies by
   a request header.
-- The CLI, the API's `problem+json` texts and the legal texts are English; the pages map error
-  codes to their own texts instead of showing the API's. Operators cannot replace the catalogues.
+- The CLI and the API's `problem+json` texts are English; the pages map error codes to their own
+  texts instead of showing the API's. Operators cannot replace the catalogues. The legal pages are
+  served in every interface language (see the amendment in ADR-015).
 - A page whose retrieval or deletion has been confirmed, or that holds a create draft or a started
   report, cannot change language in place; the choice applies from the next page.
 - An instance cannot use a `public_url` whose path ends in `/en` or `/de` (or any later language

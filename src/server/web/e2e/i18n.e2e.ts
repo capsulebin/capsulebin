@@ -50,11 +50,16 @@ const ENGLISH_ONLY: RegExp[] = (() => {
     );
 })();
 
-/** The visible text of the page has German in it and nothing from the English catalogue. */
+/**
+ * The visible text of the page has German in it and nothing from the English catalogue.
+ * `<code>` is left out: identifiers such as the storage key `capsulebin.language` are no language.
+ */
 async function expectGerman(page: Page, expected: string): Promise<void> {
     const body = page.locator('body');
     await expect(body).toContainText(expected, { timeout: 30_000 });
-    const text = (await body.innerText()).replace(/\s+/g, ' ');
+    let text = await body.innerText();
+    for (const code of await body.locator('code').allInnerTexts()) text = text.replace(code, ' ');
+    text = text.replace(/\s+/g, ' ');
     expect(ENGLISH_ONLY.filter((english) => english.test(text)).map(String)).toEqual([]);
 }
 
@@ -197,6 +202,17 @@ test.describe('in a German browser', () => {
             await page.goto(path);
             await expect(page.locator('footer')).toBeVisible();
             await expectLinksUnder(page, '/de/');
+        }
+    });
+
+    test('the built-in privacy notice and terms are German throughout', async ({ page }) => {
+        for (const [path, heading] of [
+            ['/de/privacy', 'Datenschutz'],
+            ['/de/terms', 'Nutzungsbedingungen'],
+        ] as const) {
+            await page.goto(path);
+            await expectGerman(page, heading);
+            await expect(page.locator('body')).not.toContainText(/GDPR|Privacy|Terms/);
         }
     });
 

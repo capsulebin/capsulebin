@@ -41,7 +41,9 @@ use crate::legal::{LegalPages, Which};
 /// HTML comments, so that a shell served without substitution still renders,
 /// just without the links.
 pub const LEGAL_LINK_MARKER: &str = "<!--capsulebin:legal-link:";
-/// Where `legal.html` takes the page title (in `<title>` and the header).
+/// Where `legal.html` takes the page title (in `<title>`, the header and the
+/// `<h1>`): the label of the page's own footer marker, so the title is the
+/// catalogue's, in the shell's language.
 pub const LEGAL_TITLE_MARKER: &str = "<!--capsulebin:legal-title-->";
 /// Where `legal.html` takes the rendered text.
 pub const LEGAL_CONTENT_MARKER: &str = "<!--capsulebin:legal-content-->";
@@ -214,7 +216,8 @@ impl Document {
     /// an input: reading it would be the first step towards a response that
     /// depends on whether it exists.
     ///
-    /// A legal page is the `legal.html` shell with the page put in.
+    /// A legal page is the `legal.html` shell with the page put in, titled
+    /// with the label of its footer marker.
     fn build(state: &AppState, language: &str, which: Page) -> Self {
         let Some(legal) = state.legal.get(language) else {
             return Self::NotFound;
@@ -222,7 +225,7 @@ impl Document {
         let (shell, legal_page) = match which {
             Page::Shell(shell) => (shell, None),
             Page::Legal(which) => match legal.page(which) {
-                Some(page) => (Shell::Legal, Some(page)),
+                Some(page) => (Shell::Legal, Some((which, page))),
                 None => return Self::NotFound,
             },
         };
@@ -230,11 +233,14 @@ impl Document {
         let Some(bytes) = state.assets.load(&file) else {
             return Self::Missing(file);
         };
-        let mut document = render(bytes, legal, language, state.default_language);
+        let shell = String::from_utf8_lossy(&bytes);
+        let mut document = render(&shell, legal, language, state.default_language);
         // After the tokens, so that the operator's text is put in as it is.
-        if let Some(page) = legal_page {
+        if let Some((which, page)) = legal_page {
+            // Read before `render` replaced the footer markers; already escaped.
+            let title = legal_marker(&shell, which).map_or("", |(_, label, _)| label);
             document = document
-                .replace(LEGAL_TITLE_MARKER, &crate::legal::escape(page.title))
+                .replace(LEGAL_TITLE_MARKER, title)
                 .replace(LEGAL_CONTENT_MARKER, &page.html);
         }
         Self::Html(document.into())
@@ -256,8 +262,8 @@ impl IntoResponse for Document {
 /// startup and the same for every request, so the shell does not depend on the
 /// path id. The shells are UTF-8; a lossy conversion only matters for a
 /// broken build, which `/health/ready` reports.
-fn render(bytes: Vec<u8>, legal: &LegalPages, language: &str, default_language: &str) -> String {
-    let shell = String::from_utf8_lossy(&bytes)
+fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str) -> String {
+    let shell = shell
         .replace(PREFIX_TOKEN, &language_prefix(default_language, language))
         .replace(DEFAULT_TOKEN, default_language);
     Which::ALL
@@ -265,22 +271,29 @@ fn render(bytes: Vec<u8>, legal: &LegalPages, language: &str, default_language: 
         .fold(shell, |shell, which| with_legal_link(&shell, which, legal.footer.href(which)))
 }
 
+/// The first complete footer marker of `which` in `shell`: the text before it,
+/// its label (as the web build wrote it, escaped) and the text after it.
+fn legal_marker(shell: &str, which: Which) -> Option<(&str, &str, &str)> {
+    let start = format!("{LEGAL_LINK_MARKER}{}:", which.path());
+    let at = shell.find(&start)?;
+    let after = &shell[at + start.len()..];
+    let end = after.find("-->")?;
+    Some((&shell[..at], &after[..end], &after[end + "-->".len()..]))
+}
+
 /// Replaces every footer marker of `which` with a link to `href` labelled as
 /// the marker says, or removes it when the page is not configured. A marker
 /// without its end is left as it is.
 fn with_legal_link(shell: &str, which: Which, href: Option<&str>) -> String {
-    let start = format!("{LEGAL_LINK_MARKER}{}:", which.path());
     let mut out = String::with_capacity(shell.len());
     let mut rest = shell;
-    while let Some(at) = rest.find(&start) {
-        let after = &rest[at + start.len()..];
-        let Some(end) = after.find("-->") else { break };
-        out.push_str(&rest[..at]);
+    while let Some((before, label, after)) = legal_marker(rest, which) {
+        out.push_str(before);
         if let Some(href) = href {
             // The label is already escaped by the web build.
-            out.push_str(&format!(r#"<a href="{}">{}</a>"#, crate::legal::escape(href), &after[..end]));
+            out.push_str(&format!(r#"<a href="{}">{label}</a>"#, crate::legal::escape(href)));
         }
-        rest = &after[end + "-->".len()..];
+        rest = after;
     }
     out.push_str(rest);
     out
@@ -442,7 +455,7 @@ mod tests {
                      <!--capsulebin:legal-link:privacy:Datenschutz-->\
                      <!--capsulebin:legal-link:terms:Nutzungs&amp;bedingungen--></footer>";
         assert_eq!(
-            render(shell.as_bytes().to_vec(), &legal, "de", "en"),
+            render(shell, &legal, "de", "en"),
             r#"<footer><a href="/de/imprint">Impressum</a><a href="https://operator.example/terms?a=1&amp;b=2">Nutzungs&amp;bedingungen</a></footer>"#
         );
     }
@@ -458,14 +471,14 @@ mod tests {
             ..LegalPages::default()
         };
         for shell in ["<footer></footer>", "<footer><!--capsulebin:legal-link:imprint:Imprint</footer>"] {
-            assert_eq!(render(shell.as_bytes().to_vec(), &legal, "de", "en"), shell);
+            assert_eq!(render(shell, &legal, "de", "en"), shell);
         }
     }
 
     #[test]
     fn the_tokens_follow_the_default_language() {
         let shell = r#"<meta data-default="%%capsulebin:default%%"><a href="%%capsulebin:prefix%%/"></a><a href="%%capsulebin:prefix%%/report"></a>"#;
-        let render = |language, default| render(shell.as_bytes().to_vec(), &LegalPages::default(), language, default);
+        let render = |language, default| render(shell, &LegalPages::default(), language, default);
 
         let unprefixed = |default| format!(r#"<meta data-default="{default}"><a href="/"></a><a href="/report"></a>"#);
         assert_eq!(render("en", "en"), unprefixed("en"));
@@ -518,7 +531,9 @@ mod tests {
     #[test]
     fn the_legal_shell_carries_its_title_and_content_markers() {
         let (_, source) = template(Shell::Legal);
-        assert_eq!(source.matches(LEGAL_TITLE_MARKER).count(), 2, "<title> and header");
+        assert_eq!(source.matches(LEGAL_TITLE_MARKER).count(), 3, "<title>, header and <h1>");
+        // In the shell, not in the content, whose `<article>` may carry another `lang`.
+        assert_eq!(source.matches(&format!("<h1>{LEGAL_TITLE_MARKER}</h1>")).count(), 1, "<h1>");
         assert_eq!(source.matches(LEGAL_CONTENT_MARKER).count(), 1);
     }
 
