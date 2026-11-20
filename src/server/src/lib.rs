@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod backup;
+pub mod branding;
 pub mod config;
 pub mod db;
 pub mod domain;
@@ -60,6 +61,9 @@ pub struct AppState {
     pub legal: Arc<LegalByLanguage>,
     /// `i18n.default_language`: the language of the pages without a prefix.
     pub default_language: &'static str,
+    /// `[branding]`, resolved once at startup: what the shells show and the
+    /// files `/branding/` serves.
+    pub branding: Arc<branding::Branding>,
 }
 
 impl AppState {
@@ -86,6 +90,7 @@ impl AppState {
             abuse: resolved.config.abuse.clone(),
             legal: Arc::new(LegalByLanguage::new(resolved.legal.clone())),
             default_language: resolved.default_language,
+            branding: Arc::new(resolved.branding.clone()),
         }
     }
 
@@ -120,6 +125,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api::health::routes())
         .merge(api::pastes::routes())
         .merge(api::reports::routes())
+        .merge(api::branding::routes(&state))
         .merge(api::assets::routes(&state))
         // `.layer()` wraps, so the *later* call runs *first*: the client IP is
         // resolved before the rate limiter reads it. In the opposite order every

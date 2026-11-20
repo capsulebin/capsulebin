@@ -33,6 +33,8 @@ pub struct Config {
     pub legal: LegalConfig,
     #[serde(default)]
     pub i18n: I18nConfig,
+    #[serde(default)]
+    pub branding: BrandingConfig,
 }
 
 fn default_bind() -> String {
@@ -810,6 +812,184 @@ impl I18nConfig {
                 ))
             })
     }
+}
+
+/// The default of `branding.name`.
+const DEFAULT_BRAND_NAME: &str = "CapsuleBin";
+
+/// The default of `branding.source_url`: the repository of the project.
+const DEFAULT_SOURCE_URL: &str = "https://github.com/capsulebin/capsulebin";
+
+/// Longest accepted `branding.name`, in characters: enough for a `<title>` and
+/// a header wordmark, short enough to keep the header layout intact.
+const MAX_BRAND_NAME_CHARS: usize = 64;
+
+/// Longest accepted `branding.tagline`, in characters: one line next to the
+/// logo on the create page.
+const MAX_TAGLINE_CHARS: usize = 80;
+
+fn default_brand_name() -> String {
+    DEFAULT_BRAND_NAME.to_owned()
+}
+
+fn default_source_url() -> String {
+    DEFAULT_SOURCE_URL.to_owned()
+}
+
+/// `[branding]`: the identity an instance shows in its web pages - name, logo,
+/// favicon - and where the "Powered by CapsuleBin" link points. The link
+/// itself cannot be switched off. The files are read and checked once at
+/// startup by [`crate::branding::resolve`].
+///
+/// `tagline` is the slogan of every language; `[branding.<lang>]` sets it for
+/// another known language ([`BrandingTexts`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrandingConfig {
+    /// Shown in place of "CapsuleBin" in titles, the header and the texts
+    /// that name the service. One name for every language.
+    #[serde(default = "default_brand_name")]
+    pub name: String,
+    /// Shows the logo without the name next to it; requires `logo`.
+    #[serde(default)]
+    pub hide_name: bool,
+    /// Replaces the built-in slogan next to the logo on the create page;
+    /// empty removes it. `None`: the built-in, translated slogan.
+    #[serde(default)]
+    pub tagline: Option<String>,
+    /// Replaces the built-in symbol in the header (PNG or WebP).
+    #[serde(default)]
+    pub logo: Option<PathBuf>,
+    /// The logo for the dark theme (PNG or WebP); requires `logo`.
+    #[serde(default)]
+    pub logo_dark: Option<PathBuf>,
+    /// The favicon (PNG or ICO).
+    #[serde(default)]
+    pub favicon: Option<PathBuf>,
+    /// Target of the attribution link: the source code this instance runs.
+    #[serde(default = "default_source_url")]
+    pub source_url: String,
+    /// `[branding.<lang>]`: every other key of `[branding]`. Collected here
+    /// instead of refused by `deny_unknown_fields` (which `flatten` does not
+    /// support): a key that is not a table is refused while parsing, and
+    /// [`BrandingConfig::validate`] refuses every table that is not a known
+    /// language other than the default one, so a typo still stops the start.
+    #[serde(flatten, deserialize_with = "branding_languages")]
+    pub languages: BTreeMap<String, BrandingTexts>,
+}
+
+/// `[branding.<lang>]`: the values of `[branding]` that differ per language.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrandingTexts {
+    /// Replaces `branding.tagline` in the pages of this language.
+    #[serde(default)]
+    pub tagline: Option<String>,
+}
+
+/// Reads `[branding.<lang>]` table by table, so that an error names the table
+/// (`branding.de`) or the unknown key of `[branding]`: the error of a
+/// flattened map would only name the field.
+fn branding_languages<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<String, BrandingTexts>, D::Error> {
+    BTreeMap::<String, toml::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(key, value)| {
+            let texts = match value {
+                toml::Value::Table(table) => table
+                    .try_into::<BrandingTexts>()
+                    .map_err(|error| format!("branding.{key}: {}", error.message())),
+                _ => Err(format!(
+                    "branding.{key} is unknown; [branding] takes name, hide_name, tagline, logo, logo_dark, \
+                     favicon, source_url and [branding.<lang>] tables with tagline"
+                )),
+            };
+            Ok((key, texts.map_err(serde::de::Error::custom)?))
+        })
+        .collect()
+}
+
+impl Default for BrandingConfig {
+    fn default() -> Self {
+        Self {
+            name: default_brand_name(),
+            hide_name: false,
+            tagline: None,
+            logo: None,
+            logo_dark: None,
+            favicon: None,
+            source_url: default_source_url(),
+            languages: BTreeMap::new(),
+        }
+    }
+}
+
+impl BrandingConfig {
+    /// Checks the values that are not files; the files are checked by
+    /// [`crate::branding::resolve`].
+    pub(super) fn validate(&self, default_language: &str) -> Result<(), ConfigError> {
+        let invalid = |message: String| Err(ConfigError::Invalid(message));
+
+        if check_brand_text("branding.name", &self.name, MAX_BRAND_NAME_CHARS)?.is_empty() {
+            return invalid("branding.name must not be empty".to_owned());
+        }
+        // Refused rather than ignored: the header would be empty without a logo,
+        // and a dark variant of no logo is a mistake in the configuration.
+        if self.hide_name && self.logo.is_none() {
+            return invalid("branding.hide_name requires branding.logo: the header would be empty".to_owned());
+        }
+        if self.logo_dark.is_some() && self.logo.is_none() {
+            return invalid("branding.logo_dark requires branding.logo".to_owned());
+        }
+        if !is_source_url(&self.source_url) {
+            return invalid("branding.source_url must be an absolute http(s) URL without user name or password".to_owned());
+        }
+        // An empty tagline (also after trimming) is allowed and hides the slogan.
+        if let Some(tagline) = &self.tagline {
+            check_brand_text("branding.tagline", tagline, MAX_TAGLINE_CHARS)?;
+        }
+        for (language, texts) in &self.languages {
+            if !KNOWN_LANGUAGES.contains(&language.as_str()) {
+                return invalid(format!(
+                    "branding.{language} is not a known language; [branding.<lang>] takes one of {}",
+                    KNOWN_LANGUAGES.join(", ")
+                ));
+            }
+            if language == default_language {
+                return invalid(format!(
+                    "branding.{language}: {language} is i18n.default_language, whose tagline is branding.tagline"
+                ));
+            }
+            if let Some(tagline) = &texts.tagline {
+                check_brand_text(&format!("branding.{language}.tagline"), tagline, MAX_TAGLINE_CHARS)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Checks a text of `[branding]` set under `key`: trimmed, at most
+/// `max_chars` characters and no control characters. Returns the trimmed text;
+/// whether it may be empty is up to the caller.
+fn check_brand_text<'a>(key: &str, value: &'a str, max_chars: usize) -> Result<&'a str, ConfigError> {
+    let text = value.trim();
+    if text.chars().count() > max_chars {
+        return Err(ConfigError::Invalid(format!("{key} must be at most {max_chars} characters")));
+    }
+    if text.chars().any(char::is_control) {
+        return Err(ConfigError::Invalid(format!("{key} must not contain control characters")));
+    }
+    Ok(text)
+}
+
+/// An absolute `http`/`https` URL with a host and without user info. The
+/// value is used as written, so whitespace and control characters, which the
+/// URL parser would silently drop, are refused too.
+fn is_source_url(value: &str) -> bool {
+    if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https") && url.host().is_some() && url.username().is_empty() && url.password().is_none()
+    })
 }
 
 /// The path prefix of the pages in `language`: none for the default language,

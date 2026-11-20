@@ -64,6 +64,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
   page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
   without one the default language's text is shown, marked with its `lang`.
+- Operator branding (`[branding]`, [ADR-017](docs/adr/ADR-017-operator-branding.md)): the instance
+  name, a slogan (per language with `[branding.<lang>]`), a header logo with an optional dark-theme
+  variant and a favicon, without a rebuild. Logos and favicon are PNG, WebP or ICO files checked at
+  startup and served same-origin under hashed, immutable URLs; SVG from the operator is refused.
 
 ### Web client
 
@@ -79,6 +83,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   language ([ADR-016](docs/adr/ADR-016-language-paths.md)); share and management links carry no
   prefix.
 - Light and dark themes from design tokens, WCAG contrast verified by tests.
+- A "Powered by CapsuleBin" link to the source code in every page's footer, on every instance, with
+  a configurable target for modified versions (AGPL-3.0 §13); a built-in favicon.
 - Reproducible assets: building the same source twice gives byte-identical files, checked on every
   change, so the client a server embeds can be compared with a rebuild of the release tag.
 

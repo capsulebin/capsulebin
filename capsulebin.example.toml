@@ -217,6 +217,56 @@ report_retention = "90d"
 # which languages are offered is not configurable.
 default_language = "en"
 
+[branding]
+# The identity of the instance in its web pages. Not used by the CLI, the API
+# or the logs.
+
+# Shown in place of "CapsuleBin" in the page titles, the header and the texts
+# that name the service, in every language. Leading and trailing spaces are
+# dropped; at most 64 characters, no control characters.
+name = "CapsuleBin"
+
+# Show only the logo in the header, without the name next to it (the name stays
+# in the page titles and is the logo's text alternative). Requires logo.
+hide_name = false
+
+# The slogan next to the logo on the create page, in place of the built-in,
+# translated one; the same text in every language without its own (see
+# [branding.<lang>] below). An empty string removes the slogan. Leading and
+# trailing spaces are dropped; at most 80 characters, no control characters.
+# Without it, the built-in slogan in the page's language.
+# tagline = "Encrypted pastes for the team"
+
+# Image files, read once at startup: after replacing a file, restart the
+# server. A relative path is resolved against the working directory, like
+# database.path. Each file at most 256 KiB, checked by extension and content;
+# SVG is not accepted. Each file is served at /branding/<hash>.<ext>.
+#
+# Replaces the built-in symbol in the header: PNG or WebP (.png, .webp). A PNG
+# at twice the display height (1.5rem) stays sharp on high-density screens.
+# logo = "/etc/capsulebin/branding/logo.png"
+# The logo in the dark theme, PNG or WebP. Requires logo; without it the one
+# logo is shown in both themes.
+# logo_dark = "/etc/capsulebin/branding/logo-dark.webp"
+# The favicon: PNG or ICO (.png, .ico). Without it, the built-in CapsuleBin
+# symbol.
+# favicon = "/etc/capsulebin/branding/favicon.png"
+
+# Every page links "Powered by CapsuleBin" to the source code of the software
+# the instance runs (AGPL-3.0, section 13); the link opens in a new tab. It
+# cannot be switched off; if you run a modified version, point it to your
+# source code. An absolute http(s) URL without user name or password.
+source_url = "https://github.com/capsulebin/capsulebin"
+
+# The tagline of one language other than i18n.default_language, e.g. German
+# (/de/): replaces branding.tagline in that language's pages. Fallback order:
+# this table's tagline, then branding.tagline, then the built-in slogan. An
+# empty string removes the slogan in that language only. A table for an
+# unknown language or for the default language (whose tagline is
+# branding.tagline) and any key but tagline stop the start.
+# [branding.de]
+# tagline = "Verschlüsselte Pastes fürs Team"
+
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
 # served by CapsuleBin at /imprint, /privacy and /terms (and under the prefix of

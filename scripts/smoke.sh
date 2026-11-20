@@ -208,7 +208,15 @@ for lang in en de; do
     if grep -q '%%capsulebin:' "${WORKDIR}/shell.html"; then
       fail "${route} still carries a token of the web build"
     fi
-    if grep -qE '(src|href)="https?://' "${WORKDIR}/shell.html"; then
+    # The "Powered by" link to the source code is the one outgoing link; only the
+    # project's name is linked, opened in a new tab.
+    grep -qF '<a href="https://github.com/capsulebin/capsulebin" target="_blank" rel="noopener noreferrer">CapsuleBin</a>' \
+      "${WORKDIR}/shell.html" ||
+      fail "${route} lacks the link to the source code"
+    grep -qE '<link rel="icon" href="/favicon.svg"[[:space:]]*/?>' "${WORKDIR}/shell.html" ||
+      fail "${route} does not link the built-in favicon"
+    if grep -oE '(src|href)="https?://[^"]*"' "${WORKDIR}/shell.html" |
+      grep -qvF 'href="https://github.com/capsulebin/capsulebin"'; then
       fail "${route} references an external resource"
     fi
     check_headers "${route}"
@@ -261,6 +269,12 @@ for script in language-init.js theme-init.js; do
   grep -qi '^content-type: text/javascript' <<<"${headers}" || fail "/${script} is not served as JavaScript"
   echo "ok  /${script}"
 done
+
+# The built-in favicon, which every page links unless one is configured.
+headers="$(curl -fsS -D - -o /dev/null "${BASE}/favicon.svg" | tr -d '\r')" || fail "/favicon.svg missing from the binary"
+grep -qi '^content-type: image/svg+xml' <<<"${headers}" || fail "/favicon.svg is not served as SVG"
+check_headers "/favicon.svg"
+echo "ok  /favicon.svg"
 
 # --- API: a full lifecycle ---------------------------------------------------
 

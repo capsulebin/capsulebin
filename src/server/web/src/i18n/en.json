@@ -6,6 +6,7 @@
     "shell.imprint": "Imprint",
     "shell.privacy": "Privacy",
     "shell.terms": "Terms",
+    "shell.poweredBy": "Powered by {project}",
     "theme.switch": "Switch theme",
     "theme.light": "Theme: light",
     "theme.dark": "Theme: dark",
@@ -24,7 +25,7 @@
     "expiry.inDays#other": "Expires in {count} days",
 
     "create.claim": "Paste it. Seal it. Share it.",
-    "create.noscript": "CapsuleBin encrypts content exclusively in your browser before it is sent anywhere. Without JavaScript there is nowhere for that to happen, so the editor cannot be shown.",
+    "create.noscript": "{name} encrypts content exclusively in your browser before it is sent anywhere. Without JavaScript there is nowhere for that to happen, so the editor cannot be shown.",
     "create.heading": "Share encrypted, without an account",
     "create.lede": "Text is encrypted in your browser. The server stores ciphertext only and knows neither the content nor the key.",
     "create.titleLabel": "Title (optional)",
@@ -71,7 +72,7 @@
     "create.retry": "Try again",
 
     "view.title": "Open capsule",
-    "view.noscript": "CapsuleBin decrypts content exclusively in your browser. Without JavaScript there is nowhere for that to happen — the server does not know the key and cannot open the content for you.",
+    "view.noscript": "{name} decrypts content exclusively in your browser. Without JavaScript there is nowhere for that to happen — the server does not know the key and cannot open the content for you.",
     "view.footer": "Decryption happens locally.",
 
     "manage.title": "Manage capsule",
@@ -116,7 +117,7 @@
     "report.writeAfter": ".",
     "report.sent": "Report received",
     "report.sentLede": "Thank you. The operator reviews reports and can block or remove a capsule without decrypting it.",
-    "report.back": "Back to CapsuleBin",
+    "report.back": "Back to {name}",
     "report.disabled": "Reports are not accepted here",
     "report.disabledLede": "This instance does not accept reports through this form. Please use the address given in the site notice.",
     "report.footer": "Reports are handled without decrypting anything.",

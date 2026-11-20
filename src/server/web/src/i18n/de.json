@@ -6,6 +6,7 @@
     "shell.imprint": "Impressum",
     "shell.privacy": "Datenschutz",
     "shell.terms": "Nutzungsbedingungen",
+    "shell.poweredBy": "Betrieben mit {project}",
     "theme.switch": "Farbschema wechseln",
     "theme.light": "Farbschema: hell",
     "theme.dark": "Farbschema: dunkel",
@@ -24,7 +25,7 @@
     "expiry.inDays#other": "Läuft in {count} Tagen ab",
 
     "create.claim": "Einfügen. Versiegeln. Teilen.",
-    "create.noscript": "CapsuleBin verschlüsselt Inhalte ausschließlich in deinem Browser, bevor sie irgendwohin gesendet werden. Ohne JavaScript geht das nicht, deshalb kann der Editor nicht angezeigt werden.",
+    "create.noscript": "{name} verschlüsselt Inhalte ausschließlich in deinem Browser, bevor sie irgendwohin gesendet werden. Ohne JavaScript geht das nicht, deshalb kann der Editor nicht angezeigt werden.",
     "create.heading": "Verschlüsselt teilen, ohne Konto",
     "create.lede": "Der Text wird in deinem Browser verschlüsselt. Der Server speichert nur Chiffretext und kennt weder den Inhalt noch den Schlüssel.",
     "create.titleLabel": "Titel (optional)",
@@ -71,7 +72,7 @@
     "create.retry": "Erneut versuchen",
 
     "view.title": "Kapsel öffnen",
-    "view.noscript": "CapsuleBin entschlüsselt Inhalte ausschließlich in deinem Browser. Ohne JavaScript geht das nicht – der Server kennt den Schlüssel nicht und kann den Inhalt nicht für dich öffnen.",
+    "view.noscript": "{name} entschlüsselt Inhalte ausschließlich in deinem Browser. Ohne JavaScript geht das nicht – der Server kennt den Schlüssel nicht und kann den Inhalt nicht für dich öffnen.",
     "view.footer": "Die Entschlüsselung findet lokal statt.",
 
     "manage.title": "Kapsel verwalten",
@@ -116,7 +117,7 @@
     "report.writeAfter": " wenden.",
     "report.sent": "Meldung eingegangen",
     "report.sentLede": "Danke. Der Betreiber prüft Meldungen und kann eine Kapsel sperren oder entfernen, ohne sie zu entschlüsseln.",
-    "report.back": "Zurück zu CapsuleBin",
+    "report.back": "Zurück zu {name}",
     "report.disabled": "Meldungen werden hier nicht angenommen",
     "report.disabledLede": "Diese Instanz nimmt über dieses Formular keine Meldungen an. Bitte nutze die Adresse im Impressum.",
     "report.footer": "Meldungen werden bearbeitet, ohne etwas zu entschlüsseln.",
