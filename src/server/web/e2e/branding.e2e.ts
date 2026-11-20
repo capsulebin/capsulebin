@@ -11,9 +11,10 @@ import { withInstance } from './instance';
  * Trusted Types violation and any console error.
  *
  * The main instance of playwright.config.ts has no `[branding]` and shows the
- * built-in identity. More instances are started per worker when a test needs
- * them: one with every image, a name and taglines that need escaping, one with
- * only a logo, and one with only an empty tagline.
+ * built-in identity and colours. More instances are started per worker when a
+ * test needs them: one with every image, a name and taglines that need escaping
+ * and theme colours (`[branding.colors]`), one with only a logo, and one with only
+ * an empty tagline.
  */
 
 const fixture = (name: string) => fileURLToPath(new URL(`fixtures/${name}`, import.meta.url));
@@ -22,6 +23,15 @@ const NAME = 'Acme & Co';
 const SOURCE_URL = 'https://example.org/acme/capsulebin?fork=1&ref=e2e';
 const DEFAULT_SOURCE_URL = 'https://github.com/capsulebin/capsulebin';
 const TAGLINE = { en: 'Seal <it> & "send" it', de: 'Versiegeln & <teilen>' } as const;
+
+/**
+ * The colours of the branded instance: `accent` in both themes, `danger` in the
+ * light one only, so the dark theme keeps the built-in `--cb-danger` of tokens.css.
+ */
+const COLORS = {
+    light: { '--cb-accent': '#1d4ed8', '--cb-danger': '#9f1239' },
+    dark: { '--cb-accent': '#93c5fd', '--cb-danger': '#f97066' },
+} as const;
 
 const test = base.extend<object, { branded: string; logoOnly: string; noTagline: string }>({
     branded: [
@@ -35,6 +45,9 @@ const test = base.extend<object, { branded: string; logoOnly: string; noTagline:
                     CAPSULEBIN__BRANDING__SOURCE_URL: SOURCE_URL,
                     CAPSULEBIN__BRANDING__TAGLINE: TAGLINE.en,
                     CAPSULEBIN__BRANDING__DE__TAGLINE: TAGLINE.de,
+                    CAPSULEBIN__BRANDING__COLORS__LIGHT__ACCENT: COLORS.light['--cb-accent'],
+                    CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT: COLORS.dark['--cb-accent'],
+                    CAPSULEBIN__BRANDING__COLORS__LIGHT__DANGER: COLORS.light['--cb-danger'],
                     CAPSULEBIN__LEGAL__OPERATOR__TEXT: 'Example Operator GmbH',
                 },
                 use,
@@ -84,6 +97,9 @@ const LANGUAGES = [
     ['en', 'en-US'],
     ['de', 'de-DE'],
 ] as const;
+
+/** The `<link>` of the stylesheet the server generates from `[branding.colors]`. */
+const BRANDING_STYLESHEET = 'head link[rel="stylesheet"][href^="/branding/"][href$=".css"]';
 
 const title = (page: string, name: string) => (page ? `${page} · ${name}` : name);
 
@@ -158,6 +174,8 @@ for (const [language, locale] of LANGUAGES) {
 
         for (const [path, pageTitle, claim] of PAGES[language]) {
             test(`${prefix}${path} shows the built-in identity`, async ({ page, request }) => {
+                const requested: string[] = [];
+                page.on('request', (sent) => requested.push(new URL(sent.url()).pathname));
                 await page.goto(`${prefix}${path}`);
 
                 await expect(page).toHaveTitle(title(pageTitle, 'CapsuleBin'));
@@ -170,6 +188,10 @@ for (const [language, locale] of LANGUAGES) {
 
                 expect(await expectFavicon(page, request, 'image/svg+xml')).toBe('/favicon.svg');
                 await expectAttribution(page, language, DEFAULT_SOURCE_URL);
+
+                // Without `[branding.colors]` there is no colour stylesheet (AC5).
+                await expect(page.locator(BRANDING_STYLESHEET)).toHaveCount(0);
+                expect(requested.filter((path) => /^\/branding\/.*\.css$/.test(path))).toEqual([]);
             });
         }
     });
@@ -206,6 +228,7 @@ for (const [language, locale] of LANGUAGES) {
                 /^\/branding\/[0-9a-f]{16}\.png$/,
             );
             await expectAttribution(page, language, SOURCE_URL);
+            await expect(page.locator(BRANDING_STYLESHEET)).toHaveCount(1);
         }
 
         await context.close();
@@ -263,6 +286,33 @@ async function openWithScheme(browser: Browser, origin: string, colorScheme: 'li
     return { context, guard, page, toggle };
 }
 
+/**
+ * The colour tokens on `<html>` are those of `theme` (AC5): the configured accent,
+ * and for danger the configured light value or the built-in dark one.
+ */
+async function expectColors(page: Page, theme: 'light' | 'dark'): Promise<void> {
+    for (const [name, value] of Object.entries(COLORS[theme])) {
+        await expect
+            .poll(
+                () =>
+                    page
+                        .locator('html')
+                        .evaluate(
+                            (root, token) => getComputedStyle(root).getPropertyValue(token).trim(),
+                            name,
+                        ),
+                { message: `${name} in the ${theme} theme` },
+            )
+            .toBe(value);
+    }
+}
+
+/** The logo and the colours of `theme` show. */
+async function expectTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+    await expectLogo(page, theme);
+    await expectColors(page, theme);
+}
+
 /** Exactly the logo of `theme` is visible in the header. */
 async function expectLogo(page: Page, theme: 'light' | 'dark'): Promise<void> {
     const other = theme === 'light' ? 'dark' : 'light';
@@ -272,25 +322,25 @@ async function expectLogo(page: Page, theme: 'light' | 'dark'): Promise<void> {
 }
 
 for (const scheme of ['light', 'dark'] as const) {
-    test(`with a ${scheme} system preference the logo follows the theme toggle both ways`, async ({
+    test(`with a ${scheme} system preference logo and colours follow the theme toggle both ways`, async ({
         branded,
         browser,
     }) => {
         const { context, guard, page, toggle } = await openWithScheme(browser, branded, scheme);
 
         // No manual choice: the system preference decides.
-        await expectLogo(page, scheme);
+        await expectTheme(page, scheme);
 
         // The toggle goes auto → light → dark → auto: light to dark, then back to the system.
         await toggle.click();
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-        await expectLogo(page, 'light');
+        await expectTheme(page, 'light');
         await toggle.click();
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-        await expectLogo(page, 'dark');
+        await expectTheme(page, 'dark');
         await toggle.click();
         await expect(page.locator('html')).not.toHaveAttribute('data-theme');
-        await expectLogo(page, scheme);
+        await expectTheme(page, scheme);
 
         // A stored dark choice holds on the next page (theme-init.js), and from there the
         // toggle leads back to light through the system preference.
@@ -298,13 +348,13 @@ for (const scheme of ['light', 'dark'] as const) {
         await toggle.click();
         await page.reload();
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-        await expectLogo(page, 'dark');
+        await expectTheme(page, 'dark');
         await toggle.click();
         await expect(page.locator('html')).not.toHaveAttribute('data-theme');
-        await expectLogo(page, scheme);
+        await expectTheme(page, scheme);
         await toggle.click();
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-        await expectLogo(page, 'light');
+        await expectTheme(page, 'light');
 
         await context.close();
         expect(guard.problems).toEqual([]);

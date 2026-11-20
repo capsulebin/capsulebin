@@ -884,6 +884,7 @@ fn branding_defaults() {
         assert!(branding.favicon.is_none());
         assert_eq!(branding.source_url, "https://github.com/capsulebin/capsulebin");
         assert!(branding.files().is_empty());
+        assert!(branding.colors.is_empty());
     }
 
     let partial = toml::from_str::<Config>("[branding]\nname = \"Team Paste\"\n").expect("partial [branding]");
@@ -937,6 +938,10 @@ fn rejects_unknown_branding_keys() {
     apply_env(&mut table, [("CAPSULEBIN__BRANDING__COLOR".to_owned(), "red".to_owned())]).expect("overlay");
     let error = table.try_into::<Config>().expect_err("CAPSULEBIN__BRANDING__COLOR accepted");
     assert!(error.to_string().contains("color"), "unexpected error: {error}");
+    assert!(
+        error.to_string().contains("[branding.colors]"),
+        "colors not among the keys: {error}"
+    );
 }
 
 /// AC1: `[branding.<lang>]` takes `tagline` and nothing else; any other key,
@@ -1265,4 +1270,172 @@ fn rejects_unusable_branding_files() {
     let mut config = valid(&dir);
     config.branding.logo = Some(write_file(&dir, "largest.png", &largest));
     config.validate().expect("a file of exactly 256 KiB");
+}
+
+/// The 18 keys of `[branding.colors.<theme>]`, in the order of `tokens.css`,
+/// written out from the acceptance criterion rather than taken from the code
+/// under test, so a key missing there fails here.
+const COLOR_KEYS: [&str; 18] = [
+    "bg",
+    "surface",
+    "surface_sunken",
+    "border",
+    "border_strong",
+    "text",
+    "text_muted",
+    "accent",
+    "accent_hover",
+    "accent_text",
+    "danger",
+    "warning",
+    "success",
+    "focus_ring",
+    "tint_accent",
+    "tint_danger",
+    "tint_warning",
+    "tint_success",
+];
+
+/// The configured colours of `theme` as (key, `#rrggbb`).
+fn configured_colors(branding: &crate::branding::Branding, theme: crate::branding::colors::Theme) -> Vec<(&'static str, String)> {
+    branding
+        .colors
+        .configured(theme)
+        .iter()
+        .map(|(key, color)| (*key, color.to_string()))
+        .collect()
+}
+
+/// Colours AC1: both themes take every token key, normalised and in the order
+/// of `tokens.css`; `[branding.colors]` and `[branding.de]` work together.
+#[test]
+fn branding_colors_from_the_configuration_file() {
+    use crate::branding::colors::Theme;
+    let dir = tempdir("branding-colors-file");
+    let path = dir.join("capsulebin.toml");
+    let light: String = COLOR_KEYS.iter().map(|key| format!("{key} = \"#ABC\"\n")).collect();
+    std::fs::write(
+        &path,
+        format!("[branding.colors.light]\n{light}[branding.colors.dark]\naccent = \"#2DD4BF\"\nbg = \"#000\"\n[branding.de]\ntagline = \"Unser\"\n"),
+    )
+    .expect("write config");
+    let mut config = valid(&dir);
+    config.branding = Config::load(Some(&path)).expect("load").branding;
+    let branding = config.validate().expect("valid configuration").branding;
+
+    let expected: Vec<(&str, String)> = COLOR_KEYS.iter().map(|&key| (key, "#aabbcc".to_owned())).collect();
+    assert_eq!(configured_colors(&branding, Theme::Light), expected);
+    assert_eq!(
+        configured_colors(&branding, Theme::Dark),
+        [("bg", "#000000".to_owned()), ("accent", "#2dd4bf".to_owned())]
+    );
+    assert_eq!(branding.tagline("de"), &crate::branding::Tagline::Text("Unser".to_owned()));
+    assert_eq!(config.branding.languages.len(), 1);
+}
+
+/// Colours AC1: every key of both themes has its
+/// `CAPSULEBIN__BRANDING__COLORS__<THEME>__<KEY>`; `#…` stays a string.
+#[test]
+fn branding_colors_can_be_set_from_the_environment() {
+    use crate::branding::colors::Theme;
+    let dir = tempdir("branding-colors-env");
+    for theme in Theme::ALL {
+        let mut table = toml::Table::new();
+        apply_env(
+            &mut table,
+            COLOR_KEYS.iter().map(|key| {
+                (
+                    format!("CAPSULEBIN__BRANDING__COLORS__{}__{}", theme.name(), key).to_ascii_uppercase(),
+                    "#5EEAD4".to_owned(),
+                )
+            }),
+        )
+        .expect("overlay");
+        let mut config = valid(&dir);
+        config.branding = table.try_into::<Config>().expect("parse").branding;
+        let branding = config.validate().expect("valid configuration").branding;
+
+        let expected: Vec<(&str, String)> = COLOR_KEYS.iter().map(|&key| (key, "#5eead4".to_owned())).collect();
+        assert_eq!(configured_colors(&branding, theme), expected, "{}", theme.name());
+        let other = Theme::ALL.into_iter().find(|&other| other != theme).expect("two themes");
+        assert!(branding.colors.configured(other).is_empty(), "{}", theme.name());
+    }
+}
+
+/// Colours AC1: an unknown key or table below `[branding.colors]` stops the
+/// start, naming the full key, from the file or the environment.
+#[test]
+fn rejects_unknown_branding_colors_keys() {
+    for (toml, expected) in [
+        (
+            "[branding.colors.light]\nshadow_card = \"#fff\"\n",
+            "branding.colors.light.shadow_card",
+        ),
+        ("[branding.colors.dark]\nfont_sans = \"#fff\"\n", "branding.colors.dark.font_sans"),
+        ("[branding.colors.dim]\nbg = \"#fff\"\n", "branding.colors.dim"),
+        ("[branding.colors]\nshadow_card = \"#fff\"\n", "branding.colors.shadow_card"),
+        ("[branding]\ncolors = \"#fff\"\n", "branding.colors"),
+    ] {
+        let error = toml::from_str::<Config>(toml).expect_err("unknown key accepted");
+        assert!(error.to_string().contains(expected), "{toml:?}: {error}");
+    }
+
+    for (key, expected) in [
+        (
+            "CAPSULEBIN__BRANDING__COLORS__LIGHT__SHADOW_CARD",
+            "branding.colors.light.shadow_card",
+        ),
+        ("CAPSULEBIN__BRANDING__COLORS__DIM__BG", "branding.colors.dim"),
+    ] {
+        let mut table = toml::Table::new();
+        apply_env(&mut table, [(key.to_owned(), "#fff".to_owned())]).expect("overlay");
+        let error = table.try_into::<Config>().expect_err("unknown key accepted");
+        assert!(error.to_string().contains(expected), "{key}: {error}");
+    }
+}
+
+/// Colours AC2: a value that is not `#rgb` or `#rrggbb` stops the start,
+/// naming the key and the expected syntax; values are not trimmed.
+#[test]
+fn rejects_colours_that_are_not_rgb_or_rrggbb() {
+    let syntax = "#rgb or #rrggbb";
+    for value in [
+        "\"red\"",
+        "\"#12\"",
+        "\"#1234\"",
+        "\"#12345\"",
+        "\"#1234567\"",
+        "\"#12345678\"",
+        "\"#ggg\"",
+        "\"rgb(0,0,0)\"",
+        "\" #fff\"",
+        "\"#fff \"",
+        "\"#fff;}\"",
+        "\"\"",
+        "123",
+        "true",
+        "{ value = \"#fff\" }",
+        "[\"#fff\"]",
+    ] {
+        let toml = format!("[branding.colors.light]\nborder_strong = {value}\n");
+        let error = toml::from_str::<Config>(&toml).expect_err("value accepted").to_string();
+        assert!(
+            error.contains("branding.colors.light.border_strong") && error.contains(syntax),
+            "{value}: {error}"
+        );
+    }
+
+    for value in ["red", "#12", "#1234567", " #fff", "#fff;}", "123", "true", "[1]"] {
+        let mut table = toml::Table::new();
+        apply_env(
+            &mut table,
+            [("CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT_HOVER".to_owned(), value.to_owned())],
+        )
+        .expect("overlay");
+        let error = table.try_into::<Config>().expect_err("value accepted").to_string();
+        assert!(
+            error.contains("branding.colors.dark.accent_hover") && error.contains(syntax),
+            "{value:?}: {error}"
+        );
+    }
 }

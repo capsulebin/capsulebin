@@ -8,7 +8,8 @@
  *
  * The values are parsed out of tokens.css rather than restated here. A test that
  * repeats its own expectation gets edited together with the bug and then protects
- * nothing.
+ * nothing. The pairs and thresholds come from fixtures/contrast-pairs.json, which
+ * the server's warnings for operator colours read as well.
  *
  * Checked against WCAG 2.2:
  *   - 1.4.3 Contrast (Minimum): text at least 4.5:1
@@ -20,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const TOKENS_CSS = fileURLToPath(new URL('../src/styles/tokens.css', import.meta.url));
+const CONTRAST_PAIRS = fileURLToPath(new URL('fixtures/contrast-pairs.json', import.meta.url));
 
 /** Colour tokens of one block in tokens.css. */
 type Palette = Record<string, string>;
@@ -75,58 +77,45 @@ const THEMES: ReadonlyArray<readonly [string, Palette]> = [
     ['dark (data-theme)', palette(css, ':root[data-theme="dark"]')],
 ];
 
-/** Foregrounds that must stay legible as text on every ground. */
-const TEXT_TOKENS = [
-    '--cb-text',
-    '--cb-text-muted',
-    '--cb-accent',
-    '--cb-danger',
-    '--cb-warning',
-    '--cb-success',
-] as const;
+/**
+ * The pairs and thresholds, shared with the server's contrast warnings for operator
+ * colours (src/server/src/branding/colors.rs). Keys are config keys: `x_y` is the
+ * token `--cb-x-y`.
+ *
+ * There are two border tokens because --cb-border is a divider and may be
+ * restrained, while --cb-border-strong outlines controls and has to hold 3:1. As a
+ * single token it would have to satisfy the stricter rule and the whole interface
+ * would look needlessly heavy; so only --cb-border-strong appears in the fixture.
+ */
+interface ContrastPair {
+    readonly foreground: readonly string[];
+    readonly background: readonly string[];
+    readonly min_ratio: number;
+}
 
-const GROUNDS = ['--cb-bg', '--cb-surface', '--cb-surface-sunken'] as const;
+const { pairs: PAIRS } = JSON.parse(readFileSync(CONTRAST_PAIRS, 'utf8')) as {
+    pairs: readonly ContrastPair[];
+};
 
-function need(p: Palette, token: string): string {
-    const value = p[token];
-    if (!value) throw new Error(`${token} missing from this palette`);
+const token = (key: string) => `--cb-${key.replaceAll('_', '-')}`;
+
+function need(p: Palette, name: string): string {
+    const value = p[name];
+    if (!value) throw new Error(`${name} missing from this palette`);
     return value;
 }
 
 describe.each(THEMES)('contrast in theme %s', (_name, p) => {
-    it.each(TEXT_TOKENS)('%s is at least 4.5:1 on every ground', (token) => {
-        for (const ground of GROUNDS) {
-            const ratio = contrast(need(p, token), need(p, ground));
-            expect(ratio, `${token} on ${ground} = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
-                4.5,
-            );
-        }
-    });
-
-    it('text on the accent surface is at least 4.5:1', () => {
-        const ratio = contrast(need(p, '--cb-accent-text'), need(p, '--cb-accent'));
-        expect(ratio, `accent-text on accent = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
-    });
-
-    /**
-     * The reason for two border tokens: --cb-border is a divider and may be
-     * restrained, while --cb-border-strong outlines controls and has to hold 3:1.
-     * As a single token it would have to satisfy the stricter rule and the whole
-     * interface would look needlessly heavy.
-     */
-    it('control outlines are at least 3:1 on every ground', () => {
-        for (const ground of GROUNDS) {
-            const ratio = contrast(need(p, '--cb-border-strong'), need(p, ground));
-            expect(
-                ratio,
-                `border-strong on ${ground} = ${ratio.toFixed(2)}:1`,
-            ).toBeGreaterThanOrEqual(3);
-        }
-    });
-
-    it('the focus ring stands out from the background (3:1)', () => {
-        const ratio = contrast(need(p, '--cb-focus-ring'), need(p, '--cb-bg'));
-        expect(ratio, `focus-ring on bg = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
+    describe.each(PAIRS)('pairs at $min_ratio:1', ({ foreground, background, min_ratio }) => {
+        it.each(foreground)('%s reaches the threshold on every background', (key) => {
+            for (const ground of background) {
+                const ratio = contrast(need(p, token(key)), need(p, token(ground)));
+                expect(
+                    ratio,
+                    `${token(key)} on ${token(ground)} = ${ratio.toFixed(2)}:1`,
+                ).toBeGreaterThanOrEqual(min_ratio);
+            }
+        });
     });
 });
 

@@ -10,6 +10,12 @@
 //!
 //! Only raster images are accepted: an SVG is an active document, and serving
 //! one from the operator would need its own sandbox policy.
+//!
+//! The theme colours (`[branding.colors]`) are checked while the
+//! configuration is parsed, see [`colors`]; the stylesheet generated from them
+//! is kept and served like the files.
+
+pub mod colors;
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -43,6 +49,10 @@ pub struct Branding {
     pub favicon: Option<BrandingFile>,
     /// Target of the attribution link, not escaped.
     pub source_url: String,
+    /// The configured theme colours; empty: the built-in theme.
+    pub colors: colors::Colors,
+    /// The stylesheet of [`Branding::colors`], `None` without colours.
+    pub stylesheet: Option<BrandingFile>,
 }
 
 /// The slogan next to the logo on the create page, in one language.
@@ -74,10 +84,11 @@ impl Branding {
         self.taglines.get(language).unwrap_or(&BUILT_IN_TAGLINE)
     }
 
-    /// Every configured file, a file configured twice (same content) once.
+    /// Every configured file and the colours' stylesheet, a file configured
+    /// twice (same content) once.
     pub fn files(&self) -> Vec<&BrandingFile> {
         let mut files: Vec<&BrandingFile> = Vec::new();
-        for file in [&self.logo, &self.logo_dark, &self.favicon].into_iter().flatten() {
+        for file in [&self.logo, &self.logo_dark, &self.favicon, &self.stylesheet].into_iter().flatten() {
             if !files.iter().any(|known| known.url == file.url) {
                 files.push(file);
             }
@@ -86,13 +97,24 @@ impl Branding {
     }
 }
 
-/// One image file, read at startup.
+/// One image file read at startup, or the generated stylesheet.
 #[derive(Debug, Clone)]
 pub struct BrandingFile {
     /// `/branding/<16 hex digits of SHA-256>.<ext>`.
     pub url: String,
     pub content_type: &'static str,
     pub bytes: Vec<u8>,
+}
+
+impl BrandingFile {
+    /// `bytes` at the URL derived from their content.
+    fn new(bytes: Vec<u8>, extension: &str, content_type: &'static str) -> Self {
+        Self {
+            url: format!("{URL_PREFIX}{}.{extension}", short_hash(&bytes)),
+            content_type,
+            bytes,
+        }
+    }
 }
 
 /// An accepted file format: extension, MIME type and how its content starts.
@@ -155,6 +177,11 @@ pub fn resolve(config: &BrandingConfig) -> Result<Branding, ConfigError> {
         logo_dark: file(&config.logo_dark, "branding.logo_dark", IMAGE_FORMATS)?,
         favicon: file(&config.favicon, "branding.favicon", ICON_FORMATS)?,
         source_url: config.source_url.clone(),
+        colors: config.colors.clone(),
+        stylesheet: config
+            .colors
+            .stylesheet()
+            .map(|css| BrandingFile::new(css.into_bytes(), "css", "text/css; charset=utf-8")),
     })
 }
 
@@ -202,11 +229,7 @@ fn read(path: &Path, key: &str, (formats, accepted): (&[Format], &str)) -> Resul
         return Err(invalid(format!("does not start with the {} signature", format.name())));
     }
 
-    Ok(BrandingFile {
-        url: format!("{URL_PREFIX}{}.{}", short_hash(&bytes), format.extension()),
-        content_type: format.content_type(),
-        bytes,
-    })
+    Ok(BrandingFile::new(bytes, format.extension(), format.content_type()))
 }
 
 /// The first 16 hex digits of the SHA-256 of `bytes`.
