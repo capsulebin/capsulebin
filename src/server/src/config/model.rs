@@ -868,6 +868,11 @@ pub struct BrandingConfig {
     /// Target of the attribution link: the source code this instance runs.
     #[serde(default = "default_source_url")]
     pub source_url: String,
+    /// `[branding.colors.light]` and `[branding.colors.dark]`: the theme
+    /// colours, checked and normalised while parsing. A named field, so it
+    /// never reaches the language tables below.
+    #[serde(default)]
+    pub colors: crate::branding::colors::Colors,
     /// `[branding.<lang>]`: every other key of `[branding]`. Collected here
     /// instead of refused by `deny_unknown_fields` (which `flatten` does not
     /// support): a key that is not a table is refused while parsing, and
@@ -899,7 +904,8 @@ fn branding_languages<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Resu
                     .map_err(|error| format!("branding.{key}: {}", error.message())),
                 _ => Err(format!(
                     "branding.{key} is unknown; [branding] takes name, hide_name, tagline, logo, logo_dark, \
-                     favicon, source_url and [branding.<lang>] tables with tagline"
+                     favicon, source_url, [branding.colors] with the tables light and dark, and [branding.<lang>] \
+                     tables with tagline"
                 )),
             };
             Ok((key, texts.map_err(serde::de::Error::custom)?))
@@ -917,6 +923,7 @@ impl Default for BrandingConfig {
             logo_dark: None,
             favicon: None,
             source_url: default_source_url(),
+            colors: Default::default(),
             languages: BTreeMap::new(),
         }
     }

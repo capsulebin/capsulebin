@@ -9,6 +9,11 @@ use capsulebin_server::db;
 pub(crate) async fn check(resolved: Resolved) -> anyhow::Result<()> {
     let state = super::state_for(&resolved).await?;
 
+    // Warnings, not failures: on stderr, so stdout stays the one `ok:` line.
+    for warning in resolved.branding.colors.contrast_warnings() {
+        eprintln!("warning: {warning}");
+    }
+
     let version = db::verify(&state.pool).await.context("database is not ready")?;
 
     anyhow::ensure!(

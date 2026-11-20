@@ -267,6 +267,59 @@ source_url = "https://github.com/capsulebin/capsulebin"
 # [branding.de]
 # tagline = "Verschlüsselte Pastes fürs Team"
 
+# The colours of the light and the dark theme, in place of the built-in ones.
+# Each key sets one colour token of the built-in theme (key x_y: token
+# --cb-x-y); a key left out keeps its built-in value, shown below. A value is
+# "#rgb" or "#rrggbb" (hex digits in either case, nothing around them); any
+# other value and any other key stop the start. Read once at startup: after a
+# change, restart the server. The system preference and the theme toggle keep
+# working with these colours in both directions.
+#
+# A pair below the contrast the built-in theme holds is a warning in the log
+# of serve and in the output of `capsulebin check`, not an error: text,
+# text_muted, accent, danger, warning and success on bg, surface and
+# surface_sunken, and accent_text on accent, at least 4.5:1; border_strong on
+# bg, surface and surface_sunken, and focus_ring on bg, at least 3:1.
+# [branding.colors.light]
+# bg = "#fbfcfc"
+# surface = "#ffffff"
+# surface_sunken = "#f2f5f5"
+# border = "#dbe3e2"
+# border_strong = "#7d8e8c"
+# text = "#0d1b1a"
+# text_muted = "#4a5c5a"
+# accent = "#0f766e"
+# accent_hover = "#115e59"
+# accent_text = "#ffffff"
+# danger = "#b42318"
+# warning = "#b45309"
+# success = "#067647"
+# focus_ring = "#0f766e"
+# tint_accent = "#e6f2f1"
+# tint_danger = "#fdecea"
+# tint_warning = "#fdf3e5"
+# tint_success = "#e6f4ee"
+#
+# [branding.colors.dark]
+# bg = "#0c1413"
+# surface = "#131e1d"
+# surface_sunken = "#0f1a19"
+# border = "#263735"
+# border_strong = "#587471"
+# text = "#e6efee"
+# text_muted = "#9db0ae"
+# accent = "#2dd4bf"
+# accent_hover = "#5eead4"
+# accent_text = "#08201e"
+# danger = "#f97066"
+# warning = "#f79009"
+# success = "#47cd89"
+# focus_ring = "#2dd4bf"
+# tint_accent = "#10322e"
+# tint_danger = "#33150f"
+# tint_warning = "#2e1e05"
+# tint_success = "#0e2a1d"
+
 [legal]
 # The operator's legal pages: an imprint, a privacy notice and terms of use,
 # served by CapsuleBin at /imprint, /privacy and /terms (and under the prefix of

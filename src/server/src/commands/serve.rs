@@ -20,6 +20,11 @@ pub(crate) async fn serve(resolved: Resolved, bind_override: Option<String>) -> 
              The server starts, but /health/ready stays degraded."
         );
     }
+    // Below the contrast of the built-in theme: worth knowing, not worth
+    // refusing to start.
+    for warning in resolved.branding.colors.contrast_warnings() {
+        tracing::warn!("{warning}");
+    }
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

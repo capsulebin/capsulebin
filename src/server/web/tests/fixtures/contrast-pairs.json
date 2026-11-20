@@ -1,0 +1,17 @@
+{
+    "description": "The colour pairs the theme is held to (WCAG 2.2: 4.5:1 for text, 3:1 for control outlines and the focus ring). Every key in foreground must reach min_ratio on every key in background, in each palette. Keys are the [branding.colors.<theme>] keys: x_y stands for the token --cb-x-y. Read by src/server/web/tests/contrast.test.ts (built-in palettes of tokens.css). The server's warnings for the operator's colours use CONTRAST_PAIRS in src/server/src/branding/colors.rs, a Rust constant that the test the_contrast_pairs_equal_the_shared_fixture keeps equal to this file.",
+    "pairs": [
+        {
+            "foreground": ["text", "text_muted", "accent", "danger", "warning", "success"],
+            "background": ["bg", "surface", "surface_sunken"],
+            "min_ratio": 4.5
+        },
+        { "foreground": ["accent_text"], "background": ["accent"], "min_ratio": 4.5 },
+        {
+            "foreground": ["border_strong"],
+            "background": ["bg", "surface", "surface_sunken"],
+            "min_ratio": 3
+        },
+        { "foreground": ["focus_ring"], "background": ["bg"], "min_ratio": 3 }
+    ]
+}

@@ -472,3 +472,199 @@ fn ac1_ac15_taglines_from_the_environment_reach_serve() {
     assert!(en.contains(r#"<span class="cb-claim">BUILT-IN-EN</span>"#), "{en}");
     assert!(!de.contains("cb-claim") && !de.contains("BUILT-IN-DE"), "{de}");
 }
+
+/// Package 20261120-branding-colours, AC1/AC2: an unknown key below
+/// `[branding.colors]` or a colour that is not `#rgb`/`#rrggbb`, from the file
+/// or the environment, stops `check` and `serve`, naming the full key.
+#[test]
+fn colors_refused_keys_and_values_stop_check_and_serve() {
+    let dir = tempdir("branding-acc-colors");
+    for (name, branding, named) in [
+        (
+            "unknown.toml",
+            "[branding.colors.light]\nshadow_card = \"#fff\"\n",
+            &["branding.colors.light.shadow_card"][..],
+        ),
+        ("dim.toml", "[branding.colors.dim]\nbg = \"#fff\"\n", &["branding.colors.dim"][..]),
+        (
+            "red.toml",
+            "[branding.colors.light]\naccent = \"red\"\n",
+            &["branding.colors.light.accent", "#rgb or #rrggbb"][..],
+        ),
+        (
+            "integer.toml",
+            "[branding.colors.dark]\nbg = 123\n",
+            &["branding.colors.dark.bg", "#rgb or #rrggbb"][..],
+        ),
+    ] {
+        let config = config_file(&dir, name, branding);
+        assert_refused(&config, &[], named, &[]);
+    }
+
+    let plain = config_file(&dir, "plain.toml", "");
+    for (env, named) in [
+        (
+            ("CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT_HOVER", "#5eead"),
+            &["branding.colors.dark.accent_hover", "#rgb or #rrggbb"][..],
+        ),
+        (
+            ("CAPSULEBIN__BRANDING__COLORS__LIGHT__TEXT", " #fff"),
+            &["branding.colors.light.text", "#rgb or #rrggbb"][..],
+        ),
+        (
+            ("CAPSULEBIN__BRANDING__COLORS__LIGHT__SHADOW_CARD", "#fff"),
+            &["branding.colors.light.shadow_card"][..],
+        ),
+    ] {
+        assert_refused(&plain, &[env], named, &[]);
+    }
+}
+
+/// The contrast warnings of the colours below, as `check` and `serve` word
+/// them: the light text on the three grounds, and the dark accent text on the
+/// dark accent configured from the environment.
+const CONTRAST_WARNINGS: [&str; 4] = [
+    "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.surface has a contrast of 1.00:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.surface_sunken has a contrast of 1.10:1, below 4.5:1",
+    "dark theme: branding.colors.dark.accent_text on branding.colors.dark.accent has a contrast of 1.42:1, below 4.5:1",
+];
+
+const LOW_CONTRAST: &str = "[branding.colors.light]\ntext = \"#FFF\"\n";
+const LOW_CONTRAST_ENV: [(&str, &str); 1] = [("CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT_TEXT", "#3ad")];
+
+/// Package 20261120-branding-colours, AC6: `check` prints each contrast
+/// warning to stderr, still prints its `ok:` line and exits 0; without colours
+/// it warns about nothing.
+#[test]
+fn colors_contrast_warnings_in_check() {
+    let dir = tempdir("branding-acc-contrast-check");
+    let config = config_file(&dir, "low.toml", LOW_CONTRAST);
+    let output = check(&config, &LOW_CONTRAST_ENV);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stdout.starts_with("ok: ") && stdout.lines().count() == 1, "{stdout}");
+    for warning in CONTRAST_WARNINGS {
+        assert_eq!(stderr.matches(warning).count(), 1, "{warning}: {stderr}");
+    }
+    assert_eq!(stderr.matches("warning: ").count(), CONTRAST_WARNINGS.len(), "{stderr}");
+
+    let plain = config_file(&dir, "plain.toml", "");
+    let output = check(&plain, &[]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("contrast of"));
+}
+
+/// Package 20261120-branding-colours, AC6: `serve` starts despite the
+/// warnings and logs each once at WARN level.
+#[test]
+fn colors_contrast_warnings_in_the_log_of_serve() {
+    let dir = tempdir("branding-acc-contrast-serve");
+    let config = config_file(&dir, "low.toml", LOW_CONTRAST);
+    let port = free_port();
+    let mut server = Server(
+        serve_command(&config, port, &LOW_CONTRAST_ENV)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while get(port, "/health/live").is_none() {
+        assert!(Instant::now() < deadline, "server did not start");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = server.0.kill();
+    let _ = server.0.wait();
+    let mut log = String::new();
+    server.0.stderr.take().unwrap().read_to_string(&mut log).unwrap();
+
+    for warning in CONTRAST_WARNINGS {
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains(warning)).collect();
+        assert_eq!(lines.len(), 1, "{warning}: {log}");
+        assert!(lines[0].contains("WARN"), "{}", lines[0]);
+    }
+    assert_eq!(log.matches("contrast of").count(), CONTRAST_WARNINGS.len(), "{log}");
+}
+
+/// The 18 keys of `[branding.colors.<theme>]`, in the order of `tokens.css`,
+/// written out from the acceptance criterion rather than taken from the server.
+const COLOR_KEYS: [&str; 18] = [
+    "bg",
+    "surface",
+    "surface_sunken",
+    "border",
+    "border_strong",
+    "text",
+    "text_muted",
+    "accent",
+    "accent_hover",
+    "accent_text",
+    "danger",
+    "warning",
+    "success",
+    "focus_ring",
+    "tint_accent",
+    "tint_danger",
+    "tint_warning",
+    "tint_success",
+];
+
+/// Package 20261120-branding-colours, AC1, AC3, AC4: every colour key of both
+/// themes set as `CAPSULEBIN__BRANDING__COLORS__<THEME>__<KEY>` (upper-case
+/// hex, `#rgb` and `#rrggbb`) reaches the started binary next to a
+/// `[branding.de] tagline` from the file: the pages in `en` and `de` link the
+/// stylesheet at its content hash, which holds every token normalised to
+/// lowercase `#rrggbb` in the four blocks.
+#[test]
+fn colors_every_key_from_the_environment_reaches_serve() {
+    let dir = tempdir("branding-acc-colors-env");
+    let config = config_file(&dir, "de.toml", "[branding.de]\ntagline = \"Unser Slogan\"\n");
+    let names: Vec<(String, String)> = COLOR_KEYS
+        .iter()
+        .flat_map(|key| {
+            [
+                (
+                    format!("CAPSULEBIN__BRANDING__COLORS__LIGHT__{}", key.to_ascii_uppercase()),
+                    "#ABC".to_owned(),
+                ),
+                (
+                    format!("CAPSULEBIN__BRANDING__COLORS__DARK__{}", key.to_ascii_uppercase()),
+                    "#1A2B3C".to_owned(),
+                ),
+            ]
+        })
+        .collect();
+    let env: Vec<(&str, &str)> = names.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+
+    let declarations = |indent: &str, value: &str| -> String {
+        COLOR_KEYS
+            .iter()
+            .map(|key| format!("{indent}--cb-{}: {value};\n", key.replace('_', "-")))
+            .collect()
+    };
+    let expected = format!(
+        "@media not all and (prefers-color-scheme: dark) {{\n    :root {{\n{}    }}\n}}\n\
+         @media (prefers-color-scheme: dark) {{\n    :root {{\n{}    }}\n}}\n\
+         :root[data-theme=\"light\"] {{\n{}}}\n\
+         :root[data-theme=\"dark\"] {{\n{}}}\n",
+        declarations("        ", "#aabbcc"),
+        declarations("        ", "#1a2b3c"),
+        declarations("    ", "#aabbcc"),
+        declarations("    ", "#1a2b3c"),
+    );
+    let url = branding_url(expected.as_bytes(), "css");
+    let link = format!(r#"<link rel="stylesheet" href="{url}">"#);
+
+    let bodies = serve_and_get(&config, &env, &["/", "/de/", "/de/report", &url]);
+    for (path, page) in ["/", "/de/", "/de/report"].iter().zip(&bodies) {
+        assert_eq!(page.matches(&link).count(), 1, "{path}: {page}");
+        assert!(
+            page.contains(&format!("{link}</head>")),
+            "{path}: link not right before </head>: {page}"
+        );
+    }
+    assert_eq!(bodies[3], expected);
+}

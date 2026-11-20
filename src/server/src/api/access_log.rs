@@ -21,6 +21,7 @@ use tower_http::trace::{DefaultOnResponse, MakeSpan, TraceLayer};
 /// Path segments that are part of the API surface and safe to record.
 const STATIC_SEGMENTS: &[&str] = &[
     "api", "v1", "pastes", "retrieve", "describe", "reports", "health", "live", "ready", "manage", "report", "p", "assets", "problems",
+    "branding",
 ];
 
 /// Replaces every non-static path segment with `{id}`.
@@ -29,6 +30,8 @@ const STATIC_SEGMENTS: &[&str] = &[
 /// rather than by a client, and are useful when diagnosing a caching problem.
 pub fn redact_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
+    let mut position = 0;
+    let mut below_branding = false;
 
     for segment in path.split('/') {
         if segment.is_empty() {
@@ -37,7 +40,11 @@ pub fn redact_path(path: &str) -> String {
 
         out.push('/');
 
-        if STATIC_SEGMENTS.contains(&segment) || is_asset_filename(segment) {
+        let branding_file = below_branding && is_branding_filename(segment);
+        below_branding = position == 0 && segment == "branding";
+        position += 1;
+
+        if branding_file || STATIC_SEGMENTS.contains(&segment) || is_asset_filename(segment) {
             out.push_str(segment);
         } else {
             out.push_str("{id}");
@@ -57,6 +64,24 @@ fn is_asset_filename(segment: &str) -> bool {
     match segment.rsplit_once('.') {
         Some((stem, extension)) => {
             EXTENSIONS.contains(&extension) && !stem.is_empty() && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// A configured branding file directly below `/branding/`, such as
+/// `0123456789abcdef.webp`.
+///
+/// Matches only the shape `crate::branding` gives these URLs (16 lowercase hex
+/// digits of a content hash and the extension of a branding file), so `webp` is
+/// kept nowhere else: a paste id never has this shape, and every other segment
+/// stays redacted as before.
+fn is_branding_filename(segment: &str) -> bool {
+    const EXTENSIONS: &[&str] = &["png", "webp", "ico", "css"];
+
+    match segment.split_once('.') {
+        Some((stem, extension)) => {
+            EXTENSIONS.contains(&extension) && stem.len() == 16 && stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
         }
         None => false,
     }
@@ -119,6 +144,45 @@ mod tests {
         assert_eq!(redact_path("/assets/index-DxndYyue.js"), "/assets/index-DxndYyue.js");
         assert_eq!(redact_path("/theme-init.js"), "/theme-init.js");
         assert_eq!(redact_path("/assets/shell-CakMXSuP.css"), "/assets/shell-CakMXSuP.css");
+    }
+
+    /// A configured branding file is served at `/branding/<16 hex>.<ext>`; its URL
+    /// is a content hash, not a secret, and useful when diagnosing caching.
+    #[test]
+    fn branding_files_survive() {
+        for extension in ["png", "webp", "ico", "css"] {
+            let path = format!("/branding/0123456789abcdef.{extension}");
+            assert_eq!(redact_path(&path), path);
+        }
+    }
+
+    /// Only the branding file shape is new; anything else below `/branding/` and
+    /// `webp` anywhere else is redacted as before.
+    #[test]
+    fn other_branding_segments_are_redacted() {
+        for (input, expected) in [
+            ("/branding/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB", "/branding/{id}"),
+            ("/branding", "/branding"),
+            ("/branding/0123456789ABCDEF.webp", "/branding/{id}"),
+            ("/branding/0123456789abcde.webp", "/branding/{id}"),
+            ("/branding/0123456789abcdef0.webp", "/branding/{id}"),
+            ("/branding/0123456789abcdef.svg.webp", "/branding/{id}"),
+            ("/branding/0123456789abcdef.webp/x", "/branding/0123456789abcdef.webp/{id}"),
+            ("/branding/x/0123456789abcdef.webp", "/branding/{id}/{id}"),
+            ("/p/0123456789abcdef.webp", "/p/{id}"),
+            ("/p/AQEBAQEBAQEBAQEBAQEBAQ.webp", "/p/{id}"),
+            ("/assets/branding/0123456789abcdef.webp", "/assets/branding/{id}"),
+        ] {
+            assert_eq!(redact_path(input), expected, "for {input}");
+        }
+    }
+
+    /// `/branding/colors.css` is not a branding file (no content hash), but it has
+    /// the shape of a build asset name, so the general asset rule keeps it, as
+    /// anywhere else in a path.
+    #[test]
+    fn asset_shaped_names_below_branding_survive() {
+        assert_eq!(redact_path("/branding/colors.css"), "/branding/colors.css");
     }
 
     /// The allowlist has to fail closed: anything unexpected is redacted, so a

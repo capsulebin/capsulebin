@@ -19,8 +19,8 @@
 //! memory. Only the directory mode reads its shells on every request.
 //!
 //! The operator's branding (`[branding]`) is filled in the same way: name,
-//! favicon, source link and logo come from the resolved configuration, never
-//! from the request.
+//! favicon, source link, logo and the link to the colours' stylesheet come
+//! from the resolved configuration, never from the request.
 
 use axum::{
     Router,
@@ -80,6 +80,9 @@ pub const WORDMARK_REGION: (&str, &str) = ("<!--capsulebin:wordmark-->", "<!--/c
 /// Around the slogan next to the logo on the create page, replaced by the
 /// tagline of the page's language or removed with an empty one.
 pub const TAGLINE_REGION: (&str, &str) = ("<!--capsulebin:tagline-->", "<!--/capsulebin:tagline-->");
+/// Where the link to the colours' stylesheet goes: at the very end of the
+/// head, after the stylesheet the web build links, so that it wins.
+const HEAD_END: &str = "</head>";
 /// The favicon of the web build, linked when none is configured.
 const BUILT_IN_FAVICON: &str = "/favicon.svg";
 
@@ -285,12 +288,13 @@ impl IntoResponse for Document {
     }
 }
 
-/// Fills in what a shell of `language` leaves to the server: the logo,
-/// wordmark and tagline regions of the header, the tokens (prefix of its
-/// internal links, default language, name, tagline, favicon, source link) and
-/// the legal links. All fixed at startup and the same for every request, so
-/// the shell does not depend on the path id. The shells are UTF-8; a lossy
-/// conversion only matters for a broken build, which `/health/ready` reports.
+/// Fills in what a shell of `language` leaves to the server: the link to the
+/// colours' stylesheet, the logo, wordmark and tagline regions of the header,
+/// the tokens (prefix of its internal links, default language, name, tagline,
+/// favicon, source link) and the legal links. All fixed at startup and the
+/// same for every request, so the shell does not depend on the path id. The
+/// shells are UTF-8; a lossy conversion only matters for a broken build,
+/// which `/health/ready` reports.
 ///
 /// Operator values are never read as markup of the shell: the tokens are
 /// filled in one pass, so a value is not searched for tokens again, and every
@@ -298,7 +302,10 @@ impl IntoResponse for Document {
 /// The legal links (and the legal page in [`Document::build`]) come after the
 /// tokens, so their operator text is not searched for tokens either.
 fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding) -> String {
-    let (shell, tagline) = with_branding_regions(shell, branding, language);
+    // First, so that it lands in the head of the shell, before anything of
+    // the operator is put in.
+    let shell = with_stylesheet(shell, branding);
+    let (shell, tagline) = with_branding_regions(&shell, branding, language);
     let favicon = branding.favicon.as_ref().map_or(BUILT_IN_FAVICON, |favicon| &favicon.url);
     let shell = fill_tokens(
         &shell,
@@ -314,6 +321,21 @@ fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &st
     Which::ALL
         .into_iter()
         .fold(shell, |shell, which| with_legal_link(&shell, which, legal.footer.href(which)))
+}
+
+/// Links the colours' stylesheet right before the end of the head, if
+/// colours are configured; otherwise the shell stays as it is. Its URL is
+/// derived from a hash and holds nothing to escape.
+fn with_stylesheet(shell: &str, branding: &Branding) -> String {
+    match (&branding.stylesheet, shell.find(HEAD_END)) {
+        (Some(stylesheet), Some(at)) => format!(
+            r#"{}<link rel="stylesheet" href="{}">{}"#,
+            &shell[..at],
+            stylesheet.url,
+            &shell[at..]
+        ),
+        _ => shell.to_owned(),
+    }
 }
 
 /// Replaces every token of `tokens` in `shell` with its value, in a single
@@ -760,6 +782,30 @@ mod tests {
                 "{language}"
             );
         }
+    }
+
+    /// The colours' stylesheet is linked last in the head, once; without
+    /// colours, or in a shell without a head end, nothing changes.
+    #[test]
+    fn the_stylesheet_is_linked_at_the_end_of_the_head() {
+        let shell = "<head><link rel=\"stylesheet\" href=\"/assets/a.css\">\n</head><body></head></body>";
+        let stylesheet = Some(BrandingFile {
+            url: "/branding/0123456789abcdef.css".to_owned(),
+            content_type: "text/css; charset=utf-8",
+            bytes: Vec::new(),
+        });
+        let branding = Branding {
+            stylesheet,
+            ..default_branding()
+        };
+        let render = |shell: &str, branding: &Branding| render(shell, &LegalPages::default(), "en", "en", branding);
+        assert_eq!(
+            render(shell, &branding),
+            "<head><link rel=\"stylesheet\" href=\"/assets/a.css\">\n\
+             <link rel=\"stylesheet\" href=\"/branding/0123456789abcdef.css\"></head><body></head></body>"
+        );
+        assert_eq!(render(shell, &default_branding()), shell);
+        assert_eq!(render("<body></body>", &branding), "<body></body>");
     }
 
     /// A broken build: a region without its end is left as it is.

@@ -15,8 +15,9 @@ create, describe, retrieve, delete, burn-after-retrieval, password protection, M
 rendering, file items, retention/pruning, rate limiting, idempotent create, the CLI
 (`put`/`get`/`delete`), abuse reports and the operator moderation commands are all implemented.
 The web interface is in English and German: the default language without a path prefix, the other
-under its prefix (`/de/`). Operators can set the instance's name, tagline, logo and favicon
-(`[branding]`); every page says "Powered by CapsuleBin", with "CapsuleBin" linked to the source code.
+under its prefix (`/de/`). Operators can set the instance's name, tagline, logo, favicon and theme
+colours (`[branding]`); every page says "Powered by CapsuleBin", with "CapsuleBin" linked to the
+source code.
 
 ## Repository layout
 
@@ -39,7 +40,7 @@ capsulebin/
 │   ├── operations.md            Deployment, reverse proxy, backups, upgrades, abuse runbook
 │   ├── privacy-notice.md        What an instance processes; template for the operator's notice
 │   ├── i18n.md                  Interface languages: paths, default, catalogues, adding a language
-│   ├── branding.md              Operator branding: name, tagline, logo, favicon, attribution link
+│   ├── branding.md              Operator branding: name, tagline, logo, favicon, colours, attribution link
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
 │                         reproducible-web.sh — builds the web client twice and compares;
@@ -140,7 +141,7 @@ Versioned in the path: `/api/v1/pastes`.
 | GET    | `/api/v1/reports`             | Report policy for the report page |
 | GET    | `/health/live`                | Process is alive |
 | GET    | `/health/ready`               | Config, DB, and schema are usable |
-| GET    | `/branding/<hash>.<ext>`      | A configured logo or favicon (`[branding]`), immutable caching; any other `/branding/` path is the generic `404` |
+| GET    | `/branding/<hash>.<ext>`      | A configured logo or favicon, or the stylesheet generated from `[branding.colors]`, immutable caching; any other `/branding/` path is the generic `404` |
 
 Errors are `application/problem+json` with a stable `code` field and `X-Request-Id`.
 Clients branch on `code`, never on `title`.
@@ -189,7 +190,8 @@ Critical rules:
   `src/server/web/src/i18n/`), kept equal by `tests/languages.rs` and `i18n-catalogues.test.ts`.
 - **`[branding]` values are operator input placed into pages** (ADR-017, `docs/branding.md`) —
   `name` (default `CapsuleBin`, ≤ 64 characters, no control characters), `hide_name`, `tagline`,
-  `logo`, `logo_dark`, `favicon`, `source_url`, and `[branding.<lang>]` with only `tagline` for a
+  `logo`, `logo_dark`, `favicon`, `source_url`, `[branding.colors.light]`/`[branding.colors.dark]`,
+  and `[branding.<lang>]` with only `tagline` for a
   known language other than the default one (fallback: `[branding.<lang>] tagline` →
   `branding.tagline` → built-in `create.claim`; empty removes the create page's slogan; ≤ 80
   characters, no control characters; a table for an unknown or the default language is a startup
@@ -201,6 +203,16 @@ Critical rules:
   logs). The footer attribution "Powered by CapsuleBin" (AGPL §13) cannot be switched off and
   keeps the project's name; only "CapsuleBin" links to `source_url`, in a new tab
   (`target="_blank" rel="noopener noreferrer"`).
+  `[branding.colors.<theme>]` takes the 18 colour tokens of `tokens.css` as snake_case keys (`x_y` →
+  `--cb-x-y`; not `--cb-shadow-card`), only `#rgb`/`#rrggbb`, normalised to lowercase; unset tokens
+  keep the built-in value per theme; an unknown key or table, or another value, is a startup error
+  naming the full key (`Colors` has its own `Deserialize`). With any colour the server generates a
+  stylesheet, serves it at `/branding/<16 hex>.css` and links it right before `</head>` of every
+  page (light values in `@media not all and (prefers-color-scheme: dark)`, then the `data-theme`
+  blocks, so system preference and toggle keep working). A pair below the built-in theme's contrast
+  thresholds (`web/tests/fixtures/contrast-pairs.json`) is a warning: logged by `serve`, printed to
+  stderr by `check`; never an error. The Rust palette and pairs in `branding/colors.rs` are kept
+  equal to `tokens.css` and the fixture by tests.
 
 ### Retention (purge)
 
@@ -300,15 +312,16 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation. Fails on an edited released migration. |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids; moderated pastes look like unknown ones. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
-| `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair. |
+| `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
 | `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; the tagline markers wrap the create page's slogan only. |
 | `src/server/tests/branding.rs` | `/branding/` files served byte-identical with MIME type, immutable caching and security headers, every other `/branding/` path the generic `404`; name, tagline (per language, empty, escaped), logo, `hide_name`, dark logo, favicon and attribution on every page in `en`/`de` (own test shells), operator values escaped and never read as tokens or markers. |
-| `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary. |
+| `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
+| `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -330,7 +343,7 @@ npm run e2e -w @capsulebin/web
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
 | 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts (English, German) filled in from the configuration; per language `[legal.<lang>.*]` with fallback to `[legal.*]`; restricted Markdown rendered at startup; code still only from the binary |
 | 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
-| 017 | Operator branding | `[branding]` keys instead of operator CSS; name, raster logo/dark logo/favicon (no SVG) read at startup, served at content-hashed `/branding/` URLs; one name for all languages, a tagline per language; "Powered by CapsuleBin" on every page ("CapsuleBin" linked to the source, new tab), not switchable |
+| 017 | Operator branding | `[branding]` keys instead of operator CSS; name, raster logo/dark logo/favicon (no SVG) read at startup, served at content-hashed `/branding/` URLs; one name for all languages, a tagline per language; theme colours as token values in a generated stylesheet, contrast failures only a warning; "Powered by CapsuleBin" on every page ("CapsuleBin" linked to the source, new tab), not switchable |
 
 ## Source code map
 
@@ -341,8 +354,8 @@ npm run e2e -w @capsulebin/web
 | `src/main.rs` | Binary entry point, CLI argument parsing (clap) |
 | `src/lib.rs` | `AppState`, `router()` — layer order is security-critical (see comments) |
 | `src/config.rs` | Config loading: TOML + env override, validation, `Resolved` |
-| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()`; `BrandingConfig`, `BrandingTexts` (`[branding.<lang>]`) and their validation |
-| `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs |
+| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()`; `BrandingConfig` (named field `colors`), `BrandingTexts` (`[branding.<lang>]`) and their validation |
+| `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs; the colour stylesheet as a `BrandingFile` (`branding/colors.rs`: `Colors` parsing, built-in palette `TOKENS`, `CONTRAST_PAIRS`, `stylesheet()`, `contrast_warnings()`) |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner |
@@ -361,12 +374,12 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`/`%%capsulebin:name%%`/`%%capsulebin:favicon%%`/`%%capsulebin:source%%` and the server-internal `%%capsulebin:tagline%%` in one pass after replacing the header regions `<!--capsulebin:logo-->`/`<!--capsulebin:wordmark-->`/`<!--capsulebin:tagline-->` from `[branding]` (tagline per page language), turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` titled with the label of their own footer marker |
+| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); first links the colour stylesheet before `</head>` (if configured), then fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`/`%%capsulebin:name%%`/`%%capsulebin:favicon%%`/`%%capsulebin:source%%` and the server-internal `%%capsulebin:tagline%%` in one pass after replacing the header regions `<!--capsulebin:logo-->`/`<!--capsulebin:wordmark-->`/`<!--capsulebin:tagline-->` from `[branding]` (tagline per page language), turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` titled with the label of their own footer marker |
 | `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; each section from `[legal.<lang>.*]` or else `[legal.*]`, `lang` on blocks not in the page language; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs` + `defaults/{en,de}.rs`: built-in texts per language) |
-| `src/api/branding.rs` | One route per configured branding file, served from memory with its MIME type and immutable caching |
+| `src/api/branding.rs` | One route per configured branding file and the colour stylesheet, served from memory with its MIME type and immutable caching |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
-| `src/api/access_log.rs` | Redacted access logging (method + redacted path only) |
+| `src/api/access_log.rs` | Redacted access logging (method + redacted path only; branding file names directly below `/branding/` kept) |
 | `src/api/rate_limit.rs` | Token-bucket rate limiting (per minute or per hour) |
 | `src/api/reports.rs` | Report endpoint and policy |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |

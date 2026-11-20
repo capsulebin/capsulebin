@@ -3,24 +3,28 @@
 An operator can present a CapsuleBin instance under their own identity without a rebuild. The
 `[branding]` table sets the name shown in place of "CapsuleBin" in the web pages, the slogan next
 to the logo on the create page (per language if needed, or none), a logo that replaces the
-built-in symbol in the header (optionally a second one for the dark theme) and a favicon. The
-server reads the image files once at startup, serves them same-origin under content-derived URLs
-and fills everything into the shells, as it does for the legal pages (ADR-015). Every page of
+built-in symbol in the header (optionally a second one for the dark theme), a favicon, and the
+colours of the light and the dark theme (`[branding.colors]`). The server reads the image files
+once at startup, generates a small stylesheet from the colours, serves both same-origin under
+content-derived URLs and fills everything into the shells, as it does for the legal pages
+(ADR-015). The system preference and the theme toggle keep working with the operator's colours; a
+colour pair below the contrast the built-in theme holds is a warning, not an error. Every page of
 every instance, branded or not, carries a fixed "Powered by CapsuleBin" attribution in the footer,
 in which "CapsuleBin" links to the source code (AGPL-3.0 §13) in a new tab; only the link target
 is configurable. An instance without `[branding]` looks as before, plus that attribution and a
-built-in favicon. See [ADR-017](adr/ADR-017-operator-branding.md). Theme colours are not part of
-this yet (see [Limits](#limits-and-open-points)).
+built-in favicon. See [ADR-017](adr/ADR-017-operator-branding.md).
 
 ## Rules
 
 ### Configuration
 
-`[branding]` takes exactly the keys below plus one optional subtable `[branding.<lang>]` per known
-language other than `i18n.default_language`, which takes exactly `tagline`. Any other key in
-`[branding]` or in a subtable, a subtable for an unknown language and a subtable for the default
-language are startup errors. Every key also as `CAPSULEBIN__BRANDING__<KEY>`, a language's tagline
-as `CAPSULEBIN__BRANDING__<LANG>__TAGLINE` (e.g. `CAPSULEBIN__BRANDING__DE__TAGLINE`).
+`[branding]` takes exactly the keys below, the table `[branding.colors]` (see
+[Theme colours](#theme-colours)) and one optional subtable `[branding.<lang>]` per known language
+other than `i18n.default_language`, which takes exactly `tagline`. Any other key in `[branding]` or
+in a subtable, a subtable for an unknown language and a subtable for the default language are
+startup errors. Every key also as `CAPSULEBIN__BRANDING__<KEY>`, a language's tagline as
+`CAPSULEBIN__BRANDING__<LANG>__TAGLINE` (e.g. `CAPSULEBIN__BRANDING__DE__TAGLINE`), a colour as
+`CAPSULEBIN__BRANDING__COLORS__<THEME>__<KEY>`.
 
 | Key | Default | Rule |
 | --- | --- | --- |
@@ -57,6 +61,56 @@ files (`branding::resolve`): extension, read (at most 256 KiB + 1 byte is read),
 Relative paths are resolved against the working directory, like `database.path`. Files are read
 once at startup; a replaced file takes effect after a restart.
 
+### Theme colours
+
+`[branding.colors.light]` and `[branding.colors.dark]` set colour tokens of the built-in theme
+(`src/server/web/src/styles/tokens.css`) for one theme each. Both tables take the same 18 keys, all
+optional; the key `x_y` sets the token `--cb-x-y`:
+
+`bg`, `surface`, `surface_sunken`, `border`, `border_strong`, `text`, `text_muted`, `accent`,
+`accent_hover`, `accent_text`, `danger`, `warning`, `success`, `focus_ring`, `tint_accent`,
+`tint_danger`, `tint_warning`, `tint_success`.
+
+- **Fallback per token and theme:** a key left out keeps its built-in value in that theme. A value
+  set for one theme never reaches the other (a `danger` set only in `light` leaves the dark theme's
+  built-in `danger`). Without any colour (also with empty tables) nothing changes: no stylesheet,
+  no link, byte-identical pages.
+- **Syntax:** a TOML string `#rgb` or `#rrggbb`, hex digits in either case, nothing around it — no
+  whitespace (values are not trimmed), no alpha, no `rgb()`, `hsl()` or colour names. Normalised
+  to lowercase `#rrggbb` (`#ABC` → `#aabbcc`).
+- **Not configurable:** `--cb-shadow-card` (not a plain colour) and every non-colour token
+  (fonts, radii, spacing). The built-in `/favicon.svg` keeps its fixed colours; for a matching
+  favicon set `branding.favicon`.
+- **Env:** `CAPSULEBIN__BRANDING__COLORS__<THEME>__<KEY>`, e.g.
+  `CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT_HOVER=#5eead4`. Keys are case-sensitive in the file
+  (`BG` is unknown); env keys are lowercased by the overlay.
+
+Startup errors, raised while the configuration is parsed (so also by `capsulebin check`), each
+naming the full key: a key of `[branding.colors]` other than `light`/`dark`
+(`branding.colors.dim is unknown`, `branding.colors.shadow_card is unknown`), `[branding.colors]`
+or a theme that is not a table, an unknown key in a theme table
+(`branding.colors.light.shadow_card is unknown`, followed by the accepted keys), and a value that
+is not a string in the syntax above (`branding.colors.light.bg must be a colour as #rgb or
+#rrggbb`).
+
+**Contrast warnings.** Per theme, the merged palette (configured value, else built-in) is checked
+against the pairs and thresholds of the built-in theme (WCAG 2.2 contrast ratio):
+
+| Foreground | On | At least |
+| --- | --- | --- |
+| `text`, `text_muted`, `accent`, `danger`, `warning`, `success` | `bg`, `surface`, `surface_sunken` | 4.5:1 |
+| `accent_text` | `accent` | 4.5:1 |
+| `border_strong` | `bg`, `surface`, `surface_sunken` | 3:1 |
+| `focus_ring` | `bg` | 3:1 |
+
+Each failing pair is one warning naming theme, both keys and the ratio with two decimals, e.g.
+`light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1,
+below 4.5:1`. A warning names both keys even if only one of them is configured (the other is the
+built-in value). The built-in palette gives none. Warnings never stop anything: `serve` logs each
+once at `WARN` at startup; `check` prints each as `warning: …` to stderr, still prints its `ok:`
+line to stdout and exits 0. The other subcommands load the same configuration silently. Tokens
+outside the table (`border`, `accent_hover`, the `tint_*` tokens, text on a tint) are not checked.
+
 ### Serving the files
 
 Each configured file is served at `/branding/<first 16 hex digits of its SHA-256>.<ext>` (`ext`
@@ -68,6 +122,29 @@ from the format: `png`, `webp`, `ico`), from memory, in both asset modes (embedd
 - one route per distinct file: the same file configured under two keys is one URL;
 - every other path under `/branding/`, and every `/branding/` path on an instance without branding
   files, has no route and gets the generic `404` of an unknown path, byte for byte.
+
+With at least one colour configured, the generated stylesheet is served the same way at
+`/branding/<first 16 hex digits of its SHA-256>.css` as `text/css; charset=utf-8`. It contains
+only the configured tokens, as `--cb-x-y: #rrggbb;`, in the order of `tokens.css`, in these blocks
+(a theme without configured tokens has none):
+
+1. light tokens in `@media not all and (prefers-color-scheme: dark) { :root { … } }`;
+2. dark tokens in `@media (prefers-color-scheme: dark) { :root { … } }`;
+3. light tokens in `:root[data-theme="light"] { … }`;
+4. dark tokens in `:root[data-theme="dark"] { … }`.
+
+It is linked after the bundled stylesheet, so each block wins over its built-in counterpart of
+equal specificity; the two media queries are exact complements, so neither system preference sees
+the other theme's values; the `data-theme` blocks (the manual toggle) are more specific and win
+over the system preference in both directions. Without colours every `/branding/…css` path is the
+generic `404`.
+
+**Access log:** a branding file's URL — `/branding/` followed directly by 16 lowercase hex digits
+and `.png`, `.webp`, `.ico` or `.css` — is logged verbatim (it is a content hash, useful when
+diagnosing caching). Any other segment below `/branding/` is redacted as on every other path: to
+`{id}`, unless it has the shape of a build asset name (`colors.css`, `logo.png` stay verbatim, as
+anywhere in a path). `webp` is known only for branding file names, so it stays redacted everywhere
+else (`/p/<id>.webp` → `/p/{id}`).
 
 `/favicon.svg` is part of the web build (`public/favicon.svg`, the CapsuleBin symbol in white on a
 rounded `#0f766e` tile, fixed colours) and served like any static file as `image/svg+xml`. A
@@ -86,6 +163,7 @@ Every page of the five shells (create, view, manage, report, and the three legal
 | Slogan next to the logo (create page only) | `<span class="cb-claim">` with the catalogue's `create.claim` | the page language's tagline in the same span; an empty one removes the span |
 | Texts naming the service | `create.noscript`, `view.noscript`, `report.back` say `CapsuleBin` | the name |
 | `<link rel="icon">` | `href="/favicon.svg"` | `href` = the favicon's `/branding/` URL |
+| Colour stylesheet | no link | with `[branding.colors]`: one `<link rel="stylesheet" href="/branding/<hash>.css">` immediately before `</head>`, after every other stylesheet link; the rest of the page unchanged |
 | Footer, last item | `<span>Powered by <a href="https://github.com/capsulebin/capsulebin" target="_blank" rel="noopener noreferrer">CapsuleBin</a></span>` (de: `Betrieben mit …`) | same text, `href` = `source_url` |
 
 - **The attribution always says "CapsuleBin"** — it names the software, not the instance — and
@@ -110,18 +188,22 @@ Every page of the five shells (create, view, manage, report, and the three legal
 
 | Where | What |
 | --- | --- |
-| `src/server/src/config/model.rs` | `BrandingConfig` (`Config.branding`, defaults; `languages` collects `[branding.<lang>]` through `flatten` and `branding_languages`, which refuses every non-table key while parsing), `BrandingTexts` (`[branding.<lang>]`, `deny_unknown_fields`, only `tagline`), `BrandingConfig::validate(default_language)` (name and taglines through `check_brand_text` — trimmed, length limit, no control characters, returns the trimmed text; only an empty name is refused —, `hide_name`/`logo_dark` without `logo`, `is_source_url`, unknown and default-language subtables), the constants for defaults and the 64- and 80-character limits |
+| `src/server/src/config/model.rs` | `BrandingConfig` (`Config.branding`, defaults; `colors` is a named field, so `[branding.colors]` never reaches the language map; `languages` collects `[branding.<lang>]` through `flatten` and `branding_languages`, which refuses every non-table key while parsing), `BrandingTexts` (`[branding.<lang>]`, `deny_unknown_fields`, only `tagline`), `BrandingConfig::validate(default_language)` (name and taglines through `check_brand_text` — trimmed, length limit, no control characters, returns the trimmed text; only an empty name is refused —, `hide_name`/`logo_dark` without `logo`, `is_source_url`, unknown and default-language subtables), the constants for defaults and the 64- and 80-character limits |
 | `src/server/src/config.rs` | `Config::validate` calls `branding.validate(default_language)` and `branding::resolve()`; `Resolved.branding` |
-| `src/server/src/branding.rs` | `Branding` (name trimmed but not escaped, `hide_name`, `taglines` per known language, `logo`/`logo_dark`/`favicon` as `Option<BrandingFile>`, `source_url`), `Tagline` (`BuiltIn`, `Hidden`, `Text` — trimmed, not escaped), `Branding::tagline(language)` (an unlisted language: `BuiltIn`), `BrandingFile` (`url`, `content_type`, `bytes`), `resolve()`: resolves the taglines with their fallback, reads and checks the files (formats, signatures, 256 KiB), computes the URLs; `Branding::files()` (deduplicated by URL) |
+| `src/server/src/branding.rs` | `Branding` (name trimmed but not escaped, `hide_name`, `taglines` per known language, `logo`/`logo_dark`/`favicon` as `Option<BrandingFile>`, `source_url`), `Tagline` (`BuiltIn`, `Hidden`, `Text` — trimmed, not escaped), `Branding::tagline(language)` (an unlisted language: `BuiltIn`), `BrandingFile` (`url`, `content_type`, `bytes`), `resolve()`: resolves the taglines with their fallback, reads and checks the files (formats, signatures, 256 KiB), computes the URLs; `Branding.colors` and `Branding.stylesheet` (the generated stylesheet as a `BrandingFile`, `None` without colours); `Branding::files()` (files and stylesheet, deduplicated by URL) |
+| `src/server/src/branding/colors.rs` | `Color` (parse `#rgb`/`#rrggbb`, WCAG luminance and contrast, `#rrggbb` display), `Theme`, `TOKENS` (the 18 keys with their built-in light and dark values, order of `tokens.css`), `CONTRAST_PAIRS`; `Colors` — configuration and runtime type with its own `Deserialize` (every error names the full key), `configured(theme)`, `stylesheet()`, `contrast_warnings()`; `ContrastWarning` (its `Display` is the warning text) |
+| `src/server/src/commands/serve.rs`, `check.rs` | Contrast warnings: `tracing::warn!` at startup, `warning: …` on stderr |
 | `src/server/src/lib.rs` | `AppState.branding: Arc<Branding>`; `router()` merges `api::branding::routes` before the asset routes |
-| `src/server/src/api/branding.rs` | One `GET` route per file in `Branding::files()`, with its MIME type and the immutable `Cache-Control` |
-| `src/server/src/api/assets.rs` | `NAME_TOKEN`, `FAVICON_TOKEN`, `SOURCE_TOKEN`, the server-internal `TAGLINE_TOKEN`, `LOGO_REGION`, `WORDMARK_REGION`, `TAGLINE_REGION`, `BUILT_IN_FAVICON`; `render()` → `with_branding_regions()` (logo, wordmark and tagline regions, the latter per page language; decides the tagline variant once and also returns the escaped value for `TAGLINE_TOKEN`), `fill_tokens()` (all tokens in one pass) |
+| `src/server/src/api/branding.rs` | One `GET` route per file in `Branding::files()` (stylesheet included), with its MIME type and the immutable `Cache-Control` |
+| `src/server/src/api/access_log.rs` | `branding` in `STATIC_SEGMENTS`; `is_branding_filename` keeps a branding file name directly below `/branding/` |
+| `src/server/web/tests/fixtures/contrast-pairs.json` | The contrast pairs and thresholds, by config key; read by `contrast.test.ts`, equal to `CONTRAST_PAIRS` by a Rust test |
+| `src/server/src/api/assets.rs` | `with_stylesheet()` (`HEAD_END`), `NAME_TOKEN`, `FAVICON_TOKEN`, `SOURCE_TOKEN`, the server-internal `TAGLINE_TOKEN`, `LOGO_REGION`, `WORDMARK_REGION`, `TAGLINE_REGION`, `BUILT_IN_FAVICON`; `render()` → `with_stylesheet()` → `with_branding_regions()` (logo, wordmark and tagline regions, the latter per page language; decides the tagline variant once and also returns the escaped value for `TAGLINE_TOKEN`), `fill_tokens()` (all tokens in one pass) |
 | `src/server/web/{index,p,manage,report,legal}.html` | `{{name}}` in `<title>` and the header wordmark, `<link rel="icon" href="{{favicon}}" />` after the `color-scheme` meta and before the head scripts, the logo and wordmark marker regions in the header, `<span>{{shell.poweredBy}}</span>` as the last footer item; `index.html` also the tagline region around its `.cb-claim` |
 | `src/server/web/scripts/shells.ts` | `{{name}}`/`{{favicon}}` → `NAME_TOKEN`/`FAVICON_TOKEN`; after escaping a catalogue text, `{name}` → `NAME_TOKEN` (`NAME_PLACEHOLDER`) and `{project}` → `PROJECT_LINK` (`PROJECT_PLACEHOLDER`), the project's name linked to `SOURCE_TOKEN` in a new tab; `DEFAULT_BRANDING`; `fillServerTokens()` fills name, favicon and source token with the defaults for the dev server |
 | `src/server/web/src/i18n/{en,de}.json` | `shell.poweredBy` (`Powered by {project}`, `Betrieben mit {project}`); `create.claim` (the built-in slogan); `{name}` in `create.noscript`, `view.noscript`, `report.back` |
 | `src/server/web/src/styles/base.css` | `.cb-logo-img` (size, `object-fit`) and the light/dark switch |
 | `src/server/web/public/favicon.svg` | The built-in favicon |
-| `capsulebin.example.toml` | The commented `[branding]` section |
+| `capsulebin.example.toml` | The commented `[branding]` section, `[branding.colors.light]`/`[branding.colors.dark]` with every key at its built-in value |
 
 ### What the build writes and what the server fills in
 
@@ -155,8 +237,13 @@ The regions span several lines (Prettier formats the templates); the server repl
 between the markers. A start marker without its end is left as it is. No `<!--capsulebin:` marker
 of a complete region reaches a served page.
 
-**Order in `render()`:** (1) logo, wordmark and tagline regions — the images' `alt` is written as
-the name token, the tagline as the tagline token; (2) every token (prefix, default, name, tagline,
+The colour stylesheet's link needs neither token nor marker: no template changes, so the web build
+stays the same for every instance.
+
+**Order in `render()`:** (0) with colours, the stylesheet link before the first `</head>` of the raw
+shell, before any operator value is in it (a shell without `</head>` stays as it is); (1) logo,
+wordmark and tagline regions — the images' `alt` is written as the name token, the tagline as the
+tagline token; (2) every token (prefix, default, name, tagline,
 favicon, source) in **one pass**, so a value that was put in is never searched for tokens again,
 and text that only looks like a token start stays; (3) legal footer links; then, in
 `Document::build`, legal title and content. Every operator value is escaped and therefore holds no
@@ -165,18 +252,23 @@ and text that only looks like a token start stays; (3) legal footer links; then,
 The Vite dev server fills name, favicon and source token with `DEFAULT_BRANDING` (name
 `CapsuleBin`, `/favicon.svg`, the upstream repository) and leaves the marker regions in place
 (tagline region included, with the built-in slogan inside); they are comments and render nothing.
+It links no colour stylesheet and shows the built-in colours only.
 
 ### Tests
 
 | Test | Covers |
 | --- | --- |
-| `src/server/src/config/tests.rs` | Defaults, env equivalents (incl. `CAPSULEBIN__BRANDING__DE__TAGLINE`), unknown keys and subtables, tagline limits, every `validate` and file error (temporary files) |
+| `src/server/src/config/tests.rs` | Defaults, env equivalents (incl. `CAPSULEBIN__BRANDING__DE__TAGLINE` and every colour key), unknown keys and subtables (colours included), refused colour values, `[branding.colors]` next to `[branding.de]`, tagline limits, every `validate` and file error (temporary files) |
+| `src/server/src/branding/colors.rs` (unit) | Colour syntax and normalisation, WCAG ratio, warnings on the merged palette per theme, the exact stylesheet text; `TOKENS` equal to all four palette blocks of `tokens.css`, `CONTRAST_PAIRS` equal to the fixture, the example configuration's colour sections equal to `TOKENS` |
 | `src/server/src/branding.rs`, `src/server/src/api/assets.rs` (unit) | Signatures, hash length, tagline fallback and trimming; `render()` with default, escaped and token-like values, logo, dark logo, tagline per page language, incomplete regions; every template carries tokens and regions once, the tagline region only in `index.html` |
 | `src/server/tests/branding.rs` | `/branding/` serving (both asset modes, read once at startup, same file twice, generic `404`), and every page in `en`/`de` from its own test shells via `server.asset_dir`: default, escaped name, token-like name, logo, `hide_name`, all keys set, favicon alone; tagline for every language, overridden by `[branding.de]`, only `[branding.de]`, empty, escaped and literal; the attribution with only the project's name linked |
-| `src/server/tests/branding_acceptance.rs` | The real binary: every unknown key, refused value and every unusable or unreadable file stops `check` and `serve` with a non-zero exit code and a message naming the key (no file content); every key set from the environment reaches the started binary |
+| `src/server/tests/branding_colors.rs` | The stylesheet served from memory in both asset modes; without colours every `/branding/…css` the generic `404`; every page in `en`/`de` (legal pages included) with exactly one link last in the head and otherwise unchanged, without colours no link |
+| `src/server/tests/branding_acceptance.rs` | The real binary: every unknown key, refused value (colours from file and environment included) and every unusable or unreadable file stops `check` and `serve` with a non-zero exit code and a message naming the key (no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr with `ok:` and exit 0, and in the `WARN` log of a started `serve` |
+| `src/server/src/api/access_log.rs` (unit) | Branding file URLs verbatim for every extension; any other segment below `/branding/` under the general rules (redacted, asset-shaped names such as `colors.css` kept); `webp` elsewhere redacted |
+| `src/server/web/tests/contrast.test.ts` | Every pair of `contrast-pairs.json` on all four palette blocks of `tokens.css` |
 | `src/server/web/tests/shells.test.ts` | No literal `CapsuleBin` in the templates, the attribution as the last footer item with only the project's name linked (the only link without the prefix token), `{project}` turned into the link after escaping and refused inside a comment, the tagline markers around the create page's slogan and nowhere else |
 | `src/server/web/tests/dev-server.acceptance.test.ts` | The dev server leaves no token unfilled and the tagline region in place |
-| `src/server/web/e2e/branding.e2e.ts` | Default instance (favicon, symbol, attribution in `en`/`de`); a branded instance started per worker through `e2e/instance.ts` with the fixtures in `e2e/fixtures/` (name and taglines with special characters, `[branding.de]` tagline, PNG logo, WebP dark logo, PNG favicon, custom `source_url`); an instance with an empty tagline; the attribution opening a new page and leaving the current one; logo visibility for both system preferences and both toggle directions, with and without a dark logo |
+| `src/server/web/e2e/branding.e2e.ts` | Default instance (favicon, symbol, attribution in `en`/`de`); a branded instance started per worker through `e2e/instance.ts` with the fixtures in `e2e/fixtures/` (name and taglines with special characters, `[branding.de]` tagline, PNG logo, WebP dark logo, PNG favicon, custom `source_url`); an instance with an empty tagline; the attribution opening a new page and leaving the current one; logo visibility for both system preferences and both toggle directions, with and without a dark logo; on the branded instance (colours from the environment: `accent` in both themes, `danger` light only) the computed `--cb-accent`/`--cb-danger` in every theme state, the dark `danger` staying built-in; the default instance requests no colour stylesheet |
 | `scripts/smoke.sh` | Every page links `/favicon.svg` and the upstream repository (the one allowed outgoing link, only "CapsuleBin", new tab); `/favicon.svg` is `image/svg+xml` with the security headers |
 
 The Rust page tests use hand-written test shells because the CI job `Rust` has no web build; the
@@ -266,18 +358,64 @@ real shells are covered by the shell tests and the browser tests.
 - **No change to the privacy notice or the built-in legal texts** — branding adds no third-party
   request, no cookie and no storage; the attribution is an ordinary outgoing link under
   `Referrer-Policy: no-referrer`. (20261120-branding-identity)
+- **Colours as named token keys, turned into a generated stylesheet** — not operator CSS (see
+  above): the server writes the CSS itself from checked values, so the tokens stay the only
+  interface and contrast can be computed. (20261120-branding-colours, user decision)
+- **A contrast failure is a warning, not a startup error** — an operator's corporate colours may
+  miss a threshold by a little, and refusing to start would be out of proportion; the warning
+  makes it visible in the log and in `check`. (20261120-branding-colours, user decision)
+- **Only `#rgb` / `#rrggbb`** — enough to compute contrast exactly, trivial to validate, and the
+  value can never leave its CSS declaration. No alpha: the contrast of a translucent colour depends
+  on what lies below it. Values are not trimmed; whitespace is refused like any wrong syntax.
+  (20261120-branding-colours, user decision)
+- **`--cb-shadow-card` stays built-in** — not a plain colour and no part of any contrast pair; 18
+  tokens per theme are configurable. (20261120-branding-colours, user decision)
+- **`[branding.colors.light]`/`[branding.colors.dark]`, not `[branding.light]`/`[branding.dark]`**
+  — `BrandingConfig` collects `[branding.<lang>]` through `flatten`; `colors` as a named field never
+  reaches that map, so colours and language tables cannot collide. Keys are the token names in
+  snake_case because env keys are lowercased and `__` separates path segments.
+  (20261120-branding-colours, user decision)
+- **`Colors` has its own `Deserialize` instead of `deny_unknown_fields`** — so every error names
+  the full key (`branding.colors.light.shadow_card`), from the file or the environment.
+  (20261120-branding-colours)
+- **The light block sits in `@media not all and (prefers-color-scheme: dark)`, not in a plain
+  `:root`** — the generated sheet comes after the bundled one, so a plain `:root { light }` would
+  override the bundle's dark media block for a dark system preference. With the exact complement of
+  the dark query, a token set for one theme never leaks into the other; the `data-theme` blocks
+  follow and win by specificity, so the toggle works both ways. (20261120-branding-colours)
+- **The link is inserted before `</head>`, not through a shell marker** — Vite appends its own
+  stylesheet link at the end of the head, after anything in the template; with equal specificity
+  the later sheet wins. Without template changes the web build and its reproducibility are
+  untouched, and an instance without colours serves byte-identical pages. It is inserted first in
+  `render()`, into the raw shell, before any operator value is put in, so the `</head>` it is placed
+  before is always the shell's own. (20261120-branding-colours)
+- **The stylesheet is a `BrandingFile`** — the same content-hashed URL, in-memory serving,
+  immutable caching and generic `404` as the images, through the same route; `style-src 'self'`
+  allows it, so the CSP is unchanged. (20261120-branding-colours)
+- **Contrast pairs in one fixture, the built-in palette copied to Rust and pinned by tests** — the
+  web contrast test and the server's warnings cannot drift apart. The pairs are a Rust constant
+  that a test keeps equal to `src/server/web/tests/fixtures/contrast-pairs.json`, so production
+  code does not depend on a file under `web/tests`; `TOKENS` is kept equal to `tokens.css` the same
+  way. (20261120-branding-colours)
+- **Warnings only from `serve` and `check`** — the two commands where an operator looks at the
+  configuration; `check` writes them to stderr so its stdout stays one `ok:` line.
+  (20261120-branding-colours)
+- **Branding file names logged verbatim only directly below `/branding/`** — a strict shape rule
+  (16 lowercase hex + a branding extension) instead of `webp` as a general asset extension, which
+  would have left `/p/<id>.webp` unredacted. (20261120-branding-colours)
 
 ## Limits and open points
 
-- Theme colours (`[branding.light]`/`[branding.dark]`, a generated override stylesheet, a contrast
-  warning) are a planned follow-up and will extend ADR-017.
 - No SVG logos or favicons, no custom fonts, no operator CSS, no layout changes.
-- The name is not used in the CLI, the API's `problem+json`, the logs or the binary name.
-- Changing a file needs a restart; there is no reload.
-- The access log redacts the `branding` segment like any unknown segment: a PNG or ICO request is
-  logged as `/{id}/<hash>.png`, a WebP request as `/{id}/{id}` (`webp` is not among the asset
-  extensions of `access_log.rs`).
-- The CSP and the security-header layer were not changed; images load under `img-src 'self'`.
+- Colours: no `--cb-shadow-card` or other non-colour token, no syntax beyond `#rgb`/`#rrggbb`, no
+  colours per language. The built-in `/favicon.svg` and the Vite dev server keep the built-in
+  colours. Contrast is checked only for the pairs above (not text on the tint tokens, not
+  `accent_hover`); a failing pair never stops the start.
+- The name and the colours are not used in the CLI, the API's `problem+json`, the logs or the
+  binary name.
+- Changing a file or a colour needs a restart; there is no reload.
+- The CSP and the security-header layer were not changed; images load under `img-src 'self'`, the
+  colour stylesheet under `style-src 'self'`.
 
 ## History
 
@@ -287,3 +425,6 @@ real shells are covered by the shell tests and the browser tests.
 - 2026-11-20 20261120-branding-identity: `tagline` and `[branding.<lang>] tagline` for the create
   page's slogan (empty removes it); only "CapsuleBin" in the attribution is the link, opened in a
   new tab; wide logos scaled, not squashed.
+- 2026-11-20 20261120-branding-colours: `[branding.colors.light]`/`[branding.colors.dark]` with a
+  generated stylesheet under `/branding/` linked from every page; contrast warnings in `serve` and
+  `check`; branding file URLs logged verbatim in the access log.
