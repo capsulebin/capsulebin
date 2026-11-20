@@ -1,5 +1,5 @@
-//! The operator's branding: instance name, logo, dark logo, favicon and the
-//! target of the attribution link.
+//! The operator's branding: instance name, tagline, logo, dark logo, favicon
+//! and the target of the attribution link.
 //!
 //! Configured in `[branding]` ([`BrandingConfig`]) and resolved once at
 //! startup: the files are read, checked and kept in memory, each under a URL
@@ -11,12 +11,13 @@
 //! Only raster images are accepted: an SVG is an active document, and serving
 //! one from the operator would need its own sandbox policy.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::config::{BrandingConfig, ConfigError};
+use crate::config::{BrandingConfig, ConfigError, KNOWN_LANGUAGES};
 
 /// Largest accepted branding file. Generous for a header logo or a favicon,
 /// small in memory.
@@ -32,6 +33,9 @@ pub struct Branding {
     pub name: String,
     /// Show the logo without the name next to it (only with a logo).
     pub hide_name: bool,
+    /// The slogan of each known language; a language without an entry has
+    /// the built-in one. Read through [`Branding::tagline`].
+    pub taglines: BTreeMap<&'static str, Tagline>,
     pub logo: Option<BrandingFile>,
     /// The logo for the dark theme (only with a logo).
     pub logo_dark: Option<BrandingFile>,
@@ -41,7 +45,35 @@ pub struct Branding {
     pub source_url: String,
 }
 
+/// The slogan next to the logo on the create page, in one language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tagline {
+    /// The built-in, translated slogan of the catalogue.
+    BuiltIn,
+    /// No slogan: the operator configured an empty tagline.
+    Hidden,
+    /// The operator's text, trimmed, not escaped.
+    Text(String),
+}
+
+impl Tagline {
+    /// A configured tagline: trimmed, empty hides the slogan.
+    fn configured(value: &str) -> Self {
+        match value.trim() {
+            "" => Self::Hidden,
+            text => Self::Text(text.to_owned()),
+        }
+    }
+}
+
+static BUILT_IN_TAGLINE: Tagline = Tagline::BuiltIn;
+
 impl Branding {
+    /// The slogan of the pages in `language`.
+    pub fn tagline(&self, language: &str) -> &Tagline {
+        self.taglines.get(language).unwrap_or(&BUILT_IN_TAGLINE)
+    }
+
     /// Every configured file, a file configured twice (same content) once.
     pub fn files(&self) -> Vec<&BrandingFile> {
         let mut files: Vec<&BrandingFile> = Vec::new();
@@ -118,11 +150,28 @@ pub fn resolve(config: &BrandingConfig) -> Result<Branding, ConfigError> {
     Ok(Branding {
         name: config.name.trim().to_owned(),
         hide_name: config.hide_name,
+        taglines: taglines(config),
         logo: file(&config.logo, "branding.logo", IMAGE_FORMATS)?,
         logo_dark: file(&config.logo_dark, "branding.logo_dark", IMAGE_FORMATS)?,
         favicon: file(&config.favicon, "branding.favicon", ICON_FORMATS)?,
         source_url: config.source_url.clone(),
     })
+}
+
+/// The tagline of every known language: its `[branding.<lang>]` tagline if
+/// set, else `branding.tagline` if set, else the built-in one.
+fn taglines(config: &BrandingConfig) -> BTreeMap<&'static str, Tagline> {
+    KNOWN_LANGUAGES
+        .iter()
+        .map(|&language| {
+            let configured = config
+                .languages
+                .get(language)
+                .and_then(|texts| texts.tagline.as_deref())
+                .or(config.tagline.as_deref());
+            (language, configured.map_or(Tagline::BuiltIn, Tagline::configured))
+        })
+        .collect()
 }
 
 /// Reads one file. Relative paths are resolved against the working directory,
@@ -177,6 +226,56 @@ mod tests {
         assert!(Format::Ico.has_signature(&[0, 0, 1, 0, 1, 0]));
         assert!(!Format::Ico.has_signature(&[0, 0, 2, 0, 1, 0]));
         assert!(!Format::Png.has_signature(b"\x89PNG"));
+    }
+
+    fn tagline_config(tagline: Option<&str>, de: Option<&str>) -> BrandingConfig {
+        let mut config = BrandingConfig {
+            tagline: tagline.map(str::to_owned),
+            ..BrandingConfig::default()
+        };
+        if let Some(de) = de {
+            config.languages.insert(
+                "de".to_owned(),
+                crate::config::BrandingTexts {
+                    tagline: Some(de.to_owned()),
+                },
+            );
+        }
+        config
+    }
+
+    /// The language's tagline, else `branding.tagline`, else the built-in
+    /// slogan; empty (also after trimming) hides it.
+    #[test]
+    fn taglines_fall_back_from_the_language_to_branding_to_built_in() {
+        let text = |text: &str| Tagline::Text(text.to_owned());
+        for (tagline, de, expected_en, expected_de) in [
+            (None, None, Tagline::BuiltIn, Tagline::BuiltIn),
+            (Some(" Ours "), None, text("Ours"), text("Ours")),
+            (None, Some("Unser"), Tagline::BuiltIn, text("Unser")),
+            (Some("Ours"), Some("Unser"), text("Ours"), text("Unser")),
+            (Some(""), None, Tagline::Hidden, Tagline::Hidden),
+            (Some("Ours"), Some("  "), text("Ours"), Tagline::Hidden),
+            (Some(""), Some("Unser"), Tagline::Hidden, text("Unser")),
+            (None, Some(""), Tagline::BuiltIn, Tagline::Hidden),
+        ] {
+            let branding = resolve(&tagline_config(tagline, de)).expect("resolve");
+            assert_eq!(branding.tagline("en"), &expected_en, "{tagline:?} {de:?}");
+            assert_eq!(branding.tagline("de"), &expected_de, "{tagline:?} {de:?}");
+        }
+    }
+
+    /// The operator's text is kept as written: escaping is the page's job.
+    #[test]
+    fn taglines_are_not_escaped() {
+        let branding = resolve(&tagline_config(Some("A&B <i>%%capsulebin:name%%</i>"), None)).expect("resolve");
+        assert_eq!(branding.tagline("en"), &Tagline::Text("A&B <i>%%capsulebin:name%%</i>".to_owned()));
+    }
+
+    #[test]
+    fn an_unknown_language_has_the_built_in_tagline() {
+        let branding = resolve(&tagline_config(Some("Ours"), None)).expect("resolve");
+        assert_eq!(branding.tagline("fr"), &Tagline::BuiltIn);
     }
 
     #[test]

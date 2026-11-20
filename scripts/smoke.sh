@@ -208,8 +208,10 @@ for lang in en de; do
     if grep -q '%%capsulebin:' "${WORKDIR}/shell.html"; then
       fail "${route} still carries a token of the web build"
     fi
-    # The "Powered by" link to the source code is the one outgoing link.
-    grep -qF '<a href="https://github.com/capsulebin/capsulebin">' "${WORKDIR}/shell.html" ||
+    # The "Powered by" link to the source code is the one outgoing link; only the
+    # project's name is linked, opened in a new tab.
+    grep -qF '<a href="https://github.com/capsulebin/capsulebin" target="_blank" rel="noopener noreferrer">CapsuleBin</a>' \
+      "${WORKDIR}/shell.html" ||
       fail "${route} lacks the link to the source code"
     grep -qE '<link rel="icon" href="/favicon.svg"[[:space:]]*/?>' "${WORKDIR}/shell.html" ||
       fail "${route} does not link the built-in favicon"

@@ -20,5 +20,6 @@ The name "CapsuleBin" and the logo identify the project; the AGPL covers the cod
 use the name or logo for other products or services.
 
 An operator can show an instance under their own name, logo and favicon (`[branding]`, see
-[branding.md](../branding.md)). The footer link "Powered by CapsuleBin" stays on every instance and
-keeps the project's name: it names the software the instance runs and points to its source code.
+[branding.md](../branding.md)). The footer attribution "Powered by CapsuleBin" stays on every
+instance and keeps the project's name: it names the software the instance runs, and "CapsuleBin"
+in it links to its source code.

@@ -16,6 +16,8 @@ import {
     NAME_PLACEHOLDER,
     NAME_TOKEN,
     PREFIX_TOKEN,
+    PROJECT_LINK,
+    PROJECT_PLACEHOLDER,
     SOURCE_TOKEN,
     SHELLS,
     catalogueLanguages,
@@ -64,6 +66,8 @@ const MARKERS = {
     '<!--/capsulebin:logo-->': () => 1,
     '<!--capsulebin:wordmark-->': () => 1,
     '<!--/capsulebin:wordmark-->': () => 1,
+    '<!--capsulebin:tagline-->': (shell: string) => (shell === 'index' ? 1 : 0),
+    '<!--/capsulebin:tagline-->': (shell: string) => (shell === 'index' ? 1 : 0),
 };
 
 /** The catalogue texts that name the service, through {@link NAME_PLACEHOLDER}, and their shell. */
@@ -189,6 +193,21 @@ describe('generator', () => {
         );
     });
 
+    it('turns the project placeholder into the project link after escaping', () => {
+        expect(renderShell('<p>{{a.b}}</p>', 'en', { 'a.b': '<b> & {project}' })).toBe(
+            `<p>&lt;b&gt; &amp; ${PROJECT_LINK}</p>`,
+        );
+        expect(PROJECT_LINK).toBe(
+            `<a href="${SOURCE_TOKEN}" target="_blank" rel="noopener noreferrer">CapsuleBin</a>`,
+        );
+    });
+
+    it('fails on the project placeholder inside a comment', () => {
+        expect(() =>
+            renderShell('<!--capsulebin:legal-link:terms:{{a.b}}-->', 'de', { 'a.b': '{project}' }),
+        ).toThrow(/de\.json.*\{\{a\.b\}\}.*comment.*\{project\}/);
+    });
+
     it('fails on a text the catalogue does not have', () => {
         expect(() => renderShell('{{missing.key}}', 'de', {})).toThrow(/de\.json.*missing\.key/);
     });
@@ -209,9 +228,9 @@ describe.each(LANGUAGES)('catalogue %s', (lang) => {
     });
 
     /**
-     * Every `{…}` in a text placed into a shell becomes the name token or stays
-     * literally, so only the texts that name the service may have one, and only
-     * the name.
+     * Every `{…}` in a text placed into a shell becomes the name token, the
+     * project link or stays literally, so only the texts that name the service
+     * may have one, and only the name, and only the attribution names the project.
      */
     it('names the service through the name placeholder in exactly the naming texts', () => {
         const placed = new Set(
@@ -222,16 +241,19 @@ describe.each(LANGUAGES)('catalogue %s', (lang) => {
             ),
         );
         const withParameter = [...placed].filter((key) => /\{\w+\}/.test(catalogue[key] ?? ''));
-        expect(withParameter.sort()).toEqual(Object.keys(NAMING_TEXTS).sort());
+        expect(withParameter.sort()).toEqual(
+            [...Object.keys(NAMING_TEXTS), 'shell.poweredBy'].sort(),
+        );
         for (const key of Object.keys(NAMING_TEXTS)) {
             expect(catalogue[key]!.match(/\{\w+\}/g), key).toEqual([NAME_PLACEHOLDER]);
             expect(catalogue[key], key).not.toContain('CapsuleBin');
         }
     });
 
-    /** The attribution names the project, whatever the instance is called. */
-    it('keeps the product name in the attribution', () => {
-        expect(catalogue['shell.poweredBy']).toMatch(/\bCapsuleBin$/);
+    /** The attribution names the project, whatever the instance is called, through the link. */
+    it('names the project in the attribution through the project placeholder', () => {
+        expect(catalogue['shell.poweredBy']!.match(/\{\w+\}/g)).toEqual([PROJECT_PLACEHOLDER]);
+        expect(catalogue['shell.poweredBy']).not.toContain('CapsuleBin');
     });
 });
 
@@ -297,13 +319,47 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         expect(html.split(FAVICON_TOKEN)).toHaveLength(2);
     });
 
-    /** AGPL section 13: every page offers the source code, as the last footer link. */
-    it('ends the footer links with the attribution to the source token', () => {
-        const links = doc.querySelectorAll('.cb-foot-links a');
-        const attribution = links[links.length - 1]!;
-        expect(attribution.getAttribute('href')).toBe(SOURCE_TOKEN);
-        expect(attribution.textContent).toBe(readCatalogue(lang)['shell.poweredBy']);
+    /**
+     * AGPL section 13: every page offers the source code, as the last footer item.
+     * Only the project's name is the link, opened in a new tab; the rest of the
+     * text stays outside it.
+     */
+    it('ends the footer links with the attribution, only the project name linked', () => {
+        const attribution = doc.querySelector('.cb-foot-links')!.lastElementChild!;
+        expect(attribution.tagName).toBe('SPAN');
+        expect(attribution.textContent).toBe(
+            readCatalogue(lang)['shell.poweredBy']!.replace(PROJECT_PLACEHOLDER, 'CapsuleBin'),
+        );
+        const links = attribution.querySelectorAll('a');
+        expect(links).toHaveLength(1);
+        const link = links[0]!;
+        expect(link.getAttribute('href')).toBe(SOURCE_TOKEN);
+        expect(link.getAttribute('target')).toBe('_blank');
+        expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(link.textContent).toBe('CapsuleBin');
+        const [before, after] = readCatalogue(lang)['shell.poweredBy']!.split(PROJECT_PLACEHOLDER);
+        expect(link.previousSibling?.textContent ?? '').toBe(before);
+        expect(link.nextSibling?.textContent ?? '').toBe(after);
         expect(html.split(SOURCE_TOKEN)).toHaveLength(2);
+    });
+
+    /** The server replaces the region with a configured tagline or drops it (`api/assets.rs`). */
+    it('wraps the slogan of the create page, and only it, in the tagline markers', () => {
+        if (shell !== 'index') {
+            expect(html).not.toContain('capsulebin:tagline');
+            return;
+        }
+        const region = html.slice(
+            html.indexOf('<!--capsulebin:tagline-->') + '<!--capsulebin:tagline-->'.length,
+            html.indexOf('<!--/capsulebin:tagline-->'),
+        );
+        expect(region.trim()).toBe(
+            `<span class="cb-claim">${readCatalogue(lang)['create.claim']}</span>`,
+        );
+        expect(doc.querySelectorAll('.cb-claim')).toHaveLength(1);
+        expect(html.indexOf('<!--/capsulebin:wordmark-->')).toBeLessThan(
+            html.indexOf('<!--capsulebin:tagline-->'),
+        );
     });
 
     /**
@@ -378,7 +434,7 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
             .replaceAll(`data-default="${DEFAULT_TOKEN}"`, '')
             .replaceAll(NAME_TOKEN, '')
             .replaceAll(`<link rel="icon" href="${FAVICON_TOKEN}" />`, '')
-            .replaceAll(`<a href="${SOURCE_TOKEN}">`, '');
+            .replaceAll(PROJECT_LINK, '');
         expect(other).not.toContain('%%');
     });
 
@@ -388,7 +444,7 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
             const served = fillServerTokens(html, lang, d);
             expect(served).not.toContain('%%');
             expect(served).toContain(`<link rel="icon" href="${DEFAULT_BRANDING.favicon}" />`);
-            expect(served).toContain(`<a href="${DEFAULT_BRANDING.source}">`);
+            expect(served).toContain(PROJECT_LINK.replace(SOURCE_TOKEN, DEFAULT_BRANDING.source));
             expect(parse(served).title).toMatch(new RegExp(`${DEFAULT_BRANDING.name}$`));
             expect(
                 parse(served).querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]')!

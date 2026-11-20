@@ -24,6 +24,8 @@ import { KNOWN_LANGUAGES } from '@capsulebin/core';
 import {
     FAVICON_TOKEN,
     NAME_TOKEN,
+    PROJECT_LINK,
+    PROJECT_PLACEHOLDER,
     SHELLS,
     SOURCE_TOKEN,
     readCatalogue,
@@ -210,7 +212,7 @@ describe('catalogue modules in the build output', () => {
                 }
             });
 
-            it("keeps the server's markers: legal title and content, one footer link per page", () => {
+            it("keeps the server's markers: legal title and content, one footer link per page, tagline", () => {
                 const html = built();
                 const catalogue = readCatalogue(lang);
                 // <title>, header claim and <h1>.
@@ -232,6 +234,9 @@ describe('catalogue modules in the build output', () => {
                     expect(count(html, `<!--capsulebin:${marker}-->`), marker).toBe(1);
                     expect(count(html, `<!--/capsulebin:${marker}-->`), marker).toBe(1);
                 }
+                const tagline = shell === 'index' ? 1 : 0;
+                expect(count(html, '<!--capsulebin:tagline-->')).toBe(tagline);
+                expect(count(html, '<!--/capsulebin:tagline-->')).toBe(tagline);
             });
 
             it('keeps the branding tokens: name in the title, favicon link, attribution', () => {
@@ -239,7 +244,7 @@ describe('catalogue modules in the build output', () => {
                 expect(html).toMatch(new RegExp(`<title>[^\\n]*${NAME_TOKEN}</title>`));
                 expect(head()).toContain(`<link rel="icon" href="${FAVICON_TOKEN}" />`);
                 expect(html).toContain(
-                    `<a href="${SOURCE_TOKEN}">${readCatalogue(lang)['shell.poweredBy']}</a>`,
+                    `<span>${readCatalogue(lang)['shell.poweredBy']!.replace(PROJECT_PLACEHOLDER, PROJECT_LINK)}</span>`,
                 );
             });
 

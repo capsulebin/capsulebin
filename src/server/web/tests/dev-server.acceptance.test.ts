@@ -70,9 +70,22 @@ describe('dev server', () => {
                 );
                 expect(answer.text, path).toContain('<link rel="icon" href="/favicon.svg" />');
                 expect(answer.text, path).toContain(
-                    '<a href="https://github.com/capsulebin/capsulebin">',
+                    '<a href="https://github.com/capsulebin/capsulebin" target="_blank" rel="noopener noreferrer">CapsuleBin</a>',
                 );
             }
+        }
+    });
+
+    /** The tagline region is the server's to fill; the dev server leaves it, markers as comments. */
+    it('leaves the tagline region of the create page in place', async () => {
+        for (const lang of KNOWN_LANGUAGES) {
+            const prefix = languagePrefix(DEFAULT_LANGUAGE, lang);
+            const index = await get(`${prefix}/`);
+            expect(index.text, lang).toMatch(
+                /<!--capsulebin:tagline-->\s*<span class="cb-claim">[^<]+<\/span>\s*<!--\/capsulebin:tagline-->/,
+            );
+            const view = await get(`${prefix}/p/AbCdEfGhIjKlMnOpQrStUv`);
+            expect(view.text, lang).not.toContain('capsulebin:tagline');
         }
     });
 

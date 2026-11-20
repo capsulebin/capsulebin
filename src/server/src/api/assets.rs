@@ -32,7 +32,7 @@ use axum::{
 };
 
 use crate::AppState;
-use crate::branding::Branding;
+use crate::branding::{Branding, Tagline};
 use crate::config::{KNOWN_LANGUAGES, language_prefix};
 use crate::legal::{LegalPages, Which, escape};
 
@@ -67,12 +67,19 @@ pub const NAME_TOKEN: &str = "%%capsulebin:name%%";
 pub const FAVICON_TOKEN: &str = "%%capsulebin:favicon%%";
 /// The `href` of the attribution link: the escaped `branding.source_url`.
 pub const SOURCE_TOKEN: &str = "%%capsulebin:source%%";
+/// Where the server puts the operator's tagline in place of the built-in
+/// slogan: never written by the web build, only by [`with_branding_regions`],
+/// so that the text is filled in the one token pass like the name.
+const TAGLINE_TOKEN: &str = "%%capsulebin:tagline%%";
 /// What every token above starts with.
 const TOKEN_START: &str = "%%capsulebin:";
 /// Around the built-in symbol in the header, replaced by the operator's logo.
 pub const LOGO_REGION: (&str, &str) = ("<!--capsulebin:logo-->", "<!--/capsulebin:logo-->");
 /// Around the name in the header, removed with `branding.hide_name`.
 pub const WORDMARK_REGION: (&str, &str) = ("<!--capsulebin:wordmark-->", "<!--/capsulebin:wordmark-->");
+/// Around the slogan next to the logo on the create page, replaced by the
+/// tagline of the page's language or removed with an empty one.
+pub const TAGLINE_REGION: (&str, &str) = ("<!--capsulebin:tagline-->", "<!--/capsulebin:tagline-->");
 /// The favicon of the web build, linked when none is configured.
 const BUILT_IN_FAVICON: &str = "/favicon.svg";
 
@@ -278,12 +285,12 @@ impl IntoResponse for Document {
     }
 }
 
-/// Fills in what a shell of `language` leaves to the server: the logo and
-/// wordmark regions of the header, the tokens (prefix of its internal links,
-/// default language, name, favicon, source link) and the legal links. All
-/// fixed at startup and the same for every request, so the shell does not
-/// depend on the path id. The shells are UTF-8; a lossy conversion only
-/// matters for a broken build, which `/health/ready` reports.
+/// Fills in what a shell of `language` leaves to the server: the logo,
+/// wordmark and tagline regions of the header, the tokens (prefix of its
+/// internal links, default language, name, tagline, favicon, source link) and
+/// the legal links. All fixed at startup and the same for every request, so
+/// the shell does not depend on the path id. The shells are UTF-8; a lossy
+/// conversion only matters for a broken build, which `/health/ready` reports.
 ///
 /// Operator values are never read as markup of the shell: the tokens are
 /// filled in one pass, so a value is not searched for tokens again, and every
@@ -291,7 +298,7 @@ impl IntoResponse for Document {
 /// The legal links (and the legal page in [`Document::build`]) come after the
 /// tokens, so their operator text is not searched for tokens either.
 fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding) -> String {
-    let shell = with_branding_regions(shell, branding);
+    let (shell, tagline) = with_branding_regions(shell, branding, language);
     let favicon = branding.favicon.as_ref().map_or(BUILT_IN_FAVICON, |favicon| &favicon.url);
     let shell = fill_tokens(
         &shell,
@@ -299,6 +306,7 @@ fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &st
             (PREFIX_TOKEN, &language_prefix(default_language, language)),
             (DEFAULT_TOKEN, default_language),
             (NAME_TOKEN, &escape(&branding.name)),
+            (TAGLINE_TOKEN, &tagline),
             (FAVICON_TOKEN, &escape(favicon)),
             (SOURCE_TOKEN, &escape(&branding.source_url)),
         ],
@@ -332,21 +340,30 @@ fn fill_tokens(shell: &str, tokens: &[(&str, &str)]) -> String {
     out
 }
 
-/// The header as `[branding]` wants it: the configured logo in place of the
-/// built-in symbol, and no name next to it with `hide_name`. Without a logo the
-/// symbol stays, and with the name the wordmark; only their markers go. The
-/// images name the instance through [`NAME_TOKEN`], filled afterwards like
-/// every other token; their URLs are derived from the files' hashes and hold
-/// nothing to escape.
-fn with_branding_regions(shell: &str, branding: &Branding) -> String {
+/// The header as `[branding]` wants it for `language`: the configured logo in
+/// place of the built-in symbol, no name next to it with `hide_name`, and the
+/// configured tagline in place of the slogan, or none with an empty one.
+/// Without a logo the symbol stays, with the name the wordmark and without a
+/// tagline the slogan; only their markers go. The images name the instance
+/// through [`NAME_TOKEN`] and the tagline is [`TAGLINE_TOKEN`], filled
+/// afterwards like every other token; the images' URLs are derived from the
+/// files' hashes and hold nothing to escape. Returns the shell and the escaped
+/// value for [`TAGLINE_TOKEN`] (empty unless a tagline is configured).
+fn with_branding_regions(shell: &str, branding: &Branding, language: &str) -> (String, String) {
     let alt = if branding.hide_name { NAME_TOKEN } else { "" };
     let image = |url: &str, class: &str| format!(r#"<img class="{class}" src="{url}" alt="{alt}">"#);
     let logo = branding.logo.as_ref().map(|logo| match &branding.logo_dark {
         None => image(&logo.url, "cb-logo-img"),
         Some(dark) => image(&logo.url, "cb-logo-img cb-logo-img-light") + &image(&dark.url, "cb-logo-img cb-logo-img-dark"),
     });
+    let (region, token) = match branding.tagline(language) {
+        Tagline::BuiltIn => (None, String::new()),
+        Tagline::Hidden => (Some(String::new()), String::new()),
+        Tagline::Text(text) => (Some(format!(r#"<span class="cb-claim">{TAGLINE_TOKEN}</span>"#)), escape(text)),
+    };
     let shell = replace_regions(shell, LOGO_REGION, logo.as_deref());
-    replace_regions(&shell, WORDMARK_REGION, branding.hide_name.then_some(""))
+    let shell = replace_regions(&shell, WORDMARK_REGION, branding.hide_name.then_some(""));
+    (replace_regions(&shell, TAGLINE_REGION, region.as_deref()), token)
 }
 
 /// Replaces every complete region from `start` to `end`, markers included and
@@ -606,13 +623,26 @@ mod tests {
     }
 
     /// What a shell names the instance with, as the web build writes it: in
-    /// the title, the header (logo and wordmark regions over several lines), a
-    /// catalogue text, the favicon link and the attribution link.
-    const BRANDED_SHELL: &str = "<title>%%capsulebin:name%%</title><link rel=\"icon\" href=\"%%capsulebin:favicon%%\">\
-        <a class=\"cb-logo\" href=\"%%capsulebin:prefix%%/\">\n<!--capsulebin:logo-->\n<svg>\n</svg>\n<!--/capsulebin:logo-->\n\
-        <!--capsulebin:wordmark-->\n<span class=\"cb-logo-name\">%%capsulebin:name%%</span>\n<!--/capsulebin:wordmark-->\n</a>\
-        <noscript>%%capsulebin:name%% needs JavaScript.</noscript>\
-        <footer><!--capsulebin:legal-link:imprint:Imprint--><a href=\"%%capsulebin:source%%\">Powered by CapsuleBin</a></footer>";
+    /// the title, the header (logo, wordmark and tagline regions over several
+    /// lines), a catalogue text, the favicon link and the attribution link.
+    fn branded_shell() -> String {
+        format!(
+            "<title>%%capsulebin:name%%</title><link rel=\"icon\" href=\"%%capsulebin:favicon%%\">\
+             <a class=\"cb-logo\" href=\"%%capsulebin:prefix%%/\">\n<!--capsulebin:logo-->\n<svg>\n</svg>\n<!--/capsulebin:logo-->\n\
+             <!--capsulebin:wordmark-->\n<span class=\"cb-logo-name\">%%capsulebin:name%%</span>\n<!--/capsulebin:wordmark-->\n</a>\
+             <!--capsulebin:tagline-->\n<span class=\"cb-claim\">Paste it.</span>\n<!--/capsulebin:tagline-->\
+             <noscript>%%capsulebin:name%% needs JavaScript.</noscript>\
+             <footer><!--capsulebin:legal-link:imprint:Imprint-->{}</footer>",
+            attribution(SOURCE_TOKEN)
+        )
+    }
+
+    /// The attribution linking `source`: as the web build writes it with the
+    /// source token, as served with the URL. Only the project's name is the
+    /// link.
+    fn attribution(source: &str) -> String {
+        format!("<span>Powered by <a href=\"{source}\" target=\"_blank\" rel=\"noopener noreferrer\">CapsuleBin</a></span>")
+    }
 
     fn render_branded(branding: &Branding) -> String {
         let legal = LegalPages {
@@ -622,17 +652,21 @@ mod tests {
             },
             ..LegalPages::default()
         };
-        render(BRANDED_SHELL, &legal, "de", "en", branding)
+        render(&branded_shell(), &legal, "de", "en", branding)
     }
 
     #[test]
     fn without_branding_the_shell_names_capsulebin_and_keeps_the_symbol() {
         assert_eq!(
             render_branded(&default_branding()),
-            "<title>CapsuleBin</title><link rel=\"icon\" href=\"/favicon.svg\">\
-             <a class=\"cb-logo\" href=\"/de/\">\n\n<svg>\n</svg>\n\n\n<span class=\"cb-logo-name\">CapsuleBin</span>\n\n</a>\
-             <noscript>CapsuleBin needs JavaScript.</noscript>\
-             <footer><a href=\"/de/imprint\">Imprint</a><a href=\"https://github.com/capsulebin/capsulebin\">Powered by CapsuleBin</a></footer>"
+            format!(
+                "<title>CapsuleBin</title><link rel=\"icon\" href=\"/favicon.svg\">\
+                 <a class=\"cb-logo\" href=\"/de/\">\n\n<svg>\n</svg>\n\n\n<span class=\"cb-logo-name\">CapsuleBin</span>\n\n</a>\
+                 \n<span class=\"cb-claim\">Paste it.</span>\n\
+                 <noscript>CapsuleBin needs JavaScript.</noscript>\
+                 <footer><a href=\"/de/imprint\">Imprint</a>{}</footer>",
+                attribution("https://github.com/capsulebin/capsulebin")
+            )
         );
     }
 
@@ -645,6 +679,13 @@ mod tests {
             hide_name: true,
             logo: image("/branding/0123456789abcdef.png"),
             source_url: "https://example.org/src?a=1&b=%%capsulebin:default%%".to_owned(),
+            taglines: KNOWN_LANGUAGES
+                .iter()
+                .map(|&language| {
+                    let text = format!("{language} & <b>%%capsulebin:tagline%%</b> %%capsulebin:source%% <!--capsulebin:logo-->");
+                    (language, Tagline::Text(text))
+                })
+                .collect(),
             ..default_branding()
         };
         let name = "A&amp;B &lt;i&gt;x&lt;/i&gt; &quot;q&quot; %%capsulebin:prefix%% \
@@ -654,9 +695,11 @@ mod tests {
             format!(
                 "<title>{name}</title><link rel=\"icon\" href=\"/favicon.svg\">\
                  <a class=\"cb-logo\" href=\"/de/\">\n<img class=\"cb-logo-img\" src=\"/branding/0123456789abcdef.png\" alt=\"{name}\">\n\n</a>\
+                 <span class=\"cb-claim\">de &amp; &lt;b&gt;%%capsulebin:tagline%%&lt;/b&gt; %%capsulebin:source%% \
+                 &lt;!--capsulebin:logo--&gt;</span>\
                  <noscript>{name} needs JavaScript.</noscript>\
-                 <footer><a href=\"/de/imprint\">Imprint</a>\
-                 <a href=\"https://example.org/src?a=1&amp;b=%%capsulebin:default%%\">Powered by CapsuleBin</a></footer>"
+                 <footer><a href=\"/de/imprint\">Imprint</a>{}</footer>",
+                attribution("https://example.org/src?a=1&amp;b=%%capsulebin:default%%")
             )
         );
     }
@@ -696,6 +739,27 @@ mod tests {
             "{page}"
         );
         assert_eq!(page.matches("<img").count(), 2, "{page}");
+    }
+
+    /// The tagline of the page's language replaces the slogan, an empty one
+    /// removes it, none keeps the built-in one; only the markers go.
+    #[test]
+    fn the_tagline_follows_the_page_language() {
+        let branding = Branding {
+            taglines: [("en", Tagline::Text("Ours".to_owned())), ("de", Tagline::Hidden)].into(),
+            ..default_branding()
+        };
+        let shell = "<a>x</a>\n<!--capsulebin:tagline-->\n<span class=\"cb-claim\">Built-in</span>\n<!--/capsulebin:tagline-->\n<nav>";
+        let render = |branding: &Branding, language| render(shell, &LegalPages::default(), language, "en", branding);
+        assert_eq!(render(&branding, "en"), "<a>x</a>\n<span class=\"cb-claim\">Ours</span>\n<nav>");
+        assert_eq!(render(&branding, "de"), "<a>x</a>\n\n<nav>");
+        for language in KNOWN_LANGUAGES {
+            assert_eq!(
+                render(&default_branding(), language),
+                "<a>x</a>\n\n<span class=\"cb-claim\">Built-in</span>\n\n<nav>",
+                "{language}"
+            );
+        }
     }
 
     /// A broken build: a region without its end is left as it is.
@@ -746,8 +810,10 @@ mod tests {
     }
 
     /// Every shell names the instance through the token in its title and
-    /// header, links the favicon and the source code through their tokens, and
-    /// has the logo and wordmark regions in its header, each complete once.
+    /// header, links the favicon through its token, has the attribution text
+    /// (whose link the generator puts in) and the logo and wordmark regions in
+    /// its header, each complete once; the create page also the tagline region
+    /// around its slogan.
     #[test]
     fn every_shell_source_carries_the_branding_tokens_and_regions() {
         for shell in Shell::ALL {
@@ -762,11 +828,13 @@ mod tests {
                 1,
                 "{path}: favicon"
             );
-            assert_eq!(
-                source.matches(r#"<a href="{{source}}">{{shell.poweredBy}}</a>"#).count(),
-                1,
-                "{path}: attribution"
-            );
+            // The generator turns `{project}` in the text into the link.
+            assert_eq!(source.matches("{{shell.poweredBy}}").count(), 1, "{path}: attribution");
+            assert_eq!(source.matches("<span>{{shell.poweredBy}}</span>").count(), 1, "{path}: attribution");
+            let taglines = if shell == Shell::Create { 1 } else { 0 };
+            for marker in [TAGLINE_REGION.0, TAGLINE_REGION.1] {
+                assert_eq!(source.matches(marker).count(), taglines, "{path}: {marker}");
+            }
             for (start, end) in [LOGO_REGION, WORDMARK_REGION] {
                 assert_eq!(source.matches(start).count(), 1, "{path}: {start}");
                 assert_eq!(source.matches(end).count(), 1, "{path}: {end}");
@@ -789,6 +857,17 @@ mod tests {
             let logo = source.split(LOGO_REGION.0).nth(1).and_then(|rest| rest.split(LOGO_REGION.1).next());
             assert!(logo.is_some_and(|logo| logo.trim().starts_with("<svg")), "{path}: symbol");
         }
+        let (path, source) = template(Shell::Create);
+        let tagline = source
+            .split(TAGLINE_REGION.0)
+            .nth(1)
+            .and_then(|rest| rest.split(TAGLINE_REGION.1).next());
+        assert_eq!(
+            tagline.map(str::trim),
+            Some(r#"<span class="cb-claim">{{create.claim}}</span>"#),
+            "{}: tagline",
+            path.display()
+        );
     }
 
     #[test]

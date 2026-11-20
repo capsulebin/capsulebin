@@ -876,6 +876,9 @@ fn branding_defaults() {
         let branding = config.validate().expect("valid configuration").branding;
         assert_eq!(branding.name, "CapsuleBin");
         assert!(!branding.hide_name);
+        for &language in KNOWN_LANGUAGES {
+            assert_eq!(branding.tagline(language), &crate::branding::Tagline::BuiltIn);
+        }
         assert!(branding.logo.is_none());
         assert!(branding.logo_dark.is_none());
         assert!(branding.favicon.is_none());
@@ -897,6 +900,8 @@ fn branding_can_be_set_from_the_environment() {
         [
             ("CAPSULEBIN__BRANDING__NAME", "Team Paste"),
             ("CAPSULEBIN__BRANDING__HIDE_NAME", "true"),
+            ("CAPSULEBIN__BRANDING__TAGLINE", "Paste, encrypted"),
+            ("CAPSULEBIN__BRANDING__DE__TAGLINE", "Verschlüsselt einfügen"),
             ("CAPSULEBIN__BRANDING__LOGO", "/etc/capsulebin/logo.png"),
             ("CAPSULEBIN__BRANDING__LOGO_DARK", "branding/logo-dark.webp"),
             ("CAPSULEBIN__BRANDING__FAVICON", "/etc/capsulebin/favicon.ico"),
@@ -909,6 +914,12 @@ fn branding_can_be_set_from_the_environment() {
 
     assert_eq!(branding.name, "Team Paste");
     assert!(branding.hide_name);
+    assert_eq!(branding.tagline.as_deref(), Some("Paste, encrypted"));
+    assert_eq!(
+        branding.languages.get("de").and_then(|texts| texts.tagline.as_deref()),
+        Some("Verschlüsselt einfügen")
+    );
+    assert_eq!(branding.languages.len(), 1);
     assert_eq!(branding.logo, Some(PathBuf::from("/etc/capsulebin/logo.png")));
     assert_eq!(branding.logo_dark, Some(PathBuf::from("branding/logo-dark.webp")));
     assert_eq!(branding.favicon, Some(PathBuf::from("/etc/capsulebin/favicon.ico")));
@@ -926,6 +937,129 @@ fn rejects_unknown_branding_keys() {
     apply_env(&mut table, [("CAPSULEBIN__BRANDING__COLOR".to_owned(), "red".to_owned())]).expect("overlay");
     let error = table.try_into::<Config>().expect_err("CAPSULEBIN__BRANDING__COLOR accepted");
     assert!(error.to_string().contains("color"), "unexpected error: {error}");
+}
+
+/// AC1: `[branding.<lang>]` takes `tagline` and nothing else; any other key,
+/// in the table or in `[branding]`, stops the start, from the file or the
+/// environment, naming the table.
+#[test]
+fn rejects_unknown_keys_in_branding_language_tables() {
+    for (toml, expected) in [
+        ("[branding.de]\nslogan = \"x\"\n", "branding.de"),
+        ("[branding.de]\nname = \"x\"\n", "branding.de"),
+        ("[branding]\nde = \"x\"\n", "branding.de"),
+        ("[branding.de]\ntagline = 1\n", "branding.de"),
+    ] {
+        let error = toml::from_str::<Config>(toml).expect_err("unknown key accepted");
+        assert!(error.to_string().contains(expected), "{toml:?}: {error}");
+    }
+
+    let mut table = toml::Table::new();
+    apply_env(&mut table, [("CAPSULEBIN__BRANDING__DE__NAME".to_owned(), "x".to_owned())]).expect("overlay");
+    let error = table.try_into::<Config>().expect_err("CAPSULEBIN__BRANDING__DE__NAME accepted");
+    assert!(error.to_string().contains("branding.de"), "unexpected error: {error}");
+}
+
+/// AC1: a table for an unknown language or for the default language (whose
+/// tagline is `branding.tagline`) stops the start.
+#[test]
+fn rejects_branding_tables_for_unknown_or_default_languages() {
+    let dir = tempdir("branding-language-tables");
+    for (toml, default_language, expected) in [
+        ("[branding.fr]\ntagline = \"x\"\n", "en", "branding.fr is not a known language"),
+        ("[branding.DE]\ntagline = \"x\"\n", "en", "branding.DE is not a known language"),
+        ("[branding.en]\ntagline = \"x\"\n", "en", "branding.en: en is i18n.default_language"),
+        ("[branding.de]\n", "de", "branding.de: de is i18n.default_language"),
+    ] {
+        let mut config = valid(&dir);
+        config.branding = toml::from_str::<Config>(toml).expect("parse").branding;
+        config.i18n.default_language = default_language.to_owned();
+        let error = error(&config);
+        assert!(error.contains(expected), "{toml:?}: {error}");
+    }
+
+    let mut config = valid(&dir);
+    config.branding = toml::from_str::<Config>("[branding.en]\ntagline = \"x\"\n")
+        .expect("parse")
+        .branding;
+    config.i18n.default_language = "de".to_owned();
+    config.validate().expect("[branding.en] with default language de");
+}
+
+/// AC15: a tagline is at most 80 characters (trimmed, counted in characters)
+/// without control characters; errors name the key incl. the language table.
+/// Empty is allowed: it hides the slogan.
+#[test]
+fn rejects_unusable_taglines() {
+    let dir = tempdir("branding-tagline");
+    for bad in [&"x".repeat(81), "Paste\nsafely", "Paste\u{7}safely", "Paste\u{9f}safely"] {
+        let mut config = valid(&dir);
+        config.branding.tagline = Some(bad.to_owned());
+        let message = error(&config);
+        assert!(message.contains("branding.tagline"), "{bad:?}: {message}");
+
+        let mut config = valid(&dir);
+        config.branding.languages.insert(
+            "de".to_owned(),
+            BrandingTexts {
+                tagline: Some(bad.to_owned()),
+            },
+        );
+        let message = error(&config);
+        assert!(message.contains("branding.de.tagline"), "{bad:?}: {message}");
+    }
+
+    for (good, expected) in [
+        (&"ä".repeat(80)[..], crate::branding::Tagline::Text("ä".repeat(80))),
+        ("  Paste safely \n", crate::branding::Tagline::Text("Paste safely".to_owned())),
+        ("", crate::branding::Tagline::Hidden),
+        ("   ", crate::branding::Tagline::Hidden),
+    ] {
+        let mut config = valid(&dir);
+        config.branding.tagline = Some(good.to_owned());
+        config.branding.languages.insert(
+            "de".to_owned(),
+            BrandingTexts {
+                tagline: Some(good.to_owned()),
+            },
+        );
+        let branding = config
+            .validate()
+            .unwrap_or_else(|error| panic!("{good:?} refused: {error}"))
+            .branding;
+        assert_eq!(branding.tagline("en"), &expected, "{good:?}");
+        assert_eq!(branding.tagline("de"), &expected, "{good:?}");
+    }
+}
+
+/// AC15: from the configuration file, the language's tagline wins over
+/// `branding.tagline`, which wins over the built-in slogan.
+#[test]
+fn taglines_fall_back_to_branding_tagline() {
+    use crate::branding::Tagline;
+    let dir = tempdir("branding-tagline-fallback");
+    let path = dir.join("capsulebin.toml");
+    for (toml, en, de) in [
+        (
+            "[branding]\ntagline = \"Ours\"\n",
+            Tagline::Text("Ours".to_owned()),
+            Tagline::Text("Ours".to_owned()),
+        ),
+        (
+            "[branding]\ntagline = \"Ours\"\n[branding.de]\ntagline = \"Unser\"\n",
+            Tagline::Text("Ours".to_owned()),
+            Tagline::Text("Unser".to_owned()),
+        ),
+        ("[branding.de]\ntagline = \"\"\n", Tagline::BuiltIn, Tagline::Hidden),
+        ("[branding]\ntagline = \"\"\n[branding.de]\n", Tagline::Hidden, Tagline::Hidden),
+    ] {
+        std::fs::write(&path, toml).expect("write config");
+        let mut config = valid(&dir);
+        config.branding = Config::load(Some(&path)).expect("load").branding;
+        let branding = config.validate().expect("valid configuration").branding;
+        assert_eq!(branding.tagline("en"), &en, "{toml:?}");
+        assert_eq!(branding.tagline("de"), &de, "{toml:?}");
+    }
 }
 
 /// AC2: names the instance cannot show are refused, naming the key; a name is

@@ -340,3 +340,135 @@ fn ac1_ac4_every_key_from_the_environment_reaches_serve() {
     assert!(other.starts_with("HTTP/1.1 404"), "{other}");
     assert_eq!(other_body, unknown_body);
 }
+
+/// AC1, AC15: a language table the configuration must refuse stops `check`
+/// and `serve`, naming the table: an unknown language, the default language,
+/// an unknown key in a language table (file or environment), and a tagline
+/// too long or with a control character (also from the environment).
+#[test]
+fn ac1_ac15_refused_language_tables_stop_check_and_serve() {
+    let dir = tempdir("branding-acc-languages");
+    let long = "x".repeat(81);
+    let long_toml = format!("[branding]\ntagline = \"{long}\"\n");
+    for (name, branding, env, key) in [
+        ("fr.toml", "[branding.fr]\ntagline = \"x\"\n", vec![], "branding.fr"),
+        ("en.toml", "[branding.en]\ntagline = \"x\"\n", vec![], "branding.en"),
+        (
+            "de-default.toml",
+            "[i18n]\ndefault_language = \"de\"\n[branding.de]\ntagline = \"x\"\n",
+            vec![],
+            "branding.de",
+        ),
+        ("slogan.toml", "[branding.de]\nslogan = \"x\"\n", vec![], "branding.de"),
+        ("env-key.toml", "", vec![("CAPSULEBIN__BRANDING__DE__NAME", "x")], "branding.de"),
+        ("long.toml", long_toml.as_str(), vec![], "branding.tagline"),
+        (
+            "env-long.toml",
+            "",
+            vec![("CAPSULEBIN__BRANDING__TAGLINE", long.as_str())],
+            "branding.tagline",
+        ),
+        (
+            "env-control.toml",
+            "",
+            vec![("CAPSULEBIN__BRANDING__DE__TAGLINE", "Paste\u{7}safely")],
+            "branding.de.tagline",
+        ),
+    ] {
+        let config = config_file(&dir, name, branding);
+        assert_refused(&config, &env, &[key], &[]);
+    }
+
+    // The limits themselves pass: 80 characters, an empty tagline, and a
+    // table for a language other than the default one.
+    let fine = config_file(
+        &dir,
+        "fine.toml",
+        &format!("[branding]\ntagline = \"{}\"\n[branding.de]\ntagline = \"\"\n", "ä".repeat(80)),
+    );
+    let output = check(&fine, &[]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let en = config_file(
+        &dir,
+        "en-other.toml",
+        "[i18n]\ndefault_language = \"de\"\n[branding.en]\ntagline = \"x\"\n",
+    );
+    let output = check(&en, &[]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// The test shell of the create page with the tagline region around the
+/// built-in slogan, as the web build writes it.
+fn write_tagline_shells(assets: &Path) {
+    for (language, builtin) in [("en", "BUILT-IN-EN"), ("de", "BUILT-IN-DE")] {
+        std::fs::write(
+            assets.join(language).join("index.html"),
+            format!(
+                "<!doctype html><html lang=\"{language}\"><head><title>create</title></head><body><header>\n\
+                 <!--capsulebin:tagline-->\n<span class=\"cb-claim\">{builtin}</span>\n<!--/capsulebin:tagline-->\n\
+                 </header></body></html>"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// Starts `serve` and returns the body of `GET path` once it answers.
+fn serve_and_get(config: &Path, env: &[(&str, &str)], paths: &[&str]) -> Vec<String> {
+    let port = free_port();
+    let _server = Server(
+        serve_command(config, port, env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    paths
+        .iter()
+        .map(|path| {
+            loop {
+                if let Some((head, body)) = get(port, path) {
+                    assert!(head.starts_with("HTTP/1.1 200"), "{path}: {head}");
+                    break String::from_utf8(body).unwrap();
+                }
+                assert!(Instant::now() < deadline, "server did not start");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .collect()
+}
+
+/// AC1, AC15: `CAPSULEBIN__BRANDING__TAGLINE` and
+/// `CAPSULEBIN__BRANDING__DE__TAGLINE` reach the started binary: the German
+/// page shows the language's tagline, the English one `branding.tagline`,
+/// both escaped; an empty language tagline removes the slogan element.
+#[test]
+fn ac1_ac15_taglines_from_the_environment_reach_serve() {
+    let dir = tempdir("branding-acc-tagline-env");
+    let config = config_file(&dir, "plain.toml", "");
+    write_tagline_shells(&dir.join("assets"));
+
+    let pages = serve_and_get(
+        &config,
+        &[
+            ("CAPSULEBIN__BRANDING__TAGLINE", "Ours & <b>yours</b>"),
+            ("CAPSULEBIN__BRANDING__DE__TAGLINE", "Unser \"Slogan\""),
+        ],
+        &["/", "/de/"],
+    );
+    let (en, de) = (&pages[0], &pages[1]);
+    assert!(
+        en.contains(r#"<span class="cb-claim">Ours &amp; &lt;b&gt;yours&lt;/b&gt;</span>"#),
+        "{en}"
+    );
+    assert!(!en.contains("BUILT-IN-EN") && !en.contains("<b>"), "{en}");
+    assert!(de.contains(r#"<span class="cb-claim">Unser &quot;Slogan&quot;</span>"#), "{de}");
+    assert!(!de.contains("BUILT-IN-DE"), "{de}");
+
+    let pages = serve_and_get(&config, &[("CAPSULEBIN__BRANDING__DE__TAGLINE", "")], &["/", "/de/"]);
+    let (en, de) = (&pages[0], &pages[1]);
+    assert!(en.contains(r#"<span class="cb-claim">BUILT-IN-EN</span>"#), "{en}");
+    assert!(!de.contains("cb-claim") && !de.contains("BUILT-IN-DE"), "{de}");
+}

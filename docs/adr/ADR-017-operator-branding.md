@@ -19,29 +19,37 @@ constrain how:
 
 ## Decision
 
-**A `[branding]` table configures name, logo, dark logo, favicon and the source link**; the server
-reads it at startup and fills it into the shells like the language prefix and the legal links.
-[branding.md](../branding.md) has the rules in detail.
+**A `[branding]` table configures name, tagline, logo, dark logo, favicon and the source link**;
+the server reads it at startup and fills it into the shells like the language prefix and the legal
+links. [branding.md](../branding.md) has the rules in detail.
 
-- **Named keys only**: `name`, `hide_name`, `logo`, `logo_dark`, `favicon`, `source_url`, every one
-  validated at startup; an unknown key is a startup error. Without the table an instance looks as
-  before, plus the attribution link and a built-in favicon (`/favicon.svg` from the web build).
+- **Named keys only**: `name`, `hide_name`, `tagline`, `logo`, `logo_dark`, `favicon`,
+  `source_url`, and `[branding.<lang>]` with only `tagline` for a known language other than the
+  default one; every one validated at startup, an unknown key or table is a startup error. Without
+  the table an instance looks as before, plus the attribution link and a built-in favicon
+  (`/favicon.svg` from the web build).
 - **One name for every language.** It replaces "CapsuleBin" in the `<title>`, the header and the
   interface texts that name the service, and nowhere else: not in the API, the CLI, the logs.
+- **A tagline per language.** The slogan next to the logo on the create page is interface text:
+  `tagline` replaces the built-in translated slogan in every language, `[branding.<lang>] tagline`
+  in one language (as `[legal.<lang>]` does for the legal texts); an empty value removes the
+  slogan. At most 80 characters. The other pages keep their page title there.
 - **Raster images only**: logos PNG or WebP, favicon PNG or ICO, checked by extension and file
   signature, at most 256 KiB each. Read once at startup and served from memory at
   `/branding/<16 hex digits of SHA-256>.<ext>` with immutable caching; any other `/branding/`
   path is the generic `404`.
 - **Operator values are data**: HTML-escaped and filled in with every other server token in a
   single pass, so a value is never read as a token or marker of the shell. The build writes
-  `%%capsulebin:name%%`, `%%capsulebin:favicon%%`, `%%capsulebin:source%%` and two comment-marker
-  regions (logo, wordmark) into the shells.
+  `%%capsulebin:name%%`, `%%capsulebin:favicon%%`, `%%capsulebin:source%%` and three comment-marker
+  regions (logo, wordmark, and the tagline on the create page) into the shells; a configured
+  tagline goes in through a server-internal token in the same pass.
 - **A dark logo follows the theme toggle**: CSS on `data-theme` mirroring the three theme blocks of
   ADR-005, not `<picture media>`.
 - **Every page carries "Powered by CapsuleBin"** (de: "Betrieben mit CapsuleBin") as the last
-  footer link, also on the legal pages. No key removes it, and its text keeps the project's name
-  whatever the instance is called. Its target is `source_url`, by default the project repository; an
-  operator of a modified version points it to their source. It must be an absolute `http(s)` URL.
+  footer item, also on the legal pages. No key removes it, and its text keeps the project's name
+  whatever the instance is called. Only "CapsuleBin" is the link, and it opens in a new tab. Its
+  target is `source_url`, by default the project repository; an operator of a modified version
+  points it to their source. It must be an absolute `http(s)` URL.
 
 ## Rejected
 
@@ -51,7 +59,7 @@ reads it at startup and fills it into the shells like the language prefix and th
 - **SVG logos and favicons from the operator.** An SVG is an active document; serving one safely
   needs a per-response sandbox CSP — a change to the security-header layer — and sanitising. The
   cost of refusing it is lossless scaling; a PNG at twice the display height is enough for a header.
-- **A name per language.** The name is an identity, not interface text.
+- **A name per language.** The name is an identity, not interface text (unlike the tagline).
 - **A switch for the attribution.** It is the instance's pointer to its source (§13) on every
   page; an operator can redirect it with `source_url`, not remove it.
 - **Files served under their own name, or re-read per request.** A content-derived URL can be
@@ -60,8 +68,9 @@ reads it at startup and fills it into the shells like the language prefix and th
 
 ## Consequences
 
-- The server now puts operator images and an operator name into every page. Both are data: images
-  are same-origin raster files, the name is escaped text. The CSP and the header layer are unchanged.
+- The server now puts operator images, an operator name and tagline into the pages. All are
+  data: images are same-origin raster files, name and tagline are escaped text. The CSP and the
+  header layer are unchanged.
 - A changed file or name takes effect after a restart, like every other setting.
 - `capsulebin check` reports a missing, oversized or wrongly formatted file.
 - The shells contain no literal "CapsuleBin" any more; the Vite dev server fills the defaults.

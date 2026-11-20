@@ -19,8 +19,9 @@ mod env;
 mod model;
 
 pub use model::{
-    AbuseConfig, BrandingConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES,
-    LegalConfig, LegalSection, LegalSectionKind, LegalTexts, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
+    AbuseConfig, BrandingConfig, BrandingTexts, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig,
+    KNOWN_LANGUAGES, LegalConfig, LegalSection, LegalSectionKind, LegalTexts, PastesConfig, PurgeConfig, ServerConfig, Synchronous,
+    language_prefix,
 };
 
 use std::path::{Path, PathBuf};
@@ -135,7 +136,7 @@ impl Config {
             .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))
             .collect::<Result<_, ConfigError>>()?;
         self.database.validate()?;
-        self.branding.validate()?;
+        self.branding.validate(default_language)?;
         let branding = crate::branding::resolve(&self.branding)?;
 
         Ok(Resolved {

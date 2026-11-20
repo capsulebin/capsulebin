@@ -15,20 +15,23 @@
  *   which pass through the build unchanged. The server replaces them at startup
  *   (no prefix for the default language, `/<lang>` for every other), the Vite dev
  *   server per request ({@link fillServerTokens});
- * - `{{name}}`, `{{favicon}}` and `{{source}}` - the instance's name, the href of
- *   its favicon and the target of the "Powered by" link. They are the operator's
- *   branding, so the generator writes the tokens {@link NAME_TOKEN},
- *   {@link FAVICON_TOKEN} and {@link SOURCE_TOKEN} for the server to fill; the dev
+ * - `{{name}}` and `{{favicon}}` - the instance's name and the href of its
+ *   favicon. They are the operator's branding, so the generator writes the tokens
+ *   {@link NAME_TOKEN} and {@link FAVICON_TOKEN} for the server to fill; the dev
  *   server fills the defaults;
  * - `{{<catalogue key>}}` - a text from the catalogue. Catalogue values are plain
  *   text and are HTML-escaped here, so a catalogue cannot bring markup or script
- *   into a page. A `{name}` in a catalogue text becomes {@link NAME_TOKEN} after
- *   escaping, so the texts that name the service carry the instance's name.
+ *   into a page. After escaping, a `{name}` in a catalogue text becomes
+ *   {@link NAME_TOKEN}, so the texts that name the service carry the instance's
+ *   name, and a `{project}` becomes {@link PROJECT_LINK}, the project's name linked
+ *   to {@link SOURCE_TOKEN} (the footer's "Powered by" attribution).
  *
  * The header's symbol and name sit between the server's marker comments
  * `<!--capsulebin:logo-->`…`<!--/capsulebin:logo-->` and
  * `<!--capsulebin:wordmark-->`…`<!--/capsulebin:wordmark-->`; the server replaces
  * the first with a configured logo and drops the second when the name is hidden.
+ * The create page's slogan sits between `<!--capsulebin:tagline-->` and
+ * `<!--/capsulebin:tagline-->`, which the server replaces with a configured tagline.
  *
  * A catalogue text may also sit inside one of the server's marker comments: the
  * footer's legal links are `<!--capsulebin:legal-link:<page>:{{shell.<page>}}-->`,
@@ -84,6 +87,15 @@ export const SOURCE_TOKEN = '%%capsulebin:source%%';
 /** The placeholder in catalogue texts that stands for the instance's name. */
 export const NAME_PLACEHOLDER = '{name}';
 
+/** The placeholder in catalogue texts that stands for the linked project name. */
+export const PROJECT_PLACEHOLDER = '{project}';
+
+/**
+ * What {@link PROJECT_PLACEHOLDER} becomes: the project's name - never the
+ * instance's - linked to the source code, opened in a new tab.
+ */
+export const PROJECT_LINK = `<a href="${SOURCE_TOKEN}" target="_blank" rel="noopener noreferrer">CapsuleBin</a>`;
+
 /** What the server fills in without a `[branding]` table. */
 export const DEFAULT_BRANDING = {
     name: 'CapsuleBin',
@@ -103,7 +115,6 @@ function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
         ['default', DEFAULT_TOKEN],
         ['name', NAME_TOKEN],
         ['favicon', FAVICON_TOKEN],
-        ['source', SOURCE_TOKEN],
     ]);
 }
 
@@ -180,7 +191,14 @@ export function renderShell(template: string, lang: string, catalogue: Catalogue
                 `${lang}.json: ${placeholder} sits inside a comment and must not contain "--" or end in "-"`,
             );
         }
-        return escapeHtml(value).replaceAll(NAME_PLACEHOLDER, NAME_TOKEN);
+        if (insideComment(template, offset) && value.includes(PROJECT_PLACEHOLDER)) {
+            throw new Error(
+                `${lang}.json: ${placeholder} sits inside a comment and must not contain ${PROJECT_PLACEHOLDER}`,
+            );
+        }
+        return escapeHtml(value)
+            .replaceAll(NAME_PLACEHOLDER, NAME_TOKEN)
+            .replaceAll(PROJECT_PLACEHOLDER, PROJECT_LINK);
     });
 }
 

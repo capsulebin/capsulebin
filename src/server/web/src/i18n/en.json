@@ -6,7 +6,7 @@
     "shell.imprint": "Imprint",
     "shell.privacy": "Privacy",
     "shell.terms": "Terms",
-    "shell.poweredBy": "Powered by CapsuleBin",
+    "shell.poweredBy": "Powered by {project}",
     "theme.switch": "Switch theme",
     "theme.light": "Theme: light",
     "theme.dark": "Theme: dark",
