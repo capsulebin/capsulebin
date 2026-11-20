@@ -17,6 +17,7 @@ import { CliError, ExitCode, toCliError, usage } from './exit';
 import type { Io } from './io';
 import { AS_VALUES } from './items';
 import { readLink } from './secrets';
+import { escapeDiagnostic, jsonLine } from './terminal';
 import { allowHttp, checkTransport } from './transport';
 
 import pkg from '../package.json' with { type: 'json' };
@@ -59,6 +60,8 @@ get options:
                            CAPSULEBIN_PASSWORD for links to --server, or prompt)
   -y, --yes                Retrieve a burn-after-retrieval capsule without asking
   -f, --force              Overwrite existing files instead of picking a free name
+      --raw                Write a single item to a terminal unchanged (by default its
+                           control characters are shown as escapes such as \\x1b)
       --link-file PATH     Read the share link from the first line of PATH
 
 delete options:
@@ -99,6 +102,7 @@ const OPTIONS = {
     output: { type: 'string', short: 'o' },
     yes: { type: 'boolean', short: 'y' },
     force: { type: 'boolean', short: 'f' },
+    raw: { type: 'boolean' },
     'allow-http': { type: 'boolean' },
     json: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
@@ -124,7 +128,7 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
         'retries',
         'delete-link-file',
     ],
-    get: ['server', 'output', 'password-file', 'yes', 'force', 'link-file'],
+    get: ['server', 'output', 'password-file', 'yes', 'force', 'raw', 'link-file'],
     delete: ['link-file'],
 };
 const COMMON_OPTIONS: (keyof typeof OPTIONS)[] = ['allow-http', 'json', 'help', 'version'];
@@ -300,6 +304,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
                         passwordFile: values['password-file'],
                         yes: values.yes === true,
                         force: values.force === true,
+                        raw: values.raw === true,
                         json,
                     });
                 } else {
@@ -312,11 +317,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
     } catch (err) {
         const error = toCliError(err);
         if (json) {
-            io.stdout.write(
-                JSON.stringify({ error: { reason: error.reason, message: error.message } }) + '\n',
-            );
+            io.stdout.write(jsonLine({ error: { reason: error.reason, message: error.message } }));
         }
-        io.stderr.write(`capsulebin: ${error.message}\n`);
+        io.stderr.write(`capsulebin: ${escapeDiagnostic(error.message)}\n`);
         if (error.exitCode === ExitCode.Usage && !json) {
             io.stderr.write('Run "capsulebin --help" for usage.\n');
         }

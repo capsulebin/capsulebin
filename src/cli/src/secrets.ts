@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { CliError, ExitCode, usage } from './exit';
 import type { Io } from './io';
+import { escapeDiagnostic } from './terminal';
 import { normalizeBase } from './transport';
 
 /** The first line of `content`, without its line ending. */
@@ -138,7 +139,9 @@ export async function existingPassword(
                 'password_origin_mismatch',
             );
         }
-        io.stderr.write(`capsulebin: ${mismatch}; the environment password is not used\n`);
+        io.stderr.write(
+            `capsulebin: ${escapeDiagnostic(mismatch)}; the environment password is not used\n`,
+        );
         return io.prompt('Password: ', true);
     }
     if (!io.interactive) {

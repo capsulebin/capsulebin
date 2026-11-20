@@ -14,7 +14,8 @@
  * current directory instead of being rejected.
  */
 
-import { mkdir, open } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
     type CapsuleItem,
@@ -27,6 +28,7 @@ import {
 import { alreadyRetrieved, CliError, ExitCode, fromApiError, toCliError, usage } from '../exit';
 import type { Io } from '../io';
 import { existingPassword } from '../secrets';
+import { escapeContent, escapeDiagnostic, jsonLine } from '../terminal';
 import { checkTransport } from '../transport';
 
 export interface GetOptions {
@@ -39,6 +41,8 @@ export interface GetOptions {
     passwordFile: string | undefined;
     yes: boolean;
     force: boolean;
+    /** Write a single item to a terminal unchanged instead of escaping its control characters. */
+    raw: boolean;
     json: boolean;
 }
 
@@ -112,16 +116,18 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
         if (item.presentation === 'download' && io.stdout.isTTY) {
             // Already retrieved — write it to a file rather than lose it.
             const [path] = await writeItems(capsule.items, io.cwd, options.force);
-            io.stderr.write(`binary file written to ${path}\n`);
+            io.stderr.write(`binary file written to ${escapeDiagnostic(path!)}\n`);
         } else {
-            io.stdout.write(item.bytes);
+            io.stdout.write(
+                io.stdout.isTTY && !options.raw ? escapeContent(item.bytes) : item.bytes,
+            );
         }
     } else {
         const dir = resolve(io.cwd, options.output ?? '.');
         const paths = await writeItems(capsule.items, dir, options.force);
         if (options.json) {
             io.stdout.write(
-                JSON.stringify({
+                jsonLine({
                     title: capsule.title,
                     expires_at: outcome.expiresAt,
                     burn_after_retrieval: outcome.burnAfterRetrieval,
@@ -133,10 +139,10 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
                         language: item.language ?? null,
                         path: paths[i],
                     })),
-                }) + '\n',
+                }),
             );
         } else {
-            for (const path of paths) io.stderr.write(`wrote ${path}\n`);
+            for (const path of paths) io.stderr.write(`wrote ${escapeDiagnostic(path)}\n`);
         }
     }
 
@@ -171,48 +177,116 @@ async function confirmBurn(io: Io, yes: boolean): Promise<void> {
 export function safeFileName(name: string, index: number): string {
     const base = name.split(/[/\\]/).at(-1) ?? '';
     // eslint-disable-next-line no-control-regex
-    const cleaned = base.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_').trim();
+    const cleaned = base.replace(/[\u0000-\u001f\u007f-\u009f<>:"|?*]/g, '_').trim();
     if (!cleaned || /^\.+$/.test(cleaned)) return `item-${index + 1}`;
     return cleaned;
 }
 
 /**
- * Writes each item to `dir`. Existing files are never overwritten unless
- * `force`: a free name is chosen instead (`name (1).ext`), because the
- * content may not be retrievable a second time.
+ * Writes each item to `dir`, owner-only (`0600`). Existing entries are never
+ * overwritten unless `force`: a free name is chosen instead (`name (1).ext`),
+ * because the content may not be retrievable a second time.
+ *
+ * Each item is first written to a fresh, exclusively created temporary file
+ * in `dir` and then put in place, so an existing entry (a symlink above all)
+ * is never written through and a failed write leaves nothing behind. With
+ * `force` the entry is replaced by `rename`; a directory under the name still
+ * gets a free name, since it cannot be replaced by a file.
  */
 async function writeItems(
     items: readonly CapsuleItem[],
     dir: string,
     force: boolean,
 ): Promise<string[]> {
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const paths: string[] = [];
     const used = new Set<string>();
 
     for (const [index, item] of items.entries()) {
         const name = safeFileName(item.name, index);
-        for (let n = 0; ; n++) {
-            const candidate = n === 0 ? name : withSuffix(name, n);
-            if (used.has(candidate)) continue;
-            const path = join(dir, candidate);
-            try {
-                const handle = await open(path, force && n === 0 ? 'w' : 'wx');
-                try {
-                    await handle.writeFile(item.bytes);
-                } finally {
-                    await handle.close();
-                }
-            } catch (err) {
-                if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
-                throw err;
+        const temp = await writeTemp(dir, item.bytes);
+        try {
+            for (let n = 0; ; n++) {
+                const candidate = n === 0 ? name : withSuffix(name, n);
+                if (used.has(candidate)) continue;
+                const path = join(dir, candidate);
+                if (!(await place(temp, item.bytes, path, force && n === 0))) continue;
+                used.add(candidate);
+                paths.push(path);
+                break;
             }
-            used.add(candidate);
-            paths.push(path);
-            break;
+        } finally {
+            // Gone after a rename; otherwise the placed copy is a hard link or a copy.
+            await unlink(temp).catch(() => {});
         }
     }
     return paths;
+}
+
+/** Writes `bytes` to a new `0600` file in `dir` and returns its path. */
+async function writeTemp(dir: string, bytes: Uint8Array): Promise<string> {
+    const temp = join(dir, `.capsulebin-${randomUUID()}.tmp`);
+    await writeNew(temp, bytes);
+    return temp;
+}
+
+/**
+ * Writes `bytes` to `path`, which must not exist yet (no entry of any kind,
+ * not even a dangling symlink), as a `0600` file; removes it again if the
+ * write fails.
+ */
+async function writeNew(path: string, bytes: Uint8Array): Promise<void> {
+    const handle = await open(path, 'wx', 0o600);
+    try {
+        try {
+            await handle.writeFile(bytes);
+        } finally {
+            await handle.close();
+        }
+    } catch (err) {
+        await unlink(path).catch(() => {});
+        throw err;
+    }
+}
+
+/** `link` errors of file systems without hard links (vfat, exFAT, many FUSE and network mounts). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'EMLINK', 'ENOSYS']);
+
+/**
+ * Puts the file `temp` (holding `bytes`) at `path`: replacing whatever entry
+ * is there if `replace` (except a directory), else only if the name is free.
+ * Where the file system has no hard links, a free name gets a fresh copy of
+ * `bytes` instead. Returns false if the name is taken.
+ */
+async function place(
+    temp: string,
+    bytes: Uint8Array,
+    path: string,
+    replace: boolean,
+): Promise<boolean> {
+    try {
+        await (replace ? rename(temp, path) : link(temp, path));
+        return true;
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EEXIST') return false;
+        if (replace && (await lstat(path).catch(() => undefined))?.isDirectory()) return false;
+        if (!replace && code !== undefined && NO_HARD_LINKS.has(code)) {
+            return await writeCopy(path, bytes);
+        }
+        throw err;
+    }
+}
+
+/** Writes `bytes` to `path` only if the name is free. Returns false if it is taken. */
+async function writeCopy(path: string, bytes: Uint8Array): Promise<boolean> {
+    try {
+        await writeNew(path, bytes);
+        return true;
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw err;
+    }
 }
 
 function withSuffix(name: string, n: number): string {

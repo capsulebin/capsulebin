@@ -7,6 +7,7 @@
 import { LinkError, parseLink, PasteApi, toBase64url } from '@capsulebin/core';
 import { usage } from '../exit';
 import type { Io } from '../io';
+import { jsonLine } from '../terminal';
 import { checkTransport } from '../transport';
 
 export interface DeleteOptions {
@@ -34,7 +35,7 @@ export async function remove(io: Io, options: DeleteOptions): Promise<void> {
     await new PasteApi(link.base).delete(link.id, toBase64url(link.secret));
 
     if (options.json) {
-        io.stdout.write(JSON.stringify({ id: link.id, deleted: true }) + '\n');
+        io.stdout.write(jsonLine({ id: link.id, deleted: true }));
     } else {
         io.stderr.write('capsule deleted\n');
     }

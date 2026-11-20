@@ -109,6 +109,16 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`
   or `CAPSULEBIN_ALLOW_HTTP=1`.
 - Stable exit codes, `--json` output, safe retries and confirmation before consuming a burn capsule.
+- Decrypted files are owner-only (`0600`, new output directories `0700`) from the first byte, are
+  never written through an existing symlink (also not with `--force`, which replaces the entry),
+  and a failed write leaves no partial file.
+- Control characters from a capsule or a server do not reach the terminal: a single item written
+  to a terminal shows them as escapes (`get --raw` writes it unchanged; pipes and files are always
+  byte-exact), diagnostics on stderr escape them always, and `--json` writes DEL and C1 as
+  `\u00NN`.
+- The hidden password prompt and the burn confirmation work on a real terminal and restore it;
+  Ctrl-C and EOF end with exit code `8` before the request the prompt guards (the retrieve, or
+  the upload for `put`).
 
 [Unreleased]: https://github.com/capsulebin/capsulebin/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/capsulebin/capsulebin/releases/tag/v1.0.0

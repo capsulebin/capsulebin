@@ -23,6 +23,7 @@ import { usage } from '../exit';
 import type { Io } from '../io';
 import { buildItem, type ItemInput, type Presentation } from '../items';
 import { creationToken, newPassword } from '../secrets';
+import { jsonLine } from '../terminal';
 
 export interface PutOptions {
     inputs: string[];
@@ -81,7 +82,7 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
 
     if (options.json) {
         io.stdout.write(
-            JSON.stringify({
+            jsonLine({
                 id: created.id,
                 share_url: shareUrl,
                 ...(linkFile === undefined
@@ -89,7 +90,7 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
                     : { delete_link_file: linkFile }),
                 expires_at: created.expires_at,
                 burn_after_retrieval: created.burn_after_retrieval,
-            }) + '\n',
+            }),
         );
     } else {
         io.stdout.write(shareUrl + '\n');

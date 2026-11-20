@@ -6,23 +6,71 @@
 
 import {
     access,
+    chmod,
     lstat,
+    mkdir,
     mkdtemp,
     readdir,
     readFile,
+    readlink,
     stat,
     symlink,
+    unlink,
     writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { decodeUtf8, encodeUtf8, fromBase64url, toBase64url } from '@capsulebin/core';
+import {
+    concatByteArrays,
+    decodeUtf8,
+    encodeUtf8,
+    fromBase64url,
+    generateUlid,
+    Paste,
+    PasteApi,
+    toBase64url,
+} from '@capsulebin/core';
 import { run, parseDuration } from '../src/cli';
 import { safeFileName } from '../src/commands/get';
 import type { Io } from '../src/io';
 import { buildItem } from '../src/items';
+import { escapeDiagnostic } from '../src/terminal';
 import { createFakeServer, type FakeServer } from '../../core/tests/fake-server';
+
+// While set, every file write fails after the file was opened; `linkError`
+// makes every hard link fail with that code (a file system without hard links).
+// `failOpenNumber` makes only the write through the n-th opened file fail.
+const fsHooks = vi.hoisted(() => ({
+    failWrites: false,
+    linkError: undefined as string | undefined,
+    failOpenNumber: undefined as number | undefined,
+    opens: 0,
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+    const fs = await importOriginal<typeof import('node:fs/promises')>();
+    return {
+        ...fs,
+        open: async (...args: Parameters<typeof fs.open>) => {
+            const handle = await fs.open(...args);
+            fsHooks.opens++;
+            if (fsHooks.failWrites || fsHooks.opens === fsHooks.failOpenNumber) {
+                handle.writeFile = async () => {
+                    throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+                };
+            }
+            return handle;
+        },
+        link: async (...args: Parameters<typeof fs.link>) => {
+            if (fsHooks.linkError !== undefined) {
+                throw Object.assign(new Error('hard links not supported'), {
+                    code: fsHooks.linkError,
+                });
+            }
+            return fs.link(...args);
+        },
+    };
+});
 
 const SERVER = 'https://capsule.test';
 
@@ -37,6 +85,10 @@ beforeEach(async () => {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    fsHooks.failWrites = false;
+    fsHooks.linkError = undefined;
+    fsHooks.failOpenNumber = undefined;
+    fsHooks.opens = 0;
 });
 
 interface TestIo extends Io {
@@ -955,7 +1007,398 @@ describe('safeFileName', () => {
         ['', 'item-1'],
         ['a\u0000b\nc', 'a_b_c'],
         ['what?.txt', 'what_.txt'],
+        ['a\u009bb\u0080c\u009f', 'a_b_c_'],
     ])('%j → %j', (name, expected) => {
         expect(safeFileName(name, 0)).toBe(expected);
+    });
+
+    it('leaves no C0, DEL or C1 character in a name', () => {
+        // eslint-disable-next-line no-control-regex
+        const controls = /[\u0000-\u001f\u007f-\u009f]/;
+        expect(safeFileName('\u009b31m\u001b[2Jx.txt', 0)).not.toMatch(controls);
+    });
+});
+
+describe('file output', () => {
+    const posix = process.platform !== 'win32';
+    const mode = async (path: string) => (await stat(path)).mode & 0o777;
+
+    /** Puts files from `src/` (created with the given contents) and returns the share link. */
+    async function putFiles(files: [string, string | Uint8Array][]): Promise<string> {
+        const names: string[] = [];
+        for (const [index, [name, content]] of files.entries()) {
+            const dir = join(cwd, 'src', String(index));
+            await mkdir(dir, { recursive: true });
+            await writeFile(join(dir, name), content);
+            names.push(join(dir, name));
+        }
+        const io = testIo();
+        expect(await run(['put', '-s', SERVER, ...names], io), io.err()).toBe(0);
+        return io.out().trim();
+    }
+
+    async function withUmask<T>(umask: number, body: () => Promise<T>): Promise<T> {
+        const previous = process.umask(umask);
+        try {
+            return await body();
+        } finally {
+            process.umask(previous);
+        }
+    }
+
+    it.skipIf(!posix)('writes owner-only files and creates owner-only directories', async () => {
+        await withUmask(0o000, async () => {
+            const multi = await putFiles([
+                ['a.txt', 'a'],
+                ['b.txt', 'b'],
+            ]);
+            const binary = await putFiles([['img.bin', new Uint8Array([0, 159, 146, 150])]]);
+
+            for (const force of [false, true]) {
+                const flags = force ? ['--force'] : [];
+                const sub = force ? 'forced' : 'plain';
+
+                const intoCwd = testIo();
+                expect(await run(['get', multi, ...flags], intoCwd), intoCwd.err()).toBe(0);
+                const created = join(cwd, 'new', sub, 'out');
+                const intoDir = testIo();
+                expect(await run(['get', multi, '-o', created, ...flags], intoDir)).toBe(0);
+                const tty = testIo({ stdoutTTY: true });
+                expect(await run(['get', binary, ...flags], tty), tty.err()).toBe(0);
+
+                const written = (intoCwd.err() + intoDir.err() + tty.err()).match(
+                    /(?<=^(wrote|binary file written to) ).*$/gm,
+                )!;
+                expect(written).toHaveLength(5);
+                for (const path of written) expect(await mode(path), path).toBe(0o600);
+                expect(await mode(created)).toBe(0o700);
+                expect(await mode(join(cwd, 'new', sub))).toBe(0o700);
+            }
+            expect(await mode(join(cwd, 'new'))).toBe(0o700);
+
+            const existing = join(cwd, 'existing');
+            await mkdir(existing);
+            await chmod(existing, 0o755);
+            expect(await run(['get', multi, '-o', existing], testIo())).toBe(0);
+            expect(await mode(existing)).toBe(0o755);
+            expect(await mode(join(existing, 'a.txt'))).toBe(0o600);
+        });
+    });
+
+    it('never follows a symlink at the target name', async () => {
+        const link = await putFiles([['note.txt', 'from the capsule']]);
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        const outside = join(cwd, 'outside.txt');
+        await writeFile(outside, 'keep me');
+        const dangling = join(cwd, 'nowhere.txt');
+
+        for (const target of [outside, dangling]) {
+            await symlink(target, join(out, 'note.txt'));
+
+            const io = testIo();
+            expect(await run(['get', link, '-o', out, '--json'], io), io.err()).toBe(0);
+            const [item] = JSON.parse(io.out()).items;
+            expect(item.path).toBe(join(out, 'note (1).txt'));
+            expect(await readFile(item.path, 'utf8')).toBe('from the capsule');
+            expect(await readlink(join(out, 'note.txt'))).toBe(target);
+
+            const forced = testIo();
+            expect(await run(['get', link, '-o', out, '-f', '--json'], forced)).toBe(0);
+            expect(JSON.parse(forced.out()).items[0].path).toBe(join(out, 'note.txt'));
+            const entry = await lstat(join(out, 'note.txt'));
+            expect(entry.isFile()).toBe(true);
+            if (posix) expect(entry.mode & 0o777).toBe(0o600);
+            expect(await readFile(join(out, 'note.txt'), 'utf8')).toBe('from the capsule');
+
+            expect(await readFile(outside, 'utf8')).toBe('keep me');
+            await expect(access(dangling)).rejects.toThrow();
+            expect((await readdir(out)).sort()).toEqual(['note (1).txt', 'note.txt']);
+            for (const name of await readdir(out)) await unlink(join(out, name));
+        }
+    });
+
+    it('replaces a file with --force, keeps duplicate names apart and skips a directory', async () => {
+        const out = join(cwd, 'out');
+        await mkdir(join(out, 'dir.txt'), { recursive: true });
+        await writeFile(join(out, 'same.txt'), 'old');
+        await chmod(join(out, 'same.txt'), 0o644);
+        const link = await putFiles([
+            ['same.txt', 'first'],
+            ['same.txt', 'second'],
+            ['dir.txt', 'not a directory'],
+        ]);
+
+        for (const flags of [['--force'], []]) {
+            const io = testIo();
+            expect(await run(['get', link, '-o', out, '--json', ...flags], io), io.err()).toBe(0);
+            const paths = JSON.parse(io.out()).items.map((i: { path: string }) => i.path);
+            if (flags.length) {
+                expect(paths).toEqual([
+                    join(out, 'same.txt'),
+                    join(out, 'same (1).txt'),
+                    join(out, 'dir (1).txt'),
+                ]);
+            }
+            expect(await readFile(paths[0], 'utf8')).toBe('first');
+            expect(await readFile(paths[1], 'utf8')).toBe('second');
+            expect(await readFile(paths[2], 'utf8')).toBe('not a directory');
+            if (posix) expect(await mode(join(out, 'same.txt'))).toBe(0o600);
+            expect((await lstat(join(out, 'dir.txt'))).isDirectory()).toBe(true);
+        }
+        expect(await readFile(join(out, 'same.txt'), 'utf8')).toBe('first');
+    });
+
+    it('leaves no partial or temporary file when a write fails', async () => {
+        const link = await putFiles([['note.txt', 'lost']]);
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        await writeFile(join(out, 'other.txt'), 'x');
+        const before = await readdir(out);
+
+        for (const flags of [[], ['--force']]) {
+            fsHooks.failWrites = true;
+            const io = testIo();
+            expect(await run(['get', link, '-o', out, ...flags], io)).not.toBe(0);
+            expect(await readdir(out)).toEqual(before);
+        }
+    });
+
+    it('leaves nothing behind when the copy fails where hard links are unsupported', async () => {
+        const link = await putFiles([['note.txt', 'lost']]);
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        await writeFile(join(out, 'other.txt'), 'x');
+        const before = await readdir(out);
+
+        fsHooks.linkError = 'EPERM';
+        // Let the temporary file be written, then fail the write of the fallback copy (the second
+        // file opened).
+        fsHooks.opens = 0;
+        fsHooks.failOpenNumber = 2;
+        const io = testIo();
+        expect(await run(['get', link, '-o', out], io)).not.toBe(0);
+        expect(fsHooks.opens).toBeGreaterThanOrEqual(2);
+        expect(await readdir(out)).toEqual(before);
+    });
+
+    it.each(['EPERM', 'ENOTSUP', 'EXDEV'])(
+        'writes a copy where a hard link fails with %s, never through a symlink',
+        async (code) => {
+            const link = await putFiles([['note.txt', 'from the capsule']]);
+            const out = join(cwd, 'out');
+            await mkdir(out);
+            const outside = join(cwd, 'outside.txt');
+            await writeFile(outside, 'keep me');
+            await symlink(outside, join(out, 'note.txt'));
+            const dangling = join(cwd, 'nowhere.txt');
+            await symlink(dangling, join(out, 'note (1).txt'));
+            fsHooks.linkError = code;
+
+            await withUmask(0o000, async () => {
+                const io = testIo();
+                expect(await run(['get', link, '-o', out, '--json'], io), io.err()).toBe(0);
+                const [item] = JSON.parse(io.out()).items;
+                expect(item.path).toBe(join(out, 'note (2).txt'));
+                expect(await readFile(item.path, 'utf8')).toBe('from the capsule');
+                if (posix) expect(await mode(item.path)).toBe(0o600);
+            });
+
+            expect(await readlink(join(out, 'note.txt'))).toBe(outside);
+            expect(await readlink(join(out, 'note (1).txt'))).toBe(dangling);
+            expect(await readFile(outside, 'utf8')).toBe('keep me');
+            await expect(access(dangling)).rejects.toThrow();
+            expect((await readdir(out)).sort()).toEqual([
+                'note (1).txt',
+                'note (2).txt',
+                'note.txt',
+            ]);
+        },
+    );
+});
+
+describe('terminal output', () => {
+    /**
+     * Publishes a capsule with one plain-text item per entry of `contents`
+     * (bytes need not be UTF-8), each named `options.name`.
+     */
+    async function publish(
+        contents: Uint8Array | Uint8Array[],
+        options: { name?: string; title?: string } = {},
+    ): Promise<string> {
+        const paste = new Paste({ title: options.title ?? null, burnAfterRetrieval: false });
+        for (const bytes of Array.isArray(contents) ? contents : [contents]) {
+            paste.addItem({
+                id: generateUlid(),
+                name: options.name ?? 'note.txt',
+                size: bytes.length,
+                mediaType: 'text/plain',
+                presentation: 'plain',
+                bytes,
+            });
+        }
+        return (await paste.publish(new PasteApi(SERVER), SERVER)).shareUrl;
+    }
+
+    /** Answers every request with a problem of `status`, `title` and `code`. */
+    function problems(status: number, title: string, code: string) {
+        vi.stubGlobal(
+            'fetch',
+            async () =>
+                new Response(JSON.stringify({ title, status, code }), {
+                    status,
+                    headers: { 'Content-Type': 'application/problem+json' },
+                }),
+        );
+    }
+
+    // ESC, BEL, a lone CR, DEL, C1 CSI and an invalid byte, among text that stays.
+    const HOSTILE = concatByteArrays(
+        encodeUtf8('red \x1b[31m bell \x07 a\rb del \x7f csi \u009b bad '),
+        new Uint8Array([0xff]),
+        encodeUtf8(' tab\tcrlf\r\nGrüße ✓ 😀\n'),
+    );
+    const SHOWN =
+        'red \\x1b[31m bell \\x07 a\\x0db del \\x7f csi \\u009b bad \\xff tab\tcrlf\r\nGrüße ✓ 😀\n';
+    const C1 = /[\u0080-\u009f]/;
+
+    it('shows control characters and invalid bytes of a single item as escapes on a TTY', async () => {
+        const link = await publish(HOSTILE);
+        const io = testIo({ stdoutTTY: true });
+        expect(await run(['get', link], io), io.err()).toBe(0);
+
+        expect(io.out()).toBe(SHOWN);
+        const bytes = io.outBytes();
+        for (const [i, byte] of bytes.entries()) {
+            const crlf = byte === 0x0d && bytes[i + 1] === 0x0a;
+            const allowed = byte === 0x09 || byte === 0x0a || crlf;
+            expect(allowed || (byte >= 0x20 && byte !== 0x7f), `byte ${byte} at ${i}`).toBe(true);
+        }
+        expect(decodeUtf8(bytes)).not.toMatch(C1);
+    });
+
+    it('writes the item byte for byte to a pipe, and to a TTY with --raw', async () => {
+        const link = await publish(HOSTILE);
+        const piped = testIo();
+        expect(await run(['get', link], piped)).toBe(0);
+        expect(piped.outBytes()).toEqual(HOSTILE);
+
+        const raw = testIo({ stdoutTTY: true });
+        expect(await run(['get', '--raw', link], raw)).toBe(0);
+        expect(raw.outBytes()).toEqual(HOSTILE);
+    });
+
+    it('accepts --raw only for get and lists it under the get options', async () => {
+        const created = await putText('x');
+        const put = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--raw'], put)).toBe(2);
+        expect(put.err()).toContain('--raw does not apply to "put"');
+        expect(await run(['delete', '--raw', created.delete_url], testIo())).toBe(2);
+        expect(server.pastes.size).toBe(1);
+
+        const help = testIo();
+        expect(await run(['--help'], help)).toBe(0);
+        const getSection = help.out().split('get options:')[1]!.split('delete options:')[0]!;
+        expect(getSection).toContain('--raw');
+    });
+
+    /** Every line of `stderr` is free of control characters but its trailing newline. */
+    function expectEscapedLines(stderr: string) {
+        expect(stderr.endsWith('\n')).toBe(true);
+        for (const line of stderr.slice(0, -1).split('\n')) {
+            expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        }
+    }
+
+    const FORGED = 'bad \x1b[2J\ncapsulebin: forged \u009b';
+    const FORGED_SHOWN = 'bad \\x1b[2J\\x0acapsulebin: forged \\u009b';
+
+    it.each([
+        { status: 400, exit: 6, what: 'title' },
+        { status: 500, exit: 7, what: 'code' },
+    ])('escapes a server problem $what on stderr ($status)', async ({ status, exit }) => {
+        const link = `${SERVER}/p/${'A'.repeat(22)}#v1.${'A'.repeat(43)}`;
+        problems(status, FORGED, FORGED);
+        const io = testIo();
+        expect(await run(['get', link], io)).toBe(exit);
+        expect(io.err()).toContain(FORGED_SHOWN);
+        expectEscapedLines(io.err());
+        expect(io.err().match(/^capsulebin:/gm)).toHaveLength(1);
+    });
+
+    it.each([
+        { status: 404, exit: 3, title: FORGED, code: 'not_found' },
+        { status: 409, exit: 6, title: 'Conflict', code: FORGED },
+        { status: 503, exit: 7, title: FORGED, code: 'unavailable' },
+        { status: 502, exit: 7, title: 'Bad gateway', code: FORGED },
+    ])(
+        'escapes a hostile title or code on its own on stderr ($status)',
+        async ({ status, exit, title, code }) => {
+            const link = `${SERVER}/p/${'A'.repeat(22)}#v1.${'A'.repeat(43)}`;
+            problems(status, title, code);
+            const io = testIo();
+            expect(await run(['get', link], io)).toBe(exit);
+            expectEscapedLines(io.err());
+            expect(io.err().match(/^capsulebin:/gm)).toHaveLength(1);
+            expect(io.err()).not.toContain('\ncapsulebin: forged');
+        },
+    );
+
+    it('escapes the output directory and item names in wrote lines', async () => {
+        const name = 'x\x1b[31m\n\u009b.txt';
+        const shareUrl = await publish([encodeUtf8('one'), encodeUtf8('two')], { name });
+
+        const io = testIo();
+        expect(await run(['get', shareUrl, '-o', 'out\x1b\n\u009b'], io), io.err()).toBe(0);
+        expect(io.err()).toContain('out\\x1b\\x0a\\u009b');
+        expect(io.err().match(/^wrote /gm)).toHaveLength(2);
+        expectEscapedLines(io.err());
+    });
+
+    it('escapes every control character for the last-resort message', () => {
+        expect(escapeDiagnostic('a\x1b[2J\n\tb\x7f\u009bc ü')).toBe(
+            'a\\x1b[2J\\x0a\\x09b\\x7f\\u009bc ü',
+        );
+    });
+
+    /** `stdout` is one JSON line with DEL and C1 written as \u escapes. */
+    function jsonOutput(io: TestIo): unknown {
+        const text = io.out();
+        expect(text.endsWith('}\n')).toBe(true);
+        expect(text.slice(0, -1)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        return JSON.parse(text);
+    }
+
+    it('writes DEL and C1 as \\u escapes in every JSON output', async () => {
+        const hostile = 'del \x7f c1 \u0080\u009b\u009f';
+        const shown = 'del \\u007f c1 \\u0080\\u009b\\u009f';
+
+        const put = testIo({ stdin: 'x' });
+        const linkFile = `link ${hostile}`;
+        expect(
+            await run(['put', '-s', SERVER, '--json', '--delete-link-file', linkFile], put),
+        ).toBe(0);
+        expect(put.out()).toContain(shown);
+        const created = jsonOutput(put) as { share_url: string; delete_link_file: string };
+        expect(created.delete_link_file).toBe(join(cwd, linkFile));
+
+        const link = await publish(encodeUtf8('x'), { name: hostile, title: hostile });
+        const got = testIo();
+        expect(await run(['get', '--json', '-o', 'out', link], got)).toBe(0);
+        expect(got.out()).toContain(shown);
+        const capsule = jsonOutput(got) as { title: string; items: { name: string }[] };
+        expect(capsule.title).toBe(hostile);
+        expect(capsule.items[0]!.name).toBe(hostile);
+
+        const deleteLink = (await readFile(join(cwd, linkFile), 'utf8')).trim();
+        const removed = testIo();
+        expect(await run(['delete', '--json', deleteLink], removed)).toBe(0);
+        expect(jsonOutput(removed)).toMatchObject({ deleted: true });
+
+        problems(400, hostile, hostile);
+        const failed = testIo();
+        expect(await run(['get', '--json', link], failed)).toBe(6);
+        expect(failed.out()).toContain(shown);
+        expect(jsonOutput(failed)).toEqual({ error: { reason: hostile, message: hostile } });
     });
 });

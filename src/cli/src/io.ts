@@ -5,6 +5,8 @@
  */
 
 import { createInterface } from 'node:readline';
+import { Writable } from 'node:stream';
+import { promptStopped } from './exit';
 
 export interface Io {
     stdout: { write(chunk: string | Uint8Array): unknown; isTTY?: boolean };
@@ -42,27 +44,35 @@ export function processIo(): Io {
  * Prompts on stderr and reads one line from the terminal. With `hidden`, the
  * typed characters are not echoed — the readline output is muted after the
  * question has been written.
+ *
+ * readline puts the terminal into raw mode for the question and restores it
+ * when the interface closes, which happens on every way out: an answer,
+ * Ctrl-C and EOF (Ctrl-D on an empty line). The last two reject with exit
+ * code 8, so the command stops before the request the prompt guards.
  */
 function terminalPrompt(question: string, hidden: boolean): Promise<string> {
     return new Promise((resolve, reject) => {
         let muted = false;
-        const output = {
-            write: (chunk: string) => {
+        let settled = false;
+        const output = new Writable({
+            write(chunk: Buffer | string, _encoding, callback) {
                 if (!muted) process.stderr.write(chunk);
-                return true;
+                callback();
             },
-        };
-        const rl = createInterface({
-            input: process.stdin,
-            output: output as unknown as NodeJS.WritableStream,
-            terminal: true,
         });
-        rl.on('SIGINT', () => {
+        const rl = createInterface({ input: process.stdin, output, terminal: true });
+        const stop = (reason: 'interrupted' | 'input_closed') => {
+            settled = true;
             rl.close();
             process.stderr.write('\n');
-            reject(new Error('interrupted'));
+            reject(promptStopped(reason));
+        };
+        rl.on('SIGINT', () => stop('interrupted'));
+        rl.on('close', () => {
+            if (!settled) stop('input_closed');
         });
         rl.question(question, (answer) => {
+            settled = true;
             rl.close();
             if (hidden) process.stderr.write('\n');
             resolve(answer);
