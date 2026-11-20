@@ -498,6 +498,31 @@ if [ -n "${CAPSULEBIN_CLI:-}" ]; then
   set -e
   [ "${CODE}" = "3" ] || fail "a deleted capsule gave exit code ${CODE} instead of 3"
   echo "ok  cli delete"
+
+  # The private link channels: the delete link goes to a new owner-only file,
+  # the share link comes from stdin and the delete link from that file, and no
+  # link fragment shows up on stderr.
+  PRIVATE_DIR="$(mktemp -d -p "${CLI_DIR}")"
+  LINK_FILE="${PRIVATE_DIR}/delete-link"
+  PRIVATE_URL="$(printf 'private' | cli put --delete-link-file "${LINK_FILE}" 2>"${PRIVATE_DIR}/put.err")" ||
+    fail "cli put --delete-link-file failed: $(cat "${PRIVATE_DIR}/put.err")"
+  [ "$(stat -c '%a' "${LINK_FILE}")" = "600" ] || fail "the delete link file is not mode 600"
+  grep -q '/manage/.*#v1\.' "${LINK_FILE}" || fail "the delete link file holds no management link"
+  [ "$(printf '%s\n' "${PRIVATE_URL}" | cli get - 2>"${PRIVATE_DIR}/get.err")" = "private" ] ||
+    fail "cli get - failed: $(cat "${PRIVATE_DIR}/get.err")"
+  cli delete --link-file "${LINK_FILE}" 2>"${PRIVATE_DIR}/delete.err" ||
+    fail "cli delete --link-file failed: $(cat "${PRIVATE_DIR}/delete.err")"
+  for log in put get delete; do
+    if grep -q '#v1\.' "${PRIVATE_DIR}/${log}.err"; then
+      fail "cli ${log} wrote a link fragment to stderr"
+    fi
+  done
+  set +e
+  cli get "${PRIVATE_URL}" >/dev/null 2>&1
+  CODE=$?
+  set -e
+  [ "${CODE}" = "3" ] || fail "a capsule deleted via --link-file gave exit code ${CODE} instead of 3"
+  echo "ok  cli link channels (stdin, --link-file, --delete-link-file) keep links off stderr"
 else
   echo "--  CLI checks skipped (set CAPSULEBIN_CLI to the bundled cli.js)"
 fi

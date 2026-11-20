@@ -8,7 +8,7 @@
  * create a second capsule.
  */
 
-import { readFile } from 'node:fs/promises';
+import { type FileHandle, open, readFile, unlink } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import {
     ApiError,
@@ -16,6 +16,7 @@ import {
     MAX_ITEMS,
     Paste,
     PasteApi,
+    REDIRECT_REFUSED,
     type SealedPaste,
 } from '@capsulebin/core';
 import { usage } from '../exit';
@@ -36,6 +37,8 @@ export interface PutOptions {
     name: string | undefined;
     title: string | undefined;
     retries: number;
+    /** Write the management link to this new file instead of stderr/JSON. */
+    deleteLinkFile: string | undefined;
     json: boolean;
 }
 
@@ -63,26 +66,71 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
     }
 
     const sealed = await paste.seal();
-
-    const api = new PasteApi(options.server, { creationToken: token });
-    const created = await createWithRetry(io, api, sealed, options.retries);
-
     const shareUrl = paste.shareUrl(options.server);
     const deleteUrl = paste.deleteUrl(options.server);
+
+    const api = new PasteApi(options.server, { creationToken: token });
+    const linkFile =
+        options.deleteLinkFile === undefined ? undefined : resolve(io.cwd, options.deleteLinkFile);
+    const created =
+        linkFile === undefined
+            ? await createWithRetry(io, api, sealed, options.retries)
+            : await createWithLinkFile(linkFile, deleteUrl, () =>
+                  createWithRetry(io, api, sealed, options.retries),
+              );
 
     if (options.json) {
         io.stdout.write(
             JSON.stringify({
                 id: created.id,
                 share_url: shareUrl,
-                delete_url: deleteUrl,
+                ...(linkFile === undefined
+                    ? { delete_url: deleteUrl }
+                    : { delete_link_file: linkFile }),
                 expires_at: created.expires_at,
                 burn_after_retrieval: created.burn_after_retrieval,
             }) + '\n',
         );
     } else {
         io.stdout.write(shareUrl + '\n');
-        io.stderr.write(`delete link (keep it private): ${deleteUrl}\n`);
+        io.stderr.write(
+            linkFile === undefined
+                ? `delete link (keep it private): ${deleteUrl}\n`
+                : `delete link written to ${linkFile}\n`,
+        );
+    }
+}
+
+/**
+ * Runs `create` with the management link in a new owner-only file. The file
+ * is created exclusively (an existing file or symlink is refused) and written
+ * before the upload, so no capsule exists whose link could not be stored; if
+ * anything fails, the file is removed again.
+ */
+async function createWithLinkFile(
+    path: string,
+    deleteUrl: string,
+    create: () => Promise<CreateResponse>,
+): Promise<CreateResponse> {
+    let file: FileHandle;
+    try {
+        file = await open(path, 'wx', 0o600);
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        throw usage(
+            code === 'EEXIST'
+                ? `--delete-link-file ${path} already exists`
+                : `cannot create --delete-link-file ${path}`,
+        );
+    }
+    try {
+        await file.writeFile(deleteUrl + '\n');
+        await file.close();
+        return await create();
+    } catch (err) {
+        await file.close().catch(() => {});
+        await unlink(path).catch(() => {});
+        throw err;
     }
 }
 
@@ -118,9 +166,17 @@ async function readInputs(io: Io, options: PutOptions): Promise<ItemInput[]> {
     return inputs;
 }
 
-/** Statuses worth a retry: no response, rate limited, or a server-side fault. */
+/**
+ * Statuses worth a retry: no response, rate limited, or a server-side fault.
+ * Never a refused redirect, whatever its status: the next attempt would get
+ * the same answer.
+ */
 function isTransient(err: unknown): err is ApiError {
-    return err instanceof ApiError && (err.status === 0 || err.status === 429 || err.status >= 500);
+    return (
+        err instanceof ApiError &&
+        err.code !== REDIRECT_REFUSED &&
+        (err.status === 0 || err.status === 429 || err.status >= 500)
+    );
 }
 
 const MAX_RETRY_DELAY_MS = 60_000;

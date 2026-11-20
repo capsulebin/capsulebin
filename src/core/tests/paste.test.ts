@@ -166,11 +166,27 @@ describe('Paste.seal', () => {
         expect(toBase64url(await revealVerifier(wrongToken))).not.toBe(sealed.revealVerifier);
     });
 
-    it('treats a blank password the same as no password', async () => {
-        const paste = new Paste({ password: '   ', expiresIn: null, burnAfterRetrieval: false });
-        paste.addItem(item);
-        const sealed = await paste.seal();
-        expect(headerOf(sealed).hasPassword()).toBe(false);
+    it('refuses a non-empty password of only whitespace before anything is sent', async () => {
+        for (const password of [' ', '   ', '\t\n']) {
+            const paste = new Paste({ password, expiresIn: null, burnAfterRetrieval: false });
+            paste.addItem(item);
+            await expect(paste.seal()).rejects.toThrow(/whitespace/);
+            expect(paste.sealed).toBeUndefined();
+
+            const api = new PasteApi('https://example.test');
+            const createSpy = vi.spyOn(api, 'create');
+            await expect(paste.publish(api, 'https://example.test')).rejects.toThrow(/whitespace/);
+            expect(createSpy).not.toHaveBeenCalled();
+        }
+    });
+
+    it('treats an empty or null password as no password', async () => {
+        for (const password of ['', null]) {
+            const paste = new Paste({ password, expiresIn: null, burnAfterRetrieval: false });
+            paste.addItem(item);
+            const sealed = await paste.seal();
+            expect(headerOf(sealed).hasPassword()).toBe(false);
+        }
     });
 
     it('carries expiry and burn-after-retrieval through to the sealed paste', async () => {

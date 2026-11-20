@@ -24,8 +24,15 @@ export const CIPHER = 'AES-256-GCM';
 /** Prefix of the URL fragment: `v1.`. */
 export const FRAGMENT_PREFIX = 'v1.';
 
+/** Floor for PBKDF2 iterations in a parsed header: an issuer must not be able to
+ *  choose a KDF cheap enough to make guessing the password offline trivial. */
+export const MIN_PBKDF2_ITERATIONS = 100_000;
+
 /** Hard ceiling for PBKDF2 iterations to prevent client-side DoS. */
 export const MAX_PBKDF2_ITERATIONS = 5_000_000;
+
+/** Length of the password salt in bytes. */
+export const PASSWORD_SALT_BYTES = 16;
 
 export interface PasswordKdf {
     required: boolean;
@@ -62,7 +69,11 @@ export class PublicHeader {
      *
      * Validates that `envelope_format`, `content_format` and `cipher` match the
      * version this client supports, and that `nonce`/`hkdf_salt` decode to the
-     * expected byte lengths. Throws on any mismatch.
+     * expected byte lengths. Password parameters must be a canonical base64url
+     * salt of 16 bytes and an integer iteration count within
+     * [{@link MIN_PBKDF2_ITERATIONS}, {@link MAX_PBKDF2_ITERATIONS}]: the header
+     * is untrusted input, so the floor applies here rather than in
+     * `derivePasswordKey`. Throws on any mismatch.
      *
      * Mirrors `PublicHeader::from_json()` in Rust.
      */
@@ -105,18 +116,24 @@ export class PublicHeader {
             const pw = pwd as Record<string, unknown>;
             if (pw['required'] !== true) throw new Error('password.required must be true');
             if (pw['kdf'] !== 'PBKDF2-HMAC-SHA-256') throw new Error('unsupported password kdf');
-            if (typeof pw['salt'] !== 'string') throw new Error('password salt missing');
-            if (typeof pw['iterations'] !== 'number' || pw['iterations'] < 1)
-                throw new Error('password iterations missing');
-            if (pw['iterations'] > MAX_PBKDF2_ITERATIONS)
+            const salt = pw['salt'];
+            if (typeof salt !== 'string' || !isCanonicalBase64url(salt, PASSWORD_SALT_BYTES))
+                throw new Error(`password salt must be ${PASSWORD_SALT_BYTES} bytes of base64url`);
+            const iterations = pw['iterations'];
+            if (
+                typeof iterations !== 'number' ||
+                !Number.isSafeInteger(iterations) ||
+                iterations < MIN_PBKDF2_ITERATIONS ||
+                iterations > MAX_PBKDF2_ITERATIONS
+            )
                 throw new Error(
-                    `password iterations ${pw['iterations']} exceeds maximum ${MAX_PBKDF2_ITERATIONS}`,
+                    `password iterations must be an integer from ${MIN_PBKDF2_ITERATIONS} to ${MAX_PBKDF2_ITERATIONS}`,
                 );
             password = {
                 required: true,
                 kdf: pw['kdf'],
-                salt: pw['salt'],
-                iterations: pw['iterations'],
+                salt,
+                iterations,
             };
         }
 
@@ -163,4 +180,14 @@ export class PublicHeader {
     public hasPassword(): boolean {
         return this.password?.required === true;
     }
+}
+
+/** Whether `text` is the unpadded base64url encoding of exactly `length` bytes,
+ *  as {@link toBase64url} writes it. */
+function isCanonicalBase64url(text: string, length: number): boolean {
+    if (text.length !== Math.ceil((length * 4) / 3) || !/^[A-Za-z0-9_-]*$/.test(text)) {
+        return false;
+    }
+    const bytes = fromBase64url(text);
+    return bytes.length === length && toBase64url(bytes) === text;
 }

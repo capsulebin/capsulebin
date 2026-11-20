@@ -22,7 +22,13 @@ import {
 } from './crypto';
 import { concatByteArrays, encodeUtf8, fromBase64url, toBase64url } from './helpers/bytes';
 import { Capsule, MAX_ITEMS, CapsuleError, type CapsuleItem } from './capsule';
-import { FORMAT_VERSION, FRAGMENT_PREFIX, PublicHeader, type PasswordKdf } from './public_header';
+import {
+    FORMAT_VERSION,
+    FRAGMENT_PREFIX,
+    PASSWORD_SALT_BYTES,
+    PublicHeader,
+    type PasswordKdf,
+} from './public_header';
 import type { PasteApi } from './api';
 
 // --- sizes and domain labels ---------------------------------------------------
@@ -31,7 +37,6 @@ const LINK_SECRET_BYTES = 32;
 const DELETE_SECRET_BYTES = 32;
 const NONCE_BYTES = 12;
 const HKDF_SALT_BYTES = 16;
-const PASSWORD_SALT_BYTES = 16;
 const PASTE_ID_BYTES = 16;
 
 const HKDF_INFO_CONTENT = encodeUtf8('capsule/v1/content');
@@ -102,7 +107,9 @@ export function deleteVerifier(secret: Uint8Array): Promise<Uint8Array<ArrayBuff
 
 export interface PasteOptions {
     title?: string | null;
-    /** Empty or whitespace-only is treated as "no password". */
+    /** Empty or `null` means "no password". A non-empty password of only
+     *  whitespace makes {@link Paste.seal} (and so {@link Paste.publish})
+     *  throw rather than silently creating an unprotected capsule. */
     password?: string | null;
     /** Seconds until expiry; `null` asks for a permanent paste; omitted
      *  (`undefined`) leaves the choice to the server's `default_expiry`. */
@@ -183,6 +190,9 @@ export class Paste {
         if (this.#sealed) {
             throw new Error('paste has already been sealed');
         }
+        if (this.password && !this.password.trim()) {
+            throw new Error('password must not consist of whitespace only');
+        }
 
         const linkSecret = randomBytes(LINK_SECRET_BYTES);
         const deleteSecret = randomBytes(DELETE_SECRET_BYTES);
@@ -191,7 +201,7 @@ export class Paste {
 
         let passwordKey: Uint8Array | undefined;
         let passwordKdf: PasswordKdf | undefined;
-        if (this.password && this.password.trim()) {
+        if (this.password) {
             const passwordSalt = randomBytes(PASSWORD_SALT_BYTES);
             passwordKey = await derivePasswordKey(this.password, passwordSalt);
             passwordKdf = {

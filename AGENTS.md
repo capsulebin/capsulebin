@@ -104,6 +104,12 @@ Key points:
   `SHA-256("capsule/v1/delete" || secret)`.
 - **Password protection:** password NFC-normalized, then PBKDF2-HMAC-SHA-256 (default 600k
   iterations, hard cap 5M).
+  The core header parser refuses a non-integer count, fewer than 100k iterations
+  (`MIN_PBKDF2_ITERATIONS`) or a salt other than canonical base64url of 16 bytes, before a
+  password is asked for: the link's issuer chooses the header and receives the reveal token, so a
+  cheap KDF would let it guess the password offline. `openPaste` reports such a header as
+  `invalid_capsule`. The floor lives in the parser, not in `derivePasswordKey`.
+  A non-empty whitespace-only password makes `Paste.seal()` throw; `''`/`null` mean no password.
   Password key is mixed into HKDF info — wrong password produces wrong reveal token,
   server rejects before decryption is attempted. No password verifier in the public header
   (would be an offline brute-force oracle).
@@ -319,8 +325,8 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
 | `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
-| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete. |
-| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay. |
+| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete, incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
+| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, `CAPSULEBIN_PASSWORD` bound to `--server`, link channels (stdin, `--link-file`, `--delete-link-file`). Fake origin `https://capsule.test`. |
 | `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
@@ -394,11 +400,11 @@ npm run e2e -w @capsulebin/web
 | `src/crypto.ts` | Key derivation, encryption/decryption (Web Crypto) |
 | `src/capsule.ts` | Capsule file format encode/decode |
 | `src/paste.ts` | High-level create/retrieve/delete operations |
-| `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`) |
+| `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`); follows no redirect (`ApiError` code `redirect_refused`, exported as `REDIRECT_REFUSED`, `Location` not passed on); `MalformedHeaderError` for a describe header the parser refuses |
 | `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI) |
 | `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in; `hasQueryOrFragment()`: a base URL with a `?` or `#` |
 | `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
-| `src/public_header.ts` | Protocol constants, public header type and its canonical serialization |
+| `src/public_header.ts` | Protocol constants (incl. `MIN_PBKDF2_ITERATIONS`, `MAX_PBKDF2_ITERATIONS`, `PASSWORD_SALT_BYTES`), public header type, its parser (password parameter bounds) and canonical serialization |
 | `src/helpers/bytes.ts` | Byte array utilities (base64url, hex, concatenation) |
 | `src/helpers/ulid.ts` | ULID generation |
 | `src/helpers/format.ts` | Size and date formatting (English; the web client uses `language.ts`) |
@@ -442,11 +448,12 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
-| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code |
-| `src/commands/{put,get,delete}.ts` | The three commands |
-| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping |
+| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code; `get --server` (else a usable `CAPSULEBIN_SERVER`) is the anchor for `CAPSULEBIN_PASSWORD` |
+| `src/commands/{put,get,delete}.ts` | The three commands; `put --delete-link-file` (exclusive `0600` file written before the upload, removed on failure) |
+| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping (core's `REDIRECT_REFUSED` → `7`, checked before the status) |
 | `src/items.ts` | Presentation/language inference for input files |
-| `src/secrets.ts` | Password and creation-token sources (file, env, prompt — never argv) |
+| `src/secrets.ts` | Password and creation-token sources (file, env, prompt — never argv); `put` refuses a whitespace-only password; `CAPSULEBIN_PASSWORD` for `get` only when the link's base equals the anchor; `readLink`: positional link, `-` (stdin) or `--link-file` |
+| `src/transport.ts` | HTTPS-or-loopback policy (`localhost`, `127.0.0.0/8`, `[::1]`; else `--allow-http`/`CAPSULEBIN_ALLOW_HTTP=1`), `normalizeBase()` for comparing server bases |
 | `src/io.ts` | Process I/O behind an interface, replaced in tests |
 | `tests/cli.test.ts` | End-to-end against the in-memory API in `src/core/tests/fake-server.ts` |
 

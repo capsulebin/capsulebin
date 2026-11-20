@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, PasteApi } from '../src/api';
-import { encodeUtf8, decodeUtf8 } from '../src/helpers/bytes';
+import { encodeUtf8, decodeUtf8, fromBase64url, toBase64url } from '../src/helpers/bytes';
 import { parseLink } from '../src/links';
 import { derivePasswordKeyFor, openPaste } from '../src/open';
 import { Paste, type PasteOptions } from '../src/paste';
@@ -87,6 +87,27 @@ describe('openPaste', () => {
         expect(outcome.kind).toBe('password_required');
         // Nothing was retrieved.
         expect(server.requests.filter((r) => r.url.endsWith('/retrieve'))).toHaveLength(0);
+    });
+
+    it('ends as invalid_capsule on a header below the KDF floor, before any password or retrieve', async () => {
+        const { share } = await publish({ password: 'correct horse' });
+        const stored = server.pastes.get(share.id)!;
+        const json = decodeUtf8(fromBase64url(stored.publicHeader));
+        const weak = json.replace(/"iterations":\d+/, '"iterations":99999');
+        expect(weak).not.toBe(json);
+        stored.publicHeader = toBase64url(encodeUtf8(weak));
+        const passwordKey = vi.fn((header) => derivePasswordKeyFor(header, 'correct horse'));
+        server.requests.length = 0;
+
+        const outcome = await openPaste(new PasteApi(share.base), share.id, share.secret, {
+            passwordKey,
+        });
+
+        expect(outcome.kind).toBe('invalid_capsule');
+        expect(passwordKey).not.toHaveBeenCalled();
+        expect(server.requests.map((r) => new URL(r.url).pathname)).toEqual([
+            `/api/v1/pastes/${share.id}/describe`,
+        ]);
     });
 
     it('opens with the right password and is refused with a wrong one', async () => {

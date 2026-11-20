@@ -15,7 +15,7 @@ import { Capsule, CapsuleError, type CapsuleItem, MAX_ITEMS } from '../src/capsu
 import { fromBase64url, toBase64url } from '../src/helpers/bytes';
 import { KNOWN_LANGUAGES } from '../src/languages';
 import { LinkError, parseLink, pasteIdFromInput } from '../src/links';
-import { PublicHeader } from '../src/public_header';
+import { MAX_PBKDF2_ITERATIONS, MIN_PBKDF2_ITERATIONS, PublicHeader } from '../src/public_header';
 
 const RUNS = { numRuns: 300 };
 
@@ -159,7 +159,10 @@ describe('PublicHeader', () => {
             password: fc.option(
                 fc.record({
                     salt: fc.uint8Array({ minLength: 16, maxLength: 16 }),
-                    iterations: fc.integer({ min: 1, max: 5_000_000 }),
+                    iterations: fc.integer({
+                        min: MIN_PBKDF2_ITERATIONS,
+                        max: MAX_PBKDF2_ITERATIONS,
+                    }),
                 }),
                 { nil: undefined },
             ),
@@ -186,6 +189,24 @@ describe('PublicHeader', () => {
                 // Canonical: re-serialising gives the identical bytes.
                 expect(Array.from(parsed.toAad())).toEqual(Array.from(aad));
             }),
+            RUNS,
+        );
+    });
+
+    it('refuses every integer iteration count below the floor', () => {
+        fc.assert(
+            fc.property(
+                header.filter((h) => h.hasPassword()),
+                fc.integer({ min: Number.MIN_SAFE_INTEGER, max: MIN_PBKDF2_ITERATIONS - 1 }),
+                (h, iterations) => {
+                    const weak = new PublicHeader(h.nonceBytes(), h.hkdfSaltBytes(), {
+                        ...h.password!,
+                        iterations,
+                    });
+                    const json = new TextDecoder().decode(weak.toAad());
+                    expect(() => PublicHeader.parseFromJson(json)).toThrow(/iterations/);
+                },
+            ),
             RUNS,
         );
     });

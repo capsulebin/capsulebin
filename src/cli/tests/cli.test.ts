@@ -4,17 +4,27 @@
  * rely on, and the rules that protect secrets and burn capsules.
  */
 
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import {
+    access,
+    lstat,
+    mkdtemp,
+    readdir,
+    readFile,
+    stat,
+    symlink,
+    writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { decodeUtf8, encodeUtf8, fromBase64url, toBase64url } from '@capsulebin/core';
 import { run, parseDuration } from '../src/cli';
 import { safeFileName } from '../src/commands/get';
 import type { Io } from '../src/io';
 import { buildItem } from '../src/items';
 import { createFakeServer, type FakeServer } from '../../core/tests/fake-server';
 
-const SERVER = 'http://capsule.test';
+const SERVER = 'https://capsule.test';
 
 let server: FakeServer;
 let cwd: string;
@@ -164,6 +174,148 @@ describe('put → get → delete', () => {
     });
 });
 
+describe('link channels', () => {
+    const withPrefix = (url: string) => url.replace(`${SERVER}/`, `${SERVER}/de/`);
+
+    it.each([
+        ['plain', (url: string) => url],
+        ['with a /de/ segment', withPrefix],
+    ])('round-trips with the links on stdin (%s)', async (_, form) => {
+        const created = await putText('from stdin');
+
+        const io = testIo({ stdin: form(created.share_url) + '\n' });
+        expect(await run(['get', '-'], io), io.err()).toBe(0);
+        expect(io.out()).toBe('from stdin');
+
+        const del = testIo({ stdin: form(created.delete_url) + '\r\nignored\n' });
+        expect(await run(['delete', '-'], del), del.err()).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+    });
+
+    it.each([
+        ['plain', (url: string) => url],
+        ['with a /de/ segment', withPrefix],
+    ])('round-trips with the links in files (%s)', async (_, form) => {
+        const created = await putText('from a file');
+        await writeFile(join(cwd, 'share'), form(created.share_url) + '\r\n');
+        await writeFile(join(cwd, 'manage'), form(created.delete_url));
+
+        const io = testIo();
+        expect(await run(['get', '--link-file', 'share'], io), io.err()).toBe(0);
+        expect(io.out()).toBe('from a file');
+
+        const del = testIo();
+        expect(await run(['delete', '--link-file', join(cwd, 'manage')], del), del.err()).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+    });
+
+    it('refuses an ambiguous, missing, empty or unreadable link without quoting it', async () => {
+        const created = await putText('x');
+        await writeFile(join(cwd, 'share'), created.share_url + '\n');
+        await writeFile(join(cwd, 'empty'), '');
+        await writeFile(join(cwd, 'blank-line'), '\n' + created.share_url + '\n');
+        const before = server.requests.length;
+
+        for (const command of ['get', 'delete']) {
+            const cases: [string[], string?][] = [
+                [[command, created.share_url, '--link-file', 'share']],
+                [[command, '-', '--link-file', 'share'], created.share_url],
+                [[command, created.share_url, created.share_url]],
+                [[command]],
+                [[command, '-']],
+                [[command, '-'], '\n' + created.share_url],
+                [[command, '--link-file', 'empty']],
+                [[command, '--link-file', 'blank-line']],
+                [[command, '--link-file', 'missing']],
+                [[command, '--link-file', cwd]],
+            ];
+            for (const [argv, stdin] of cases) {
+                const io = testIo(stdin === undefined ? {} : { stdin });
+                expect(await run(argv, io), argv.join(' ')).toBe(2);
+                expect(io.err()).not.toContain('#v1.');
+                expect(io.err()).not.toContain(created.id);
+            }
+        }
+        expect(server.requests).toHaveLength(before);
+    });
+});
+
+describe('put --delete-link-file', () => {
+    it('writes the management link to a new owner-only file instead of stderr', async () => {
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'private' });
+        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io), io.err()).toBe(0);
+        const deleteUrl = await readFile(path, 'utf8');
+        expect(deleteUrl).toMatch(
+            new RegExp(`^${SERVER}/manage/[A-Za-z0-9_-]{22}#v1\\.[^\\n]+\\n$`),
+        );
+        if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
+        expect(io.err()).not.toContain('#v1.');
+        expect(io.err()).toContain(path);
+        expect(io.out()).toMatch(/\/p\//);
+
+        expect(await run(['delete', '--link-file', path], testIo())).toBe(0);
+        expect(server.pastes.size).toBe(0);
+    });
+
+    it('names the absolute path in JSON and leaves out delete_url', async () => {
+        const io = testIo({ stdin: 'private' });
+        expect(
+            await run(['put', '-s', SERVER, '--json', '--delete-link-file', 'link'], io),
+            io.err(),
+        ).toBe(0);
+        const result = JSON.parse(io.out());
+        expect(result.delete_link_file).toBe(join(cwd, 'link'));
+        expect(result).not.toHaveProperty('delete_url');
+        expect(io.out()).not.toContain('/manage/');
+        expect(io.err()).not.toContain('#v1.');
+    });
+
+    it('refuses an existing file or symlink before any request', async () => {
+        await writeFile(join(cwd, 'taken'), 'keep me');
+        await symlink(join(cwd, 'nowhere'), join(cwd, 'dangling'));
+        for (const name of ['taken', 'dangling']) {
+            const io = testIo({ stdin: 'x' });
+            expect(await run(['put', '-s', SERVER, '--delete-link-file', name], io)).toBe(2);
+            expect(io.err()).toContain(join(cwd, name));
+        }
+        expect(server.requests).toHaveLength(0);
+        expect(await readFile(join(cwd, 'taken'), 'utf8')).toBe('keep me');
+        expect((await lstat(join(cwd, 'dangling'))).isSymbolicLink()).toBe(true);
+        await expect(access(join(cwd, 'nowhere'))).rejects.toThrow();
+    });
+
+    it('removes the file when the create fails', async () => {
+        server.creationToken = 'cbt_secret';
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io)).toBe(6);
+        await expect(access(path)).rejects.toThrow();
+    });
+
+    it.each([
+        [
+            'a redirect',
+            async () =>
+                new Response(null, { status: 307, headers: { Location: 'https://x.test/' } }),
+        ],
+        [
+            'a network failure',
+            async () => {
+                throw new TypeError('connection refused');
+            },
+        ],
+    ])('removes the file after %s', async (_, fake) => {
+        vi.stubGlobal('fetch', fake);
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'x' });
+        expect(
+            await run(['put', '-s', SERVER, '--retries', '0', '--delete-link-file', path], io),
+        ).toBe(7);
+        await expect(access(path)).rejects.toThrow();
+    });
+});
+
 describe('put options', () => {
     it('omits expires_in unless --expires is given, so the server default applies', async () => {
         await putText('x');
@@ -238,10 +390,13 @@ describe('put options', () => {
 
         expect(await run(['get', shareUrl], testIo())).toBe(8);
         expect(
-            await run(['get', shareUrl], testIo({ env: { CAPSULEBIN_PASSWORD: 'wrong' } })),
+            await run(
+                ['get', '-s', SERVER, shareUrl],
+                testIo({ env: { CAPSULEBIN_PASSWORD: 'wrong' } }),
+            ),
         ).toBe(3);
         const ok = testIo({ env: { CAPSULEBIN_PASSWORD: 'hunter22' } });
-        expect(await run(['get', shareUrl], ok)).toBe(0);
+        expect(await run(['get', '-s', SERVER, shareUrl], ok)).toBe(0);
         expect(ok.out()).toBe('secret note');
     });
 
@@ -300,6 +455,26 @@ describe('burn after retrieval', () => {
 });
 
 describe('errors and output', () => {
+    it('lists --server for get and --allow-http in the help', async () => {
+        const io = testIo();
+        expect(await run(['--help'], io)).toBe(0);
+        const getSection = io.out().split('get options:')[1]!.split('Common options:')[0]!;
+        expect(getSection).toContain('--server URL');
+        expect(io.out()).toContain('--allow-http');
+        expect(io.out()).toContain('CAPSULEBIN_ALLOW_HTTP=1');
+    });
+
+    it('lists the link channels and warns about links as arguments in the help', async () => {
+        const io = testIo();
+        expect(await run(['--help'], io)).toBe(0);
+        const help = io.out();
+        expect(help).toContain('--link-file PATH');
+        expect(help).toContain('--delete-link-file PATH');
+        expect(help).toContain('- to read it from the first line of stdin');
+        expect(help).toMatch(/visible to other\s+local users/);
+        expect(help).toContain('shell history');
+    });
+
     it('reports failures as JSON on stdout with --json', async () => {
         const io = testIo();
         const missing = `${SERVER}/p/${'A'.repeat(22)}#v1.${'A'.repeat(43)}`;
@@ -383,6 +558,336 @@ describe('errors and output', () => {
         expect(io.err()).toContain('binary file written to');
         // The source file is still there, so the copy gets a free name.
         expect(await readFile(join(cwd, 'img (1).bin'))).toEqual(Buffer.from([0, 159, 146, 150]));
+    });
+});
+
+describe('transport', () => {
+    it.each([
+        'http://paste.example',
+        'http://paste.localhost',
+        'http://localhost.example',
+        'http://10.0.0.1',
+        'http://192.168.1.10:8080',
+        'http://[::2]',
+        'http://128.0.0.1',
+        // Loopback is exactly localhost, 127.0.0.0/8 and [::1]; look-alikes and
+        // other local addresses need the opt-in.
+        'http://127.0.0.1.nip.io',
+        'http://[::ffff:127.0.0.1]',
+        'http://0.0.0.0:8081',
+        'http://localhost.:8081',
+    ])('refuses plain HTTP to %s without opt-in, before any request', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base], io)).toBe(2);
+        expect(io.err()).toContain('--allow-http');
+        expect(io.err()).toContain('CAPSULEBIN_ALLOW_HTTP');
+
+        const fromEnv = testIo({ stdin: 'x', env: { CAPSULEBIN_SERVER: base } });
+        expect(await run(['put'], fromEnv)).toBe(2);
+        expect(server.requests).toHaveLength(0);
+
+        const allowed = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base, '--allow-http'], allowed), allowed.err()).toBe(
+            0,
+        );
+    });
+
+    it.each([
+        'http://localhost:8081',
+        'http://LOCALHOST:8081/',
+        'http://127.0.0.1:8081',
+        'http://127.1.2.3:8081',
+        'http://[::1]:8081',
+        'https://paste.example',
+    ])('talks to %s without opt-in', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base, '--json'], io), io.err()).toBe(0);
+        const created = JSON.parse(io.out()) as { share_url: string; delete_url: string };
+
+        const getIo = testIo();
+        expect(await run(['get', created.share_url], getIo), getIo.err()).toBe(0);
+        expect(getIo.out()).toBe('x');
+        expect(await run(['delete', created.delete_url], testIo())).toBe(0);
+    });
+
+    it('refuses an http link for get and delete unless HTTP is allowed', async () => {
+        const io = testIo({ stdin: 'over http' });
+        expect(await run(['put', '-s', 'http://capsule.test', '--allow-http', '--json'], io)).toBe(
+            0,
+        );
+        const created = JSON.parse(io.out()) as {
+            id: string;
+            share_url: string;
+            delete_url: string;
+        };
+        const before = server.requests.length;
+
+        for (const [command, link] of [
+            ['get', created.share_url],
+            ['delete', created.delete_url],
+        ] as const) {
+            const refused = testIo();
+            expect(await run([command, link], refused)).toBe(2);
+            expect(refused.err()).toContain('--allow-http');
+            expect(refused.err()).toContain('CAPSULEBIN_ALLOW_HTTP');
+            expect(refused.err()).not.toContain('#v1.');
+
+            const typo = testIo({ env: { CAPSULEBIN_ALLOW_HTTP: 'true' } });
+            expect(await run([command, link], typo)).toBe(2);
+            expect(typo.err()).toContain('CAPSULEBIN_ALLOW_HTTP');
+        }
+        expect(server.requests).toHaveLength(before);
+
+        const viaEnv = testIo({ env: { CAPSULEBIN_ALLOW_HTTP: '1' } });
+        expect(await run(['get', created.share_url], viaEnv), viaEnv.err()).toBe(0);
+        expect(viaEnv.out()).toBe('over http');
+        const viaFlag = testIo();
+        expect(await run(['get', '--allow-http', created.share_url], viaFlag), viaFlag.err()).toBe(
+            0,
+        );
+        expect(viaFlag.out()).toBe('over http');
+        const deleted = testIo();
+        expect(
+            await run(['delete', created.delete_url, '--allow-http'], deleted),
+            deleted.err(),
+        ).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+
+        const second = testIo({ stdin: 'x' });
+        expect(
+            await run(['put', '-s', 'http://capsule.test', '--allow-http', '--json'], second),
+        ).toBe(0);
+        const other = JSON.parse(second.out()) as { id: string; delete_url: string };
+        const deletedViaEnv = testIo({ env: { CAPSULEBIN_ALLOW_HTTP: '1' } });
+        expect(await run(['delete', other.delete_url], deletedViaEnv), deletedViaEnv.err()).toBe(0);
+        expect(server.pastes.has(other.id)).toBe(false);
+    });
+
+    it('lets put talk plain HTTP to a remote host with CAPSULEBIN_ALLOW_HTTP=1', async () => {
+        const io = testIo({ stdin: 'via env', env: { CAPSULEBIN_ALLOW_HTTP: '1' } });
+        expect(await run(['put', '--server', 'http://paste.example', '--json'], io), io.err()).toBe(
+            0,
+        );
+        const created = JSON.parse(io.out()) as { share_url: string };
+        expect(created.share_url.startsWith('http://paste.example/p/')).toBe(true);
+        expect(server.requests).toHaveLength(1);
+        expect(server.requests[0]!.url.startsWith('http://paste.example/api/v1/pastes')).toBe(true);
+    });
+
+    it.each(['true', 'yes', '0'])(
+        'refuses CAPSULEBIN_ALLOW_HTTP=%s as a usage error naming the variable',
+        async (value) => {
+            const io = testIo({ stdin: 'x', env: { CAPSULEBIN_ALLOW_HTTP: value } });
+            expect(await run(['put', '-s', 'http://paste.example'], io)).toBe(2);
+            expect(io.err()).toContain('CAPSULEBIN_ALLOW_HTTP');
+            expect(io.err()).not.toContain('plain HTTP');
+            expect(server.requests).toHaveLength(0);
+        },
+    );
+
+    it.each([307, 308])(
+        'does not retry a %i on create and does not show where it pointed',
+        async (status) => {
+            let calls = 0;
+            vi.stubGlobal('fetch', async () => {
+                calls++;
+                return new Response(null, {
+                    status,
+                    headers: { Location: 'https://elsewhere.test/collect' },
+                });
+            });
+            const io = testIo({ stdin: 'x' });
+            expect(await run(['put', '-s', SERVER, '--json'], io)).toBe(7);
+            expect(calls).toBe(1);
+            expect(JSON.parse(io.out()).error.reason).toBe('redirect_refused');
+            expect(io.out()).not.toContain('elsewhere.test');
+            expect(io.err()).toContain('redirect, which was not followed');
+            expect(io.err()).not.toContain('elsewhere.test');
+            expect(io.err()).not.toContain('retrying');
+        },
+    );
+});
+
+/** Routes requests below `/team` to the fake server, as a server under a sub-path. */
+function serveBelowTeam(): void {
+    vi.stubGlobal('fetch', (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        server.fetch(String(input).replace('/team/api/', '/api/'), init),
+    );
+}
+
+describe('get --server and CAPSULEBIN_PASSWORD', () => {
+    async function protectedCapsule(base = SERVER): Promise<string> {
+        await writeFile(join(cwd, 'pw'), 'hunter22\n');
+        const io = testIo({ stdin: 'secret note' });
+        expect(await run(['put', '-s', base, '--password-file', 'pw'], io), io.err()).toBe(0);
+        return io.out().trim();
+    }
+
+    const retrieves = () => server.requests.filter((r) => r.url.endsWith('/retrieve'));
+    const env = { CAPSULEBIN_PASSWORD: 'hunter22' };
+
+    it.each([
+        ['trailing slash', `${SERVER}/`],
+        ['upper-case host', 'https://CAPSULE.TEST'],
+        ['default port', `${SERVER}:443`],
+    ])('uses the environment password when --server matches (%s)', async (_, anchor) => {
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env });
+        expect(await run(['get', '--server', anchor, shareUrl], io), io.err()).toBe(0);
+        expect(io.out()).toBe('secret note');
+    });
+
+    it('uses the environment password for a link with a language segment', async () => {
+        const shareUrl = (await protectedCapsule()).replace(`${SERVER}/`, `${SERVER}/de/`);
+        const io = testIo({ env });
+        expect(await run(['get', '-s', SERVER, shareUrl], io), io.err()).toBe(0);
+        expect(io.out()).toBe('secret note');
+    });
+
+    it('takes CAPSULEBIN_SERVER as the trusted server without --server', async () => {
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env: { ...env, CAPSULEBIN_SERVER: `${SERVER}/` } });
+        expect(await run(['get', shareUrl], io), io.err()).toBe(0);
+    });
+
+    it('compares the sub-path of the base', async () => {
+        serveBelowTeam();
+        const shareUrl = await protectedCapsule(`${SERVER}/team`);
+        expect(shareUrl.startsWith(`${SERVER}/team/p/`)).toBe(true);
+
+        const io = testIo({ env });
+        expect(await run(['get', '-s', `${SERVER}/team/`, shareUrl], io), io.err()).toBe(0);
+
+        const other = testIo({ env });
+        expect(await run(['get', '-s', `${SERVER}/other`, shareUrl], other)).toBe(8);
+        const parent = testIo({ env });
+        expect(await run(['get', '-s', SERVER, shareUrl], parent)).toBe(8);
+    });
+
+    it.each([
+        ['no anchor', []],
+        ['another host', ['-s', 'https://other.test']],
+        ['another port', ['-s', 'https://capsule.test:8443']],
+        ['another scheme', ['-s', 'http://capsule.test', '--allow-http']],
+        ['another sub-path', ['-s', `${SERVER}/team`]],
+    ])('stops non-interactively with %s, before any retrieve', async (_, args) => {
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env });
+        expect(await run(['get', ...args, shareUrl, '--json'], io)).toBe(8);
+        expect(JSON.parse(io.out()).error.reason).toBe('password_origin_mismatch');
+        expect(io.err()).toContain(`this link's server is ${SERVER}`);
+        expect(io.err()).toContain('--server');
+        expect(io.err()).not.toContain('hunter22');
+        expect(retrieves()).toHaveLength(0);
+    });
+
+    it('names the given --server in the mismatch message', async () => {
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env });
+        expect(await run(['get', '-s', 'https://other.test/', shareUrl], io)).toBe(8);
+        expect(io.err()).toContain('--server is https://other.test');
+    });
+
+    it('prompts on a terminal instead of using the environment password', async () => {
+        const shareUrl = await protectedCapsule();
+        // The environment password is right, the prompted one wrong: failing
+        // proves the environment password was not used.
+        const io = testIo({ env, interactive: true, answers: ['not-it'] });
+        expect(await run(['get', '-s', 'https://other.test', shareUrl], io)).toBe(3);
+        expect(io.err()).toContain('the environment password is not used');
+        expect(io.prompts).toEqual(['Password: ']);
+        expect(retrieves()).toHaveLength(1);
+
+        const right = testIo({
+            env: { CAPSULEBIN_PASSWORD: 'wrong' },
+            interactive: true,
+            answers: ['hunter22'],
+        });
+        expect(await run(['get', shareUrl], right)).toBe(0);
+        expect(right.out()).toBe('secret note');
+        expect(retrieves()).toHaveLength(2);
+    });
+
+    it('uses --password-file for any link', async () => {
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env: { CAPSULEBIN_PASSWORD: 'wrong' } });
+        expect(
+            await run(['get', '-s', 'https://other.test', '--password-file', 'pw', shareUrl], io),
+            io.err(),
+        ).toBe(0);
+        expect(await run(['get', '--password-file', 'pw', shareUrl], testIo())).toBe(0);
+    });
+
+    it('ignores an unusable CAPSULEBIN_SERVER', async () => {
+        const created = await putText('open');
+        for (const value of ['not a url', 'https://paste.example/de', 'http://paste.example']) {
+            const io = testIo({ env: { CAPSULEBIN_SERVER: value } });
+            expect(await run(['get', created.share_url], io), io.err()).toBe(0);
+            expect(io.out()).toBe('open');
+        }
+
+        const shareUrl = await protectedCapsule();
+        const io = testIo({ env: { ...env, CAPSULEBIN_SERVER: `${SERVER}/de` } });
+        expect(await run(['get', shareUrl], io)).toBe(8);
+    });
+
+    it.each([
+        ['ftp://capsule.test', 'http(s) URL'],
+        ['https://capsule.test/de', 'language code'],
+        ['https://capsule.test/?x', 'query or fragment'],
+        ['http://capsule.test', '--allow-http'],
+    ])('refuses an explicit --server %s as a usage error', async (anchor, message) => {
+        const created = await putText('x');
+        const before = server.requests.length;
+        const io = testIo();
+        expect(await run(['get', '--server', anchor, created.share_url], io)).toBe(2);
+        expect(io.err()).toContain(message);
+        expect(server.requests).toHaveLength(before);
+    });
+
+    it('ends with invalid_capsule, without a prompt, on a header below the KDF floor', async () => {
+        const shareUrl = await protectedCapsule();
+        const stored = [...server.pastes.values()][0]!;
+        const header = decodeUtf8(fromBase64url(stored.publicHeader));
+        const weak = header.replace(/"iterations":\d+/, '"iterations":1000');
+        expect(weak).not.toBe(header);
+        stored.publicHeader = toBase64url(encodeUtf8(weak));
+
+        const io = testIo({ env, interactive: true });
+        expect(await run(['get', '-s', SERVER, shareUrl, '--json'], io)).toBe(5);
+        expect(JSON.parse(io.out()).error.reason).toBe('invalid_capsule');
+        expect(io.prompts).toHaveLength(0);
+        expect(retrieves()).toHaveLength(0);
+    });
+});
+
+describe('new passwords', () => {
+    it('refuses a password file with only whitespace, naming the file', async () => {
+        await writeFile(join(cwd, 'blank'), ' \t \nsecond line\n');
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--password-file', 'blank'], io)).toBe(2);
+        expect(io.err()).toContain('password file blank contains only whitespace');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('refuses CAPSULEBIN_PASSWORD with only whitespace, naming the variable', async () => {
+        const io = testIo({ stdin: 'x', env: { CAPSULEBIN_PASSWORD: '   ' } });
+        expect(await run(['put', '-s', SERVER, '--password'], io)).toBe(2);
+        expect(io.err()).toContain('CAPSULEBIN_PASSWORD contains only whitespace');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('keeps surrounding spaces of a password', async () => {
+        await writeFile(join(cwd, 'spaced'), ' secret \n');
+        await writeFile(join(cwd, 'trimmed'), 'secret\n');
+        const io = testIo({ stdin: 'spaced' });
+        expect(await run(['put', '-s', SERVER, '--password-file', 'spaced'], io)).toBe(0);
+        const shareUrl = io.out().trim();
+
+        expect(await run(['get', '--password-file', 'trimmed', shareUrl], testIo())).toBe(3);
+        const ok = testIo();
+        expect(await run(['get', '--password-file', 'spaced', shareUrl], ok)).toBe(0);
+        expect(ok.out()).toBe('spaced');
     });
 });
 

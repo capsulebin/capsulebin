@@ -27,9 +27,14 @@ import {
 import { alreadyRetrieved, CliError, ExitCode, fromApiError, toCliError, usage } from '../exit';
 import type { Io } from '../io';
 import { existingPassword } from '../secrets';
+import { checkTransport } from '../transport';
 
 export interface GetOptions {
     link: string;
+    /** The server trusted with `CAPSULEBIN_PASSWORD` (`--server`/`CAPSULEBIN_SERVER`), if any. */
+    anchor: string | undefined;
+    /** Plain HTTP to a host other than loopback was opted into. */
+    allowHttp: boolean;
     output: string | undefined;
     passwordFile: string | undefined;
     yes: boolean;
@@ -45,6 +50,7 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
         if (err instanceof LinkError) throw usage(`invalid share link: ${err.message}`);
         throw err;
     }
+    checkTransport(link.base, options.allowHttp, "the link's server");
 
     // A hook that stops the flow records why, so the reason survives
     // openPaste()'s coarse `aborted` outcome.
@@ -64,7 +70,13 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
         confirmBurn: recording(() => confirmBurn(io, options.yes)),
         passwordKey: (header) =>
             recording(async () =>
-                derivePasswordKeyFor(header, await existingPassword(io, options.passwordFile)),
+                derivePasswordKeyFor(
+                    header,
+                    await existingPassword(io, options.passwordFile, {
+                        link: link.base,
+                        anchor: options.anchor,
+                    }),
+                ),
             )(),
     });
 
