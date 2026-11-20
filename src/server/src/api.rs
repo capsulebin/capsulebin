@@ -4,6 +4,7 @@
 
 pub mod access_log;
 pub mod assets;
+pub mod branding;
 pub mod client_ip;
 pub mod health;
 pub mod pastes;

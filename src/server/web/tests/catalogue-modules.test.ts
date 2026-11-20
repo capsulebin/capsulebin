@@ -21,7 +21,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { KNOWN_LANGUAGES } from '@capsulebin/core';
 
-import { SHELLS, readCatalogue, shellFor } from '../scripts/shells';
+import {
+    FAVICON_TOKEN,
+    NAME_TOKEN,
+    SHELLS,
+    SOURCE_TOKEN,
+    readCatalogue,
+    shellFor,
+} from '../scripts/shells';
 import { LANGUAGE_NEXT_PAGE } from '../src/i18n/language-next-page';
 
 const WEB_ROOT = resolve(import.meta.dirname, '..');
@@ -221,6 +228,19 @@ describe('catalogue modules in the build output', () => {
                     );
                 }
                 expect(html).not.toContain('<!--capsulebin:languages-->');
+                for (const marker of ['logo', 'wordmark']) {
+                    expect(count(html, `<!--capsulebin:${marker}-->`), marker).toBe(1);
+                    expect(count(html, `<!--/capsulebin:${marker}-->`), marker).toBe(1);
+                }
+            });
+
+            it('keeps the branding tokens: name in the title, favicon link, attribution', () => {
+                const html = built();
+                expect(html).toMatch(new RegExp(`<title>[^\\n]*${NAME_TOKEN}</title>`));
+                expect(head()).toContain(`<link rel="icon" href="${FAVICON_TOKEN}" />`);
+                expect(html).toContain(
+                    `<a href="${SOURCE_TOKEN}">${readCatalogue(lang)['shell.poweredBy']}</a>`,
+                );
             });
 
             it('names every known language in the head, before the head script', () => {
@@ -272,16 +292,19 @@ describe('catalogue modules in the build output', () => {
                     ...built().matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g),
                 ]
                     .map(([, url = '']) => url)
-                    .filter((url) => !['/language-init.js', '/theme-init.js'].includes(url));
+                    .filter(
+                        (url) =>
+                            !['/language-init.js', '/theme-init.js', FAVICON_TOKEN].includes(url),
+                    );
                 expect(loaded.length).toBeGreaterThan(0);
                 expect(loaded.filter((url) => !url.startsWith('/assets/'))).toEqual([]);
             });
 
             it('starts every internal link with the prefix token and carries no other token', () => {
                 const html = built();
-                const links = [...html.matchAll(/<a\b[^>]*\bhref="([^"]*)"/g)].map(
-                    ([, href = '']) => href,
-                );
+                const links = [...html.matchAll(/<a\b[^>]*\bhref="([^"]*)"/g)]
+                    .map(([, href = '']) => href)
+                    .filter((href) => href !== SOURCE_TOKEN);
                 expect(links.length).toBeGreaterThan(0);
                 for (const href of links) {
                     expect(href.startsWith('%%capsulebin:prefix%%/'), href).toBe(true);
@@ -291,7 +314,10 @@ describe('catalogue modules in the build output', () => {
                 }
                 const rest = html
                     .replaceAll('href="%%capsulebin:prefix%%/', '')
-                    .replaceAll('data-default="%%capsulebin:default%%"', '');
+                    .replaceAll('data-default="%%capsulebin:default%%"', '')
+                    .replaceAll(NAME_TOKEN, '')
+                    .replaceAll(`href="${FAVICON_TOKEN}"`, '')
+                    .replaceAll(`href="${SOURCE_TOKEN}"`, '');
                 expect(rest).not.toContain('%%');
             });
         },

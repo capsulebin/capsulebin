@@ -30,6 +30,7 @@ fn valid(directory: &Path) -> Config {
         abuse: Default::default(),
         legal: Default::default(),
         i18n: Default::default(),
+        branding: Default::default(),
     }
 }
 
@@ -847,4 +848,287 @@ fn rejects_other_keys_in_the_i18n_table() {
     apply_env(&mut table, [("CAPSULEBIN__I18N__LANGUAGES".to_owned(), r#"["en"]"#.to_owned())]).expect("overlay");
     let error = table.try_into::<Config>().expect_err("CAPSULEBIN__I18N__LANGUAGES accepted");
     assert!(error.to_string().contains("languages"), "unexpected error: {error}");
+}
+
+/// The start of a PNG, a WebP and an ICO file: enough for the signature check.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+const WEBP: &[u8] = b"RIFF\x1a\0\0\0WEBPVP8L";
+const ICO: &[u8] = b"\0\0\x01\0\x01\0\x10\x10";
+
+fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("write branding file");
+    path
+}
+
+/// AC1: without `[branding]`, the defaults; unnamed keys of a partial table
+/// keep theirs.
+#[test]
+fn branding_defaults() {
+    let dir = tempdir("branding-defaults");
+    for config in [
+        valid(&dir),
+        Config {
+            branding: toml::from_str::<Config>("[branding]\n").expect("empty [branding]").branding,
+            ..valid(&dir)
+        },
+    ] {
+        let branding = config.validate().expect("valid configuration").branding;
+        assert_eq!(branding.name, "CapsuleBin");
+        assert!(!branding.hide_name);
+        assert!(branding.logo.is_none());
+        assert!(branding.logo_dark.is_none());
+        assert!(branding.favicon.is_none());
+        assert_eq!(branding.source_url, "https://github.com/capsulebin/capsulebin");
+        assert!(branding.files().is_empty());
+    }
+
+    let partial = toml::from_str::<Config>("[branding]\nname = \"Team Paste\"\n").expect("partial [branding]");
+    assert_eq!(partial.branding.name, "Team Paste");
+    assert_eq!(partial.branding.source_url, "https://github.com/capsulebin/capsulebin");
+}
+
+/// AC1: every key of `[branding]` has its `CAPSULEBIN__BRANDING__<KEY>`.
+#[test]
+fn branding_can_be_set_from_the_environment() {
+    let mut table = toml::Table::new();
+    apply_env(
+        &mut table,
+        [
+            ("CAPSULEBIN__BRANDING__NAME", "Team Paste"),
+            ("CAPSULEBIN__BRANDING__HIDE_NAME", "true"),
+            ("CAPSULEBIN__BRANDING__LOGO", "/etc/capsulebin/logo.png"),
+            ("CAPSULEBIN__BRANDING__LOGO_DARK", "branding/logo-dark.webp"),
+            ("CAPSULEBIN__BRANDING__FAVICON", "/etc/capsulebin/favicon.ico"),
+            ("CAPSULEBIN__BRANDING__SOURCE_URL", "https://git.example/capsulebin"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned())),
+    )
+    .expect("overlay");
+    let branding = table.try_into::<Config>().expect("parse").branding;
+
+    assert_eq!(branding.name, "Team Paste");
+    assert!(branding.hide_name);
+    assert_eq!(branding.logo, Some(PathBuf::from("/etc/capsulebin/logo.png")));
+    assert_eq!(branding.logo_dark, Some(PathBuf::from("branding/logo-dark.webp")));
+    assert_eq!(branding.favicon, Some(PathBuf::from("/etc/capsulebin/favicon.ico")));
+    assert_eq!(branding.source_url, "https://git.example/capsulebin");
+}
+
+/// AC1: an unknown key in `[branding]` stops the start, from the file or the
+/// environment.
+#[test]
+fn rejects_unknown_branding_keys() {
+    let error = toml::from_str::<Config>("[branding]\nlogo_light = \"logo.png\"\n").expect_err("typo accepted");
+    assert!(error.to_string().contains("logo_light"), "unexpected error: {error}");
+
+    let mut table = toml::Table::new();
+    apply_env(&mut table, [("CAPSULEBIN__BRANDING__COLOR".to_owned(), "red".to_owned())]).expect("overlay");
+    let error = table.try_into::<Config>().expect_err("CAPSULEBIN__BRANDING__COLOR accepted");
+    assert!(error.to_string().contains("color"), "unexpected error: {error}");
+}
+
+/// AC2: names the instance cannot show are refused, naming the key; a name is
+/// trimmed and counted in characters, not bytes.
+#[test]
+fn rejects_unusable_branding_names() {
+    let dir = tempdir("branding-name");
+    for bad in [
+        "",
+        "   ",
+        "\t\n",
+        &"x".repeat(65),
+        "Team\nPaste",
+        "Team\u{7}Paste",
+        "Team\u{9f}Paste",
+    ] {
+        let mut config = valid(&dir);
+        config.branding.name = bad.to_owned();
+        let error = error(&config);
+        assert!(error.contains("branding.name"), "{bad:?}: {error}");
+    }
+
+    for good in [&"ä".repeat(64), "  Team Paste  ", "A&B <i>x</i> \"q\""] {
+        let mut config = valid(&dir);
+        config.branding.name = good.to_owned();
+        let branding = config
+            .validate()
+            .unwrap_or_else(|error| panic!("{good:?} refused: {error}"))
+            .branding;
+        assert_eq!(branding.name, good.trim());
+    }
+}
+
+/// AC2: `hide_name` and `logo_dark` without `logo` are refused, not ignored.
+#[test]
+fn hide_name_and_logo_dark_require_a_logo() {
+    let dir = tempdir("branding-requires-logo");
+
+    let mut config = valid(&dir);
+    config.branding.hide_name = true;
+    let message = error(&config);
+    assert!(
+        message.contains("branding.hide_name") && message.contains("branding.logo"),
+        "{message}"
+    );
+
+    let mut config = valid(&dir);
+    config.branding.logo_dark = Some(write_file(&dir, "dark.png", PNG));
+    let message = error(&config);
+    assert!(
+        message.contains("branding.logo_dark") && message.contains("branding.logo"),
+        "{message}"
+    );
+
+    let mut config = valid(&dir);
+    config.branding.logo = Some(write_file(&dir, "logo.png", PNG));
+    config.branding.logo_dark = Some(write_file(&dir, "dark.png", PNG));
+    config.branding.hide_name = true;
+    config.validate().expect("hide_name and logo_dark with a logo");
+}
+
+/// AC2: the attribution points to an absolute http(s) URL without user info.
+#[test]
+fn rejects_unusable_source_urls() {
+    let dir = tempdir("branding-source");
+    for bad in [
+        "",
+        "/source",
+        "//git.example/capsulebin",
+        "git.example/capsulebin",
+        "ftp://git.example/capsulebin",
+        "javascript:alert(1)",
+        "https://user@git.example/capsulebin",
+        "https://user:secret@git.example/capsulebin",
+        "https://:secret@git.example/capsulebin",
+        "https://git.example/capsule bin",
+        " https://git.example/capsulebin",
+        "https://git.example/\ncapsulebin",
+        "https://",
+    ] {
+        let mut config = valid(&dir);
+        config.branding.source_url = bad.to_owned();
+        let error = error(&config);
+        assert!(error.contains("branding.source_url"), "{bad:?}: {error}");
+    }
+
+    for good in ["http://git.example/capsulebin", "https://git.example:8443/a/b?ref=v1.0&x=1#readme"] {
+        let mut config = valid(&dir);
+        config.branding.source_url = good.to_owned();
+        let branding = config
+            .validate()
+            .unwrap_or_else(|error| panic!("{good:?} refused: {error}"))
+            .branding;
+        assert_eq!(branding.source_url, good, "the URL is used as written");
+    }
+}
+
+/// AC3/AC4: accepted files are read into memory under a URL from the first 16
+/// hex digits of their SHA-256 and the extension of their format.
+#[test]
+fn branding_files_are_read_and_addressed_by_their_hash() {
+    let dir = tempdir("branding-files");
+    let mut config = valid(&dir);
+    config.branding.logo = Some(write_file(&dir, "logo.PNG", PNG));
+    config.branding.logo_dark = Some(write_file(&dir, "logo-dark.webp", WEBP));
+    config.branding.favicon = Some(write_file(&dir, "favicon.ico", ICO));
+    let branding = config.validate().expect("valid branding files").branding;
+
+    let hash = |bytes: &[u8]| -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(bytes)[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+    };
+    for (file, bytes, extension, content_type) in [
+        (&branding.logo, PNG, "png", "image/png"),
+        (&branding.logo_dark, WEBP, "webp", "image/webp"),
+        (&branding.favicon, ICO, "ico", "image/x-icon"),
+    ] {
+        let file = file.as_ref().expect("file resolved");
+        assert_eq!(file.url, format!("/branding/{}.{extension}", hash(bytes)));
+        assert_eq!(file.content_type, content_type);
+        assert_eq!(file.bytes, bytes);
+    }
+    assert_eq!(branding.files().len(), 3);
+
+    // A PNG favicon is fine too, and the same file twice is served once.
+    let mut config = valid(&dir);
+    config.branding.logo = Some(dir.join("logo.PNG"));
+    config.branding.favicon = Some(write_file(&dir, "favicon.png", PNG));
+    let branding = config.validate().expect("PNG favicon").branding;
+    assert_eq!(branding.files().len(), 1);
+}
+
+/// AC3: a missing, oversized, wrongly named or wrongly started file stops the
+/// start, naming key and path but nothing from the file.
+#[test]
+fn rejects_unusable_branding_files() {
+    let dir = tempdir("branding-bad-files");
+    let content = b"<svg xmlns='http://www.w3.org/2000/svg'><script>BRANDING-SECRET</script></svg>";
+    let mut large = PNG.to_vec();
+    large.resize(256 * 1024 + 1, 0);
+    let mut largest = PNG.to_vec();
+    largest.resize(256 * 1024, 0);
+
+    type Set = fn(&mut BrandingConfig, PathBuf);
+    let logo: Set = |branding, path| branding.logo = Some(path);
+    let favicon: Set = |branding, path| branding.favicon = Some(path);
+
+    for (key, set, name, bytes, expected) in [
+        ("branding.logo", logo, "missing.png", None, "cannot be read"),
+        ("branding.logo", logo, "large.png", Some(&large[..]), "256 KiB"),
+        ("branding.logo", logo, "logo.svg", Some(&content[..]), "only PNG or WebP files"),
+        ("branding.logo", logo, "logo.gif", Some(PNG), "only PNG or WebP files"),
+        ("branding.logo", logo, "logo", Some(PNG), "only PNG or WebP files"),
+        ("branding.logo", logo, "logo.ico", Some(ICO), "only PNG or WebP files"),
+        ("branding.logo", logo, "fake.png", Some(&content[..]), "the PNG signature"),
+        ("branding.logo", logo, "fake.webp", Some(PNG), "the WebP signature"),
+        ("branding.logo", logo, "empty.png", Some(&b""[..]), "the PNG signature"),
+        (
+            "branding.favicon",
+            favicon,
+            "favicon.svg",
+            Some(&content[..]),
+            "only PNG or ICO files",
+        ),
+        ("branding.favicon", favicon, "favicon.webp", Some(WEBP), "only PNG or ICO files"),
+        ("branding.favicon", favicon, "fake.ico", Some(&content[..]), "the ICO signature"),
+        ("branding.favicon", favicon, "missing.ico", None, "cannot be read"),
+    ] {
+        let path = match bytes {
+            Some(bytes) => write_file(&dir, name, bytes),
+            None => dir.join(name),
+        };
+        let mut config = valid(&dir);
+        set(&mut config.branding, path.clone());
+        let message = error(&config);
+        assert!(
+            message.contains(key) && message.contains(&path.display().to_string()) && message.contains(expected),
+            "{name}: {message}"
+        );
+        assert!(
+            !message.contains("BRANDING-SECRET") && !message.contains("<svg"),
+            "{name}: {message}"
+        );
+    }
+
+    // A directory is not a file.
+    let mut config = valid(&dir);
+    std::fs::create_dir_all(dir.join("folder.png")).expect("create directory");
+    config.branding.logo = Some(dir.join("folder.png"));
+    assert!(error(&config).contains("branding.logo"));
+
+    // The dark logo is checked like the logo.
+    let mut config = valid(&dir);
+    config.branding.logo = Some(write_file(&dir, "ok.png", PNG));
+    config.branding.logo_dark = Some(write_file(&dir, "dark.svg", content));
+    let message = error(&config);
+    assert!(
+        message.contains("branding.logo_dark") && message.contains("only PNG or WebP files"),
+        "{message}"
+    );
+
+    // Exactly 256 KiB is accepted.
+    let mut config = valid(&dir);
+    config.branding.logo = Some(write_file(&dir, "largest.png", &largest));
+    config.validate().expect("a file of exactly 256 KiB");
 }

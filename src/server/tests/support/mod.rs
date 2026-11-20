@@ -17,6 +17,7 @@ use capsulebin_server::config::{Config, CreationConfig, CreationMode, DatabaseCo
 use capsulebin_server::domain::clock::FixedClock;
 use capsulebin_server::domain::{PasteId, Verifier};
 use capsulebin_server::{AppState, router};
+use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 
 /// Wall clock instant every test starts from. A fixed value keeps expiry
@@ -73,6 +74,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
         abuse: Default::default(),
         legal: Default::default(),
         i18n: Default::default(),
+        branding: Default::default(),
     }
 }
 
@@ -221,14 +223,32 @@ pub fn write_shells(dir: &Path) {
 /// The footer markers as the web build writes them into the shells of
 /// `language`: one per legal page, labelled from the catalogue.
 pub fn legal_link_markers(language: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("web/src/i18n/{language}.json"));
-    let catalogue: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let catalogue = catalogue(language);
     ["imprint", "privacy", "terms"]
         .map(|page| {
             let label = catalogue[format!("shell.{page}")].as_str().unwrap();
             format!("<!--capsulebin:legal-link:{page}:{label}-->")
         })
         .concat()
+}
+
+/// The catalogue of `language`, as the web build reads it.
+pub fn catalogue(language: &str) -> serde_json::Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("web/src/i18n/{language}.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The start of a PNG, a WebP and an ICO file: the server checks the
+/// signature, not the image.
+pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR logo";
+pub const WEBP: &[u8] = b"RIFF\x1a\0\0\0WEBPVP8L dark logo";
+pub const ICO: &[u8] = b"\0\0\x01\0\x01\0\x10\x10 favicon";
+
+/// The URL a branding file is expected at, computed here rather than taken
+/// from the server.
+pub fn branding_url(bytes: &[u8], extension: &str) -> String {
+    let hash: String = Sha256::digest(bytes)[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("/branding/{hash}.{extension}")
 }
 
 /// A server whose asset directory has no shells, for the degraded readiness path.
@@ -248,6 +268,11 @@ pub async fn harness_with_mode(name: &str, mode: CreationMode) -> Harness {
 /// directory: the shells of the web build, or none if it has not run.
 pub async fn harness_with_embedded_assets(name: &str) -> Harness {
     harness_on(name, |_| {}, |_| AssetSource::Embedded).await
+}
+
+/// [`harness_with_embedded_assets`] with one configuration change applied.
+pub async fn harness_with_embedded_assets_and(name: &str, adjust: impl FnOnce(&mut Config)) -> Harness {
+    harness_on(name, adjust, |_| AssetSource::Embedded).await
 }
 
 /// A token-mode harness with one configuration change applied, for tests about a

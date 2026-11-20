@@ -33,6 +33,8 @@ pub struct Config {
     pub legal: LegalConfig,
     #[serde(default)]
     pub i18n: I18nConfig,
+    #[serde(default)]
+    pub branding: BrandingConfig,
 }
 
 fn default_bind() -> String {
@@ -810,6 +812,108 @@ impl I18nConfig {
                 ))
             })
     }
+}
+
+/// The default of `branding.name`.
+const DEFAULT_BRAND_NAME: &str = "CapsuleBin";
+
+/// The default of `branding.source_url`: the repository of the project.
+const DEFAULT_SOURCE_URL: &str = "https://github.com/capsulebin/capsulebin";
+
+/// Longest accepted `branding.name`, in characters: enough for a `<title>` and
+/// a header wordmark, short enough to keep the header layout intact.
+const MAX_BRAND_NAME_CHARS: usize = 64;
+
+fn default_brand_name() -> String {
+    DEFAULT_BRAND_NAME.to_owned()
+}
+
+fn default_source_url() -> String {
+    DEFAULT_SOURCE_URL.to_owned()
+}
+
+/// `[branding]`: the identity an instance shows in its web pages - name, logo,
+/// favicon - and where the "Powered by CapsuleBin" link points. The link
+/// itself cannot be switched off. The files are read and checked once at
+/// startup by [`crate::branding::resolve`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrandingConfig {
+    /// Shown in place of "CapsuleBin" in titles, the header and the texts
+    /// that name the service. One name for every language.
+    #[serde(default = "default_brand_name")]
+    pub name: String,
+    /// Shows the logo without the name next to it; requires `logo`.
+    #[serde(default)]
+    pub hide_name: bool,
+    /// Replaces the built-in symbol in the header (PNG or WebP).
+    #[serde(default)]
+    pub logo: Option<PathBuf>,
+    /// The logo for the dark theme (PNG or WebP); requires `logo`.
+    #[serde(default)]
+    pub logo_dark: Option<PathBuf>,
+    /// The favicon (PNG or ICO).
+    #[serde(default)]
+    pub favicon: Option<PathBuf>,
+    /// Target of the attribution link: the source code this instance runs.
+    #[serde(default = "default_source_url")]
+    pub source_url: String,
+}
+
+impl Default for BrandingConfig {
+    fn default() -> Self {
+        Self {
+            name: default_brand_name(),
+            hide_name: false,
+            logo: None,
+            logo_dark: None,
+            favicon: None,
+            source_url: default_source_url(),
+        }
+    }
+}
+
+impl BrandingConfig {
+    /// Checks the values that are not files; the files are checked by
+    /// [`crate::branding::resolve`].
+    pub(super) fn validate(&self) -> Result<(), ConfigError> {
+        let invalid = |message: String| Err(ConfigError::Invalid(message));
+
+        let name = self.name.trim();
+        if name.is_empty() {
+            return invalid("branding.name must not be empty".to_owned());
+        }
+        if name.chars().count() > MAX_BRAND_NAME_CHARS {
+            return invalid(format!("branding.name must be at most {MAX_BRAND_NAME_CHARS} characters"));
+        }
+        if name.chars().any(char::is_control) {
+            return invalid("branding.name must not contain control characters".to_owned());
+        }
+        // Refused rather than ignored: the header would be empty without a logo,
+        // and a dark variant of no logo is a mistake in the configuration.
+        if self.hide_name && self.logo.is_none() {
+            return invalid("branding.hide_name requires branding.logo: the header would be empty".to_owned());
+        }
+        if self.logo_dark.is_some() && self.logo.is_none() {
+            return invalid("branding.logo_dark requires branding.logo".to_owned());
+        }
+        if !is_source_url(&self.source_url) {
+            return invalid("branding.source_url must be an absolute http(s) URL without user name or password".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// An absolute `http`/`https` URL with a host and without user info. The
+/// value is used as written, so whitespace and control characters, which the
+/// URL parser would silently drop, are refused too.
+fn is_source_url(value: &str) -> bool {
+    if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https") && url.host().is_some() && url.username().is_empty() && url.password().is_none()
+    })
 }
 
 /// The path prefix of the pages in `language`: none for the default language,

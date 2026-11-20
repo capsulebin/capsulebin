@@ -1,12 +1,7 @@
-import { type ChildProcess, spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { create } from './create';
 import { type Guard, expect, installGuard, test as base } from './guard';
+import { withInstance } from './instance';
 
 /**
  * Acceptance tests for an instance whose default language is German
@@ -24,62 +19,16 @@ import { type Guard, expect, installGuard, test as base } from './guard';
  * The instance is started once per worker on a free port with its own database.
  */
 
-const BINARY = resolve(
-    fileURLToPath(new URL('..', import.meta.url)),
-    process.env.CAPSULEBIN_BINARY ?? '../../../target/release/capsulebin',
-);
-
-function freePort(): Promise<number> {
-    return new Promise((done, failed) => {
-        const probe = createServer();
-        probe.on('error', failed);
-        probe.listen(0, '127.0.0.1', () => {
-            const address = probe.address();
-            const port = typeof address === 'object' && address ? address.port : 0;
-            probe.close(() => done(port));
-        });
-    });
-}
-
-async function ready(origin: string, server: ChildProcess): Promise<void> {
-    for (let attempt = 0; attempt < 200; attempt++) {
-        if (server.exitCode !== null) throw new Error(`the server exited with ${server.exitCode}`);
-        try {
-            if ((await fetch(`${origin}/health/ready`)).ok) return;
-        } catch {
-            /* Not listening yet. */
-        }
-        await new Promise((wait) => setTimeout(wait, 100));
-    }
-    throw new Error(`${origin} did not become ready`);
-}
-
 const test = base.extend<object, { origin: string }>({
     origin: [
-        async ({}, use) => {
-            const port = await freePort();
-            const origin = `http://127.0.0.1:${port}`;
-            const data = mkdtempSync(join(tmpdir(), 'capsulebin-e2e-de-'));
-            const server = spawn(BINARY, ['serve'], {
-                stdio: ['ignore', 'ignore', 'inherit'],
-                env: {
-                    ...process.env,
-                    CAPSULEBIN__SERVER__BIND: `127.0.0.1:${port}`,
-                    CAPSULEBIN__SERVER__PUBLIC_URL: origin,
-                    CAPSULEBIN__DATABASE__PATH: join(data, 'capsulebin.db'),
-                    CAPSULEBIN__CREATION__MODE: 'public',
+        async ({}, use) =>
+            withInstance(
+                {
                     CAPSULEBIN__I18N__DEFAULT_LANGUAGE: 'de',
                     CAPSULEBIN__LEGAL__OPERATOR__TEXT: 'Example Operator GmbH',
-                    CAPSULEBIN_LOG: 'warn',
                 },
-            });
-            try {
-                await ready(origin, server);
-                await use(origin);
-            } finally {
-                server.kill();
-            }
-        },
+                use,
+            ),
         { scope: 'worker' },
     ],
 });

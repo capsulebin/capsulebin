@@ -1,11 +1,11 @@
 // @vitest-environment node
 /**
  * Acceptance test for the Vite dev server: it serves the pages the way the server
- * does with `en` as default language - English without a prefix, every other
- * language under its own, the server tokens of the shells filled in - and answers
- * 404, never a raw template with unfilled `{{…}}` placeholders, for the default
- * language's prefix, a bare prefix and the names of the template files, with or
- * without `.html` and under any prefix.
+ * does with `en` as default language and no branding - English without a
+ * prefix, every other language under its own, the server tokens of the shells
+ * filled in - and answers 404, never a raw template with unfilled `{{…}}`
+ * placeholders, for the default language's prefix, a bare prefix and the names of
+ * the template files, with or without `.html` and under any prefix.
  */
 
 import { resolve } from 'node:path';
@@ -65,8 +65,21 @@ describe('dev server', () => {
                 expect(answer.text, path).not.toContain('%%');
                 expect(answer.text, path).toContain(`data-default="${DEFAULT_LANGUAGE}"`);
                 expect(answer.text, path).toContain(`<a class="cb-logo" href="${prefix}/">`);
+                expect(answer.text, path).toMatch(
+                    /<title>.* CapsuleBin<\/title>|<title>CapsuleBin<\/title>/,
+                );
+                expect(answer.text, path).toContain('<link rel="icon" href="/favicon.svg" />');
+                expect(answer.text, path).toContain(
+                    '<a href="https://github.com/capsulebin/capsulebin">',
+                );
             }
         }
+    });
+
+    it('serves the built-in favicon', async () => {
+        const response = await fetch(`${origin}/favicon.svg`);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toMatch(/^image\/svg\+xml/);
     });
 
     it('answers 404 under the prefix of the default language', async () => {

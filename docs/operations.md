@@ -189,6 +189,7 @@ client share the proxy's bucket.
 | `purge.*` | Leave enabled. Never-retrieved capsules go after 30 days, inactive ones after 90. |
 | `abuse.contact`, `abuse.report_retention` | Set a contact; keep closed reports no longer than needed (default 90 days). |
 | `legal.*` | A public instance in the EU usually needs an imprint and a privacy notice. Set `[legal.operator]`; see [Legal pages](#legal-pages). |
+| `branding.*` | Optional: name, logo and favicon of the instance; `source_url` if you run a modified version. See [Branding](#branding). |
 | `database.synchronous` | `full` (default). Lower only if you accept losing acknowledged writes on power loss. |
 
 ## Legal pages
@@ -269,6 +270,38 @@ and English is under `/en/`.
   [Legal pages](#legal-pages)); the CLI and the API's error texts stay English.
 
 See [i18n.md](i18n.md) for the rules in detail.
+
+## Branding
+
+`[branding]` shows the instance under your own name, logo and favicon, in every page and every
+interface language. Without it the pages say "CapsuleBin" and use the built-in symbol and favicon.
+
+```toml
+[branding]
+name = "Example Paste"                                  # CAPSULEBIN__BRANDING__NAME
+logo = "/etc/capsulebin/branding/logo.png"              # PNG or WebP
+logo_dark = "/etc/capsulebin/branding/logo-dark.webp"   # optional, dark theme
+favicon = "/etc/capsulebin/branding/favicon.png"        # PNG or ICO
+# hide_name = true                                      # logo only, no name next to it
+# source_url = "https://git.example.org/capsulebin"     # if you run a modified version
+```
+
+- `name` replaces "CapsuleBin" in page titles, the header and the texts that name the service; at
+  most 64 characters. It is not used by the CLI, the API or the logs.
+- The logo is shown 1.5rem high and at most 12rem wide; a PNG at twice that height stays sharp. The
+  dark logo follows the system preference and the theme toggle. `hide_name` and `logo_dark` need
+  `logo`.
+- Only raster files are accepted: SVG is refused. Each file at most 256 KiB, checked by extension
+  and content. Relative paths are resolved against the working directory. In the container, mount
+  the files read-only and use absolute paths, e.g. `-v ./branding:/etc/capsulebin/branding:ro`.
+- The files are read at startup and served at `/branding/<hash>.<ext>` with long-lived caching;
+  after replacing a file, restart the server (the URL changes with the content). `capsulebin check`
+  reports a missing, oversized or wrongly formatted file.
+- Every page links "Powered by CapsuleBin" to the source code in its footer (AGPL-3.0, section 13).
+  It cannot be switched off. If you run a modified version, set `source_url` to your source code
+  (an absolute http(s) URL).
+
+See [branding.md](branding.md) for the rules in detail.
 
 ## Health and logs
 

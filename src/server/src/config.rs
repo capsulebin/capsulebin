@@ -19,8 +19,8 @@ mod env;
 mod model;
 
 pub use model::{
-    AbuseConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES, LegalConfig,
-    LegalSection, LegalSectionKind, LegalTexts, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
+    AbuseConfig, BrandingConfig, Config, CreationConfig, CreationMode, DEFAULT_LANGUAGE, DatabaseConfig, I18nConfig, KNOWN_LANGUAGES,
+    LegalConfig, LegalSection, LegalSectionKind, LegalTexts, PastesConfig, PurgeConfig, ServerConfig, Synchronous, language_prefix,
 };
 
 use std::path::{Path, PathBuf};
@@ -72,6 +72,8 @@ pub struct Resolved {
     pub legal: Vec<(&'static str, crate::legal::LegalPages)>,
     /// `i18n.default_language`: the language of the pages without a prefix.
     pub default_language: &'static str,
+    /// `[branding]` with its files read and checked.
+    pub branding: crate::branding::Branding,
 }
 
 /// Where and why `text` is not valid TOML, without quoting any of it.
@@ -133,6 +135,8 @@ impl Config {
             .map(|&language| Ok((language, crate::legal::resolve(self, language)?)))
             .collect::<Result<_, ConfigError>>()?;
         self.database.validate()?;
+        self.branding.validate()?;
+        let branding = crate::branding::resolve(&self.branding)?;
 
         Ok(Resolved {
             max_body_bytes: max_body_bytes(self.pastes.max_plaintext_size),
@@ -140,6 +144,7 @@ impl Config {
             creation_tokens,
             legal,
             default_language,
+            branding,
         })
     }
 }

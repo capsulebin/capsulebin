@@ -17,6 +17,10 @@
 //! Nothing in a page depends on the request, so the pages of the embedded
 //! assets are put together once, when the routes are built, and served from
 //! memory. Only the directory mode reads its shells on every request.
+//!
+//! The operator's branding (`[branding]`) is filled in the same way: name,
+//! favicon, source link and logo come from the resolved configuration, never
+//! from the request.
 
 use axum::{
     Router,
@@ -28,8 +32,9 @@ use axum::{
 };
 
 use crate::AppState;
+use crate::branding::Branding;
 use crate::config::{KNOWN_LANGUAGES, language_prefix};
-use crate::legal::{LegalPages, Which};
+use crate::legal::{LegalPages, Which, escape};
 
 /// Start of the footer marker of one legal link in every HTML shell:
 /// `<!--capsulebin:legal-link:<page>:<label>-->`, `<page>` as in
@@ -54,6 +59,22 @@ pub const PREFIX_TOKEN: &str = "%%capsulebin:prefix%%";
 /// What the web build writes where a shell names the default language
 /// (`data-default` of the languages `<meta>`).
 pub const DEFAULT_TOKEN: &str = "%%capsulebin:default%%";
+/// Where a shell names the instance: `<title>`, the header wordmark and the
+/// catalogue texts that name the service. Filled with the escaped
+/// `branding.name`.
+pub const NAME_TOKEN: &str = "%%capsulebin:name%%";
+/// The `href` of the shell's `<link rel="icon">`.
+pub const FAVICON_TOKEN: &str = "%%capsulebin:favicon%%";
+/// The `href` of the attribution link: the escaped `branding.source_url`.
+pub const SOURCE_TOKEN: &str = "%%capsulebin:source%%";
+/// What every token above starts with.
+const TOKEN_START: &str = "%%capsulebin:";
+/// Around the built-in symbol in the header, replaced by the operator's logo.
+pub const LOGO_REGION: (&str, &str) = ("<!--capsulebin:logo-->", "<!--/capsulebin:logo-->");
+/// Around the name in the header, removed with `branding.hide_name`.
+pub const WORDMARK_REGION: (&str, &str) = ("<!--capsulebin:wordmark-->", "<!--/capsulebin:wordmark-->");
+/// The favicon of the web build, linked when none is configured.
+const BUILT_IN_FAVICON: &str = "/favicon.svg";
 
 /// What a page route serves.
 #[derive(Clone, Copy)]
@@ -234,7 +255,7 @@ impl Document {
             return Self::Missing(file);
         };
         let shell = String::from_utf8_lossy(&bytes);
-        let mut document = render(&shell, legal, language, state.default_language);
+        let mut document = render(&shell, legal, language, state.default_language, &state.branding);
         // After the tokens, so that the operator's text is put in as it is.
         if let Some((which, page)) = legal_page {
             // Read before `render` replaced the footer markers; already escaped.
@@ -257,18 +278,94 @@ impl IntoResponse for Document {
     }
 }
 
-/// Fills in what a shell of `language` leaves to the server: the prefix of its
-/// internal links, the default language and the legal links. All fixed at
-/// startup and the same for every request, so the shell does not depend on the
-/// path id. The shells are UTF-8; a lossy conversion only matters for a
-/// broken build, which `/health/ready` reports.
-fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str) -> String {
-    let shell = shell
-        .replace(PREFIX_TOKEN, &language_prefix(default_language, language))
-        .replace(DEFAULT_TOKEN, default_language);
+/// Fills in what a shell of `language` leaves to the server: the logo and
+/// wordmark regions of the header, the tokens (prefix of its internal links,
+/// default language, name, favicon, source link) and the legal links. All
+/// fixed at startup and the same for every request, so the shell does not
+/// depend on the path id. The shells are UTF-8; a lossy conversion only
+/// matters for a broken build, which `/health/ready` reports.
+///
+/// Operator values are never read as markup of the shell: the tokens are
+/// filled in one pass, so a value is not searched for tokens again, and every
+/// operator value is escaped, so it holds no `<` and cannot form a marker.
+/// The legal links (and the legal page in [`Document::build`]) come after the
+/// tokens, so their operator text is not searched for tokens either.
+fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding) -> String {
+    let shell = with_branding_regions(shell, branding);
+    let favicon = branding.favicon.as_ref().map_or(BUILT_IN_FAVICON, |favicon| &favicon.url);
+    let shell = fill_tokens(
+        &shell,
+        &[
+            (PREFIX_TOKEN, &language_prefix(default_language, language)),
+            (DEFAULT_TOKEN, default_language),
+            (NAME_TOKEN, &escape(&branding.name)),
+            (FAVICON_TOKEN, &escape(favicon)),
+            (SOURCE_TOKEN, &escape(&branding.source_url)),
+        ],
+    );
     Which::ALL
         .into_iter()
         .fold(shell, |shell, which| with_legal_link(&shell, which, legal.footer.href(which)))
+}
+
+/// Replaces every token of `tokens` in `shell` with its value, in a single
+/// pass: what a value brings in is not searched again. Text that only looks
+/// like the start of a token stays as it is.
+fn fill_tokens(shell: &str, tokens: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(shell.len());
+    let mut rest = shell;
+    while let Some(at) = rest.find(TOKEN_START) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match tokens.iter().find(|(token, _)| rest.starts_with(token)) {
+            Some((token, value)) => {
+                out.push_str(value);
+                rest = &rest[token.len()..];
+            }
+            None => {
+                out.push_str(TOKEN_START);
+                rest = &rest[TOKEN_START.len()..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The header as `[branding]` wants it: the configured logo in place of the
+/// built-in symbol, and no name next to it with `hide_name`. Without a logo the
+/// symbol stays, and with the name the wordmark; only their markers go. The
+/// images name the instance through [`NAME_TOKEN`], filled afterwards like
+/// every other token; their URLs are derived from the files' hashes and hold
+/// nothing to escape.
+fn with_branding_regions(shell: &str, branding: &Branding) -> String {
+    let alt = if branding.hide_name { NAME_TOKEN } else { "" };
+    let image = |url: &str, class: &str| format!(r#"<img class="{class}" src="{url}" alt="{alt}">"#);
+    let logo = branding.logo.as_ref().map(|logo| match &branding.logo_dark {
+        None => image(&logo.url, "cb-logo-img"),
+        Some(dark) => image(&logo.url, "cb-logo-img cb-logo-img-light") + &image(&dark.url, "cb-logo-img cb-logo-img-dark"),
+    });
+    let shell = replace_regions(shell, LOGO_REGION, logo.as_deref());
+    replace_regions(&shell, WORDMARK_REGION, branding.hide_name.then_some(""))
+}
+
+/// Replaces every complete region from `start` to `end`, markers included and
+/// whatever it spans, with `replacement`, or with the text between the markers
+/// if there is none. A start without its end is left as it is.
+fn replace_regions(shell: &str, (start, end): (&str, &str), replacement: Option<&str>) -> String {
+    let mut out = String::with_capacity(shell.len());
+    let mut rest = shell;
+    while let Some(at) = rest.find(start) {
+        let Some(length) = rest[at + start.len()..].find(end) else {
+            break;
+        };
+        let inner = &rest[at + start.len()..at + start.len() + length];
+        out.push_str(&rest[..at]);
+        out.push_str(replacement.unwrap_or(inner));
+        rest = &rest[at + start.len() + length + end.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The first complete footer marker of `which` in `shell`: the text before it,
@@ -291,7 +388,7 @@ fn with_legal_link(shell: &str, which: Which, href: Option<&str>) -> String {
         out.push_str(before);
         if let Some(href) = href {
             // The label is already escaped by the web build.
-            out.push_str(&format!(r#"<a href="{}">{label}</a>"#, crate::legal::escape(href)));
+            out.push_str(&format!(r#"<a href="{}">{label}</a>"#, escape(href)));
         }
         rest = after;
     }
@@ -430,7 +527,21 @@ impl AssetSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::branding::BrandingFile;
     use crate::legal::FooterLinks;
+
+    /// `[branding]` as an instance without the table has it.
+    fn default_branding() -> Branding {
+        crate::branding::resolve(&crate::config::BrandingConfig::default()).unwrap()
+    }
+
+    fn image(url: &str) -> Option<BrandingFile> {
+        Some(BrandingFile {
+            url: url.to_owned(),
+            content_type: "image/png",
+            bytes: Vec::new(),
+        })
+    }
 
     #[test]
     fn every_route_maps_to_one_shell() {
@@ -455,7 +566,7 @@ mod tests {
                      <!--capsulebin:legal-link:privacy:Datenschutz-->\
                      <!--capsulebin:legal-link:terms:Nutzungs&amp;bedingungen--></footer>";
         assert_eq!(
-            render(shell, &legal, "de", "en"),
+            render(shell, &legal, "de", "en", &default_branding()),
             r#"<footer><a href="/de/imprint">Impressum</a><a href="https://operator.example/terms?a=1&amp;b=2">Nutzungs&amp;bedingungen</a></footer>"#
         );
     }
@@ -471,14 +582,15 @@ mod tests {
             ..LegalPages::default()
         };
         for shell in ["<footer></footer>", "<footer><!--capsulebin:legal-link:imprint:Imprint</footer>"] {
-            assert_eq!(render(shell, &legal, "de", "en"), shell);
+            assert_eq!(render(shell, &legal, "de", "en", &default_branding()), shell);
         }
     }
 
     #[test]
     fn the_tokens_follow_the_default_language() {
         let shell = r#"<meta data-default="%%capsulebin:default%%"><a href="%%capsulebin:prefix%%/"></a><a href="%%capsulebin:prefix%%/report"></a>"#;
-        let render = |language, default| render(shell, &LegalPages::default(), language, default);
+        let branding = default_branding();
+        let render = |language, default| render(shell, &LegalPages::default(), language, default, &branding);
 
         let unprefixed = |default| format!(r#"<meta data-default="{default}"><a href="/"></a><a href="/report"></a>"#);
         assert_eq!(render("en", "en"), unprefixed("en"));
@@ -491,6 +603,111 @@ mod tests {
             render("en", "de"),
             r#"<meta data-default="de"><a href="/en/"></a><a href="/en/report"></a>"#
         );
+    }
+
+    /// What a shell names the instance with, as the web build writes it: in
+    /// the title, the header (logo and wordmark regions over several lines), a
+    /// catalogue text, the favicon link and the attribution link.
+    const BRANDED_SHELL: &str = "<title>%%capsulebin:name%%</title><link rel=\"icon\" href=\"%%capsulebin:favicon%%\">\
+        <a class=\"cb-logo\" href=\"%%capsulebin:prefix%%/\">\n<!--capsulebin:logo-->\n<svg>\n</svg>\n<!--/capsulebin:logo-->\n\
+        <!--capsulebin:wordmark-->\n<span class=\"cb-logo-name\">%%capsulebin:name%%</span>\n<!--/capsulebin:wordmark-->\n</a>\
+        <noscript>%%capsulebin:name%% needs JavaScript.</noscript>\
+        <footer><!--capsulebin:legal-link:imprint:Imprint--><a href=\"%%capsulebin:source%%\">Powered by CapsuleBin</a></footer>";
+
+    fn render_branded(branding: &Branding) -> String {
+        let legal = LegalPages {
+            footer: FooterLinks {
+                imprint: Some("/de/imprint".to_owned()),
+                ..FooterLinks::default()
+            },
+            ..LegalPages::default()
+        };
+        render(BRANDED_SHELL, &legal, "de", "en", branding)
+    }
+
+    #[test]
+    fn without_branding_the_shell_names_capsulebin_and_keeps_the_symbol() {
+        assert_eq!(
+            render_branded(&default_branding()),
+            "<title>CapsuleBin</title><link rel=\"icon\" href=\"/favicon.svg\">\
+             <a class=\"cb-logo\" href=\"/de/\">\n\n<svg>\n</svg>\n\n\n<span class=\"cb-logo-name\">CapsuleBin</span>\n\n</a>\
+             <noscript>CapsuleBin needs JavaScript.</noscript>\
+             <footer><a href=\"/de/imprint\">Imprint</a><a href=\"https://github.com/capsulebin/capsulebin\">Powered by CapsuleBin</a></footer>"
+        );
+    }
+
+    /// The operator's values are put in escaped and are never read as a token
+    /// or a marker, wherever they end up.
+    #[test]
+    fn operator_values_are_escaped_and_stay_literal() {
+        let branding = Branding {
+            name: r#"A&B <i>x</i> "q" %%capsulebin:prefix%% <!--capsulebin:legal-link:imprint:x--> %%capsulebin:name%%"#.to_owned(),
+            hide_name: true,
+            logo: image("/branding/0123456789abcdef.png"),
+            source_url: "https://example.org/src?a=1&b=%%capsulebin:default%%".to_owned(),
+            ..default_branding()
+        };
+        let name = "A&amp;B &lt;i&gt;x&lt;/i&gt; &quot;q&quot; %%capsulebin:prefix%% \
+                    &lt;!--capsulebin:legal-link:imprint:x--&gt; %%capsulebin:name%%";
+        assert_eq!(
+            render_branded(&branding),
+            format!(
+                "<title>{name}</title><link rel=\"icon\" href=\"/favicon.svg\">\
+                 <a class=\"cb-logo\" href=\"/de/\">\n<img class=\"cb-logo-img\" src=\"/branding/0123456789abcdef.png\" alt=\"{name}\">\n\n</a>\
+                 <noscript>{name} needs JavaScript.</noscript>\
+                 <footer><a href=\"/de/imprint\">Imprint</a>\
+                 <a href=\"https://example.org/src?a=1&amp;b=%%capsulebin:default%%\">Powered by CapsuleBin</a></footer>"
+            )
+        );
+    }
+
+    #[test]
+    fn a_logo_replaces_the_symbol_and_keeps_the_name() {
+        let branding = Branding {
+            logo: image("/branding/0123456789abcdef.png"),
+            favicon: image("/branding/fedcba9876543210.ico"),
+            ..default_branding()
+        };
+        let page = render_branded(&branding);
+        assert!(
+            page.contains("\n<img class=\"cb-logo-img\" src=\"/branding/0123456789abcdef.png\" alt=\"\">\n\n<span class=\"cb-logo-name\">CapsuleBin</span>\n\n</a>"),
+            "{page}"
+        );
+        assert!(!page.contains("<svg>") && !page.contains(LOGO_REGION.0), "{page}");
+        assert!(
+            page.contains("<link rel=\"icon\" href=\"/branding/fedcba9876543210.ico\">"),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn a_dark_logo_adds_a_second_image() {
+        let branding = Branding {
+            logo: image("/branding/0123456789abcdef.png"),
+            logo_dark: image("/branding/fedcba9876543210.webp"),
+            ..default_branding()
+        };
+        let page = render_branded(&branding);
+        assert!(
+            page.contains(
+                "<img class=\"cb-logo-img cb-logo-img-light\" src=\"/branding/0123456789abcdef.png\" alt=\"\">\
+                 <img class=\"cb-logo-img cb-logo-img-dark\" src=\"/branding/fedcba9876543210.webp\" alt=\"\">"
+            ),
+            "{page}"
+        );
+        assert_eq!(page.matches("<img").count(), 2, "{page}");
+    }
+
+    /// A broken build: a region without its end is left as it is.
+    #[test]
+    fn incomplete_regions_are_left_alone() {
+        let branding = Branding {
+            hide_name: true,
+            logo: image("/branding/0123456789abcdef.png"),
+            ..default_branding()
+        };
+        let shell = "<!--capsulebin:logo--><svg></svg><!--capsulebin:wordmark-->x %%capsulebin:unknown%%";
+        assert_eq!(render(shell, &LegalPages::default(), "en", "en", &branding), shell);
     }
 
     #[test]
@@ -525,6 +742,52 @@ mod tests {
                 let marker = format!("{LEGAL_LINK_MARKER}{0}:{{{{shell.{0}}}}}-->", which.path());
                 assert_eq!(source.matches(&marker).count(), 1, "{} must contain {marker} once", path.display());
             }
+        }
+    }
+
+    /// Every shell names the instance through the token in its title and
+    /// header, links the favicon and the source code through their tokens, and
+    /// has the logo and wordmark regions in its header, each complete once.
+    #[test]
+    fn every_shell_source_carries_the_branding_tokens_and_regions() {
+        for shell in Shell::ALL {
+            let (path, source) = template(shell);
+            let path = path.display();
+            assert!(
+                source.contains(" · {{name}}</title>") || source.contains("<title>{{name}}</title>"),
+                "{path}: <title>"
+            );
+            assert_eq!(
+                source.matches(r#"<link rel="icon" href="{{favicon}}" />"#).count(),
+                1,
+                "{path}: favicon"
+            );
+            assert_eq!(
+                source.matches(r#"<a href="{{source}}">{{shell.poweredBy}}</a>"#).count(),
+                1,
+                "{path}: attribution"
+            );
+            for (start, end) in [LOGO_REGION, WORDMARK_REGION] {
+                assert_eq!(source.matches(start).count(), 1, "{path}: {start}");
+                assert_eq!(source.matches(end).count(), 1, "{path}: {end}");
+                let region = source
+                    .split(start)
+                    .nth(1)
+                    .and_then(|rest| rest.split(end).next())
+                    .unwrap_or_default();
+                assert!(!region.is_empty(), "{path}: {start} before {end}");
+            }
+            let wordmark = source
+                .split(WORDMARK_REGION.0)
+                .nth(1)
+                .and_then(|rest| rest.split(WORDMARK_REGION.1).next());
+            assert_eq!(
+                wordmark.map(str::trim),
+                Some(r#"<span class="cb-logo-name">{{name}}</span>"#),
+                "{path}: wordmark"
+            );
+            let logo = source.split(LOGO_REGION.0).nth(1).and_then(|rest| rest.split(LOGO_REGION.1).next());
+            assert!(logo.is_some_and(|logo| logo.trim().starts_with("<svg")), "{path}: symbol");
         }
     }
 

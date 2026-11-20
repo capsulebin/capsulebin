@@ -77,6 +77,51 @@ body {
     color: var(--cb-accent);
 }
 
+/* An operator's logo in place of the symbol. Its width follows the image, capped
+ * so a wide wordmark logo cannot push the header tools off a narrow screen; a
+ * logo wider than the cap is scaled down within the box, not squashed. */
+.cb-logo-img {
+    display: block;
+    height: 1.5rem;
+    width: auto;
+    max-width: 12rem;
+    object-fit: contain;
+    object-position: left center;
+}
+
+/* With a dark variant the server writes both images; exactly one is visible.
+ * Mirrors the theme resolution in tokens.css: the system preference without a
+ * manual choice, then [data-theme] for an explicit one, in both directions. */
+.cb-logo-img-dark {
+    display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .cb-logo-img-light {
+        display: none;
+    }
+
+    :root:not([data-theme]) .cb-logo-img-dark {
+        display: block;
+    }
+}
+
+:root[data-theme="light"] .cb-logo-img-light {
+    display: block;
+}
+
+:root[data-theme="light"] .cb-logo-img-dark {
+    display: none;
+}
+
+:root[data-theme="dark"] .cb-logo-img-light {
+    display: none;
+}
+
+:root[data-theme="dark"] .cb-logo-img-dark {
+    display: block;
+}
+
 .cb-claim {
     font-size: 0.875rem;
     color: var(--cb-text-muted);
