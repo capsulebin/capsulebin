@@ -9,6 +9,7 @@
 //! - failed capability checks are throttled per client, and only failures count;
 //! - wrong passwords are throttled per paste, but only for callers who hold the
 //!   link - knowing an id is not enough to block a capsule or to see the limit;
+//!   and every spelling of an id in the URI shares the paste's budget;
 //! - the create byte quota is charged by request size;
 //! - a spoofed `X-Forwarded-For` does not buy a fresh bucket unless the peer is a
 //!   configured proxy.
@@ -20,6 +21,48 @@ use support::*;
 
 fn retrieve_path(byte: u8) -> String {
     format!("/api/v1/pastes/{}/retrieve", id(byte).encode())
+}
+
+/// An id whose characters (`-_v7`) percent-encode with hex letters, so the
+/// upper- and lower-case spellings differ.
+const SPELLED: u8 = 0xFB;
+
+/// Retrieve paths for spellings of the same id that the router decodes to one
+/// paste: canonical, every character percent-encoded in upper-case and in
+/// lower-case hex, and only every other character encoded. The `retrieve`
+/// suffix stays literal: the router matches it on the raw path. Base64url is
+/// case-sensitive, so the id's own case is not varied.
+fn retrieve_paths_spelled(byte: u8) -> [String; 4] {
+    let canonical = id(byte).encode();
+    let upper = percent_encode(&canonical, |_| false, false);
+    let lower = percent_encode(&canonical, |_| false, true);
+    assert_ne!(upper, lower, "the id must encode with hex letters");
+    let mixed = percent_encode(&canonical, |i| i % 2 == 0, false);
+    [canonical, upper, lower, mixed].map(|spelling| format!("/api/v1/pastes/{spelling}/retrieve"))
+}
+
+/// `id` with every character at an index where `keep` is false percent-encoded,
+/// in lower- or upper-case hex.
+fn percent_encode(id: &str, keep: impl Fn(usize) -> bool, lower: bool) -> String {
+    id.bytes()
+        .enumerate()
+        .map(|(i, c)| match (keep(i), lower) {
+            (true, _) => char::from(c).to_string(),
+            (false, false) => format!("%{c:02X}"),
+            (false, true) => format!("%{c:02x}"),
+        })
+        .collect()
+}
+
+/// The default configuration behind a trusted proxy on the loopback peer, so
+/// every `X-Forwarded-For` address is a distinct client while the per-paste
+/// budget stays shared. The per-client `invalid_capability` limit is off by
+/// default and does not take part.
+async fn harness_behind_proxy(name: &str) -> Harness {
+    harness_with(name, |config| {
+        config.server.trusted_proxies = vec!["127.0.0.1/32".to_owned()];
+    })
+    .await
 }
 
 #[tokio::test]
@@ -250,6 +293,116 @@ async fn a_caller_with_only_the_id_cannot_block_a_capsule() {
     assert_eq!(h.post(&retrieve_path(1), retrieve_body(REVEAL_TOKEN)).await.status, StatusCode::OK);
 }
 
+/// Axum decodes the path capture, so `%2D…` reaches the same capsule as `-…`;
+/// the budget belongs to the paste looked up, not to how the URI spelled it.
+#[tokio::test]
+async fn password_attempts_share_one_budget_across_id_spellings() {
+    let h = harness_behind_proxy("per-paste-spellings").await;
+    let mut body = create_body(&id(SPELLED));
+    body["burn_after_retrieval"] = serde_json::json!(true);
+    assert_eq!(h.post("/api/v1/pastes", body).await.status, StatusCode::CREATED);
+    let paths = retrieve_paths_spelled(SPELLED);
+
+    // Trusted-forwarded addresses: each is its own client, the paste's budget is shared.
+    for n in 0..10 {
+        let forwarded = format!("198.51.100.{n}");
+        let answer = h
+            .post_with_headers(
+                &paths[n % paths.len()],
+                retrieve_body(format!("guess-{n}").as_bytes()),
+                None,
+                &[("x-forwarded-for", forwarded.as_str())],
+            )
+            .await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "guess {n}");
+    }
+
+    for path in [&paths[1], &paths[2], &paths[3], &paths[0]] {
+        let refused = h.post(path, retrieve_body(REVEAL_TOKEN)).await;
+        assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{path}");
+        assert_eq!(refused.code(), "rate_limited");
+        assert_eq!(refused.headers["retry-after"], "6");
+    }
+    assert_eq!(h.bookkeeping(&id(SPELLED)).await.consumed_at, None);
+}
+
+/// The check and the charge stay one step for every spelling: parallel
+/// guesses spread over spellings and addresses get no more than the burst.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn password_attempts_across_id_spellings_are_limited_under_concurrency() {
+    const GUESSES: usize = 40;
+    let h = std::sync::Arc::new(harness_behind_proxy("per-paste-spellings-race").await);
+    assert_eq!(
+        h.post("/api/v1/pastes", create_body(&id(SPELLED))).await.status,
+        StatusCode::CREATED
+    );
+    let paths = retrieve_paths_spelled(SPELLED);
+
+    // Trusted-forwarded addresses: each is its own client, the paste's budget is shared.
+    let start = std::sync::Arc::new(tokio::sync::Barrier::new(GUESSES));
+    let mut handles = Vec::with_capacity(GUESSES);
+    for n in 0..GUESSES {
+        let h = h.clone();
+        let start = start.clone();
+        let path = paths[n % paths.len()].clone();
+        handles.push(tokio::spawn(async move {
+            let forwarded = format!("198.51.100.{}", n % 7);
+            let body = retrieve_body(format!("guess-{n}").as_bytes());
+            start.wait().await;
+            h.post_with_headers(&path, body, None, &[("x-forwarded-for", forwarded.as_str())])
+                .await
+        }));
+    }
+    let mut not_found = 0;
+    for handle in handles {
+        let answer = handle.await.unwrap();
+        match answer.status {
+            StatusCode::NOT_FOUND => not_found += 1,
+            StatusCode::TOO_MANY_REQUESTS => assert_eq!(answer.code(), "rate_limited"),
+            other => panic!("unexpected {other}"),
+        }
+    }
+    assert!(not_found <= 10, "{not_found} wrong passwords got through");
+}
+
+/// [`a_caller_with_only_the_id_cannot_block_a_capsule`] through every
+/// spelling of the id: the budget stays untouched for the link holder.
+#[tokio::test]
+async fn a_caller_with_only_the_id_cannot_drain_the_budget_in_any_spelling() {
+    let h = harness_behind_proxy("per-paste-id-only-spellings").await;
+    assert_eq!(
+        h.post("/api/v1/pastes", create_body(&id(SPELLED))).await.status,
+        StatusCode::CREATED
+    );
+    let paths = retrieve_paths_spelled(SPELLED);
+
+    // Trusted-forwarded addresses: each is its own client, the paste's budget is shared.
+    for n in 0..32 {
+        let forwarded = format!("198.51.100.{n}");
+        let guess = format!("guess-{n}");
+        let answer = h
+            .post_with_headers(
+                &paths[n % paths.len()],
+                retrieve_body_with(guess.as_bytes(), REVEAL_TOKEN),
+                None,
+                &[("x-forwarded-for", forwarded.as_str())],
+            )
+            .await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "attempt {n}");
+    }
+
+    // The link holder still has the whole budget.
+    for n in 0..10 {
+        let answer = h
+            .post(&paths[n % paths.len()], retrieve_body(format!("wrong-{n}").as_bytes()))
+            .await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "wrong password {n}");
+    }
+    let refused = h.post(&paths[0], retrieve_body(b"wrong-10")).await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.code(), "rate_limited");
+}
+
 #[tokio::test]
 async fn successful_retrievals_do_not_count_against_the_per_paste_limit() {
     let h = harness("per-paste-success").await;
@@ -270,4 +423,28 @@ async fn the_per_paste_limit_can_be_switched_off() {
         assert_eq!(h.post(&retrieve_path(1), retrieve_body(b"x")).await.status, StatusCode::NOT_FOUND);
     }
     assert_eq!(h.post(&retrieve_path(1), retrieve_body(REVEAL_TOKEN)).await.status, StatusCode::OK);
+}
+
+/// Switched off, the per-paste limit refuses no spelling of an id: the handler
+/// always consults the shared limiter, which answers by the configuration.
+#[tokio::test]
+async fn the_per_paste_limit_switched_off_refuses_no_spelling() {
+    let h = harness_with("per-paste-off-spellings", |config| {
+        config.rate_limits.invalid_capability_per_paste = Default::default();
+    })
+    .await;
+    assert_eq!(
+        h.post("/api/v1/pastes", create_body(&id(SPELLED))).await.status,
+        StatusCode::CREATED
+    );
+    let paths = retrieve_paths_spelled(SPELLED);
+    for n in 0..20 {
+        let answer = h
+            .post(&paths[n % paths.len()], retrieve_body(format!("wrong-{n}").as_bytes()))
+            .await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "wrong password {n}");
+    }
+    for path in &paths {
+        assert_eq!(h.post(path, retrieve_body(REVEAL_TOKEN)).await.status, StatusCode::OK, "{path}");
+    }
 }

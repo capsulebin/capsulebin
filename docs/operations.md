@@ -188,7 +188,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
-| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
+| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. User information (`https://user:pass@paste.example.org`, also only a user name or only a password, also percent-encoded) is refused at startup: it would reach every share link and every error's type URI. So is any whitespace or control character anywhere in the value, including a leading or trailing space or newline: the URL parser would silently drop some of them, while the value as written is what the server puts in front of every error's type URI. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -334,9 +334,10 @@ See [branding.md](branding.md) for the rules in detail.
   The access log contains method, redacted path (`/api/v1/pastes/{id}`), status and latency —
   never paste ids, bodies, tokens or report text.
 - Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
-  reason without repeating the value, and a file that is not valid TOML is reported as
-  `line L, column C: <reason>` without the offending line — a share link pasted there by mistake
-  does not end up in the service log.
+  reason (e.g. `must not contain user information`,
+  `must not contain whitespace or control characters`) without repeating the value, and a file
+  that is not valid TOML is reported as `line L, column C: <reason>` without the offending line —
+  a share link pasted there by mistake does not end up in the service log.
 
 ## Routine tasks
 

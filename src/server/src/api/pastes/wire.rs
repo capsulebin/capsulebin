@@ -69,7 +69,7 @@ pub(super) struct DescribeRequest {
 
 /// Both tokens from the share link. The describe token proves the caller holds
 /// the link; only then does a wrong reveal token count as a password attempt
-/// against the paste (see `rate_limit::PasswordAttempts`).
+/// against the paste (see `rate_limit::LimiterState::password_attempt`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RetrieveRequest {

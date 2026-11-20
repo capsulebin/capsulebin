@@ -55,8 +55,12 @@ with a wrong describe token is a caller without the link: `404`, charged to the 
 only. A right describe token with a wrong reveal token is a wrong password: `404`, and charged to
 `invalid_capability_per_paste` as well (on by default). The per-paste limit is checked and charged
 atomically by the retrieve handler *after* the describe token, so a caller with only the id can
-neither use it up nor see its `429`. Describe and delete never touch it: their tokens are 256 bits
-with no password to guess.
+neither use it up nor see its `429`. The handler keys it on the paste id it parsed from the
+decoded path and looked the paste up by, so every spelling of that id in the request URI
+(`%41…` for `A…`, in upper- or lower-case hex) shares one budget. The limiter is held in the
+application state and shared with the rate-limiting middleware, so the retrieve handler always has
+it; whether the limit is on is a matter of configuration only. Describe and delete never touch it:
+their tokens are 256 bits with no password to guess.
 
 ## Rejected
 
@@ -93,6 +97,11 @@ with no password to guess.
 - **Checking the per-paste limit before the lookup, but charging only password attempts.** A caller
   with only the id could no longer drain it, but would see the `429` while a link holder guesses —
   an existence oracle for that id.
+- **Taking the per-paste key from the raw request URI in the middleware** and handing the limit to
+  the handler as an optional request extension. The middleware parsed the percent-encoded path, the
+  handler looked the paste up by the decoded one: a percent-encoded spelling of a real id found the
+  capsule with no limit attached, so a leaked link allowed unlimited password guesses. One id,
+  parsed once, by the code that looks the paste up, closes that gap.
 - **Preventive content moderation.** Impossible under zero knowledge. Instead there is
   notice-and-action on paste ids: a reported capsule can be disabled or deleted without decrypting
   it ([ADR-013](ADR-013-abuse-reports-and-moderation.md)).

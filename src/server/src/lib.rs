@@ -53,7 +53,10 @@ pub struct AppState {
     pub purge: PurgeConfig,
     pub max_body_bytes: usize,
     pub trusted_proxies: Vec<String>,
-    pub rate_limits: crate::api::rate_limit::RateLimitConfig,
+    /// `[rate_limits]`, one instance per state: the rate limiting middleware
+    /// and the retrieve handler (per-paste password attempts) share its
+    /// buckets.
+    pub limiter: api::rate_limit::LimiterState,
     pub abuse: AbuseConfig,
     /// The operator's legal pages and footer links for every interface
     /// language, rendered once from `[legal]` (see
@@ -68,25 +71,26 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(resolved: &Resolved, pool: SqlitePool, assets: AssetSource, clock: Arc<dyn Clock>) -> Self {
+        let public_url = resolved
+            .config
+            .server
+            .public_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:8080".to_owned());
         Self {
             assets: Arc::new(assets),
             clock,
             pastes_repo: Arc::new(SqlitePasteRepository::new(pool.clone())),
             abuse_repo: Arc::new(SqliteAbuseRepository::new(pool.clone())),
             pool,
-            public_url: resolved
-                .config
-                .server
-                .public_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8080".to_owned()),
+            limiter: api::rate_limit::LimiterState::new(resolved.config.rate_limits.clone(), public_url.clone()),
+            public_url,
             creation_mode: resolved.config.creation.mode,
             creation_tokens: Arc::new(resolved.creation_tokens.clone()),
             pastes: resolved.config.pastes.clone(),
             purge: resolved.config.purge.clone(),
             max_body_bytes: resolved.max_body_bytes,
             trusted_proxies: resolved.config.server.trusted_proxies.clone(),
-            rate_limits: resolved.config.rate_limits.clone(),
             abuse: resolved.config.abuse.clone(),
             legal: Arc::new(LegalByLanguage::new(resolved.legal.clone())),
             default_language: resolved.default_language,
@@ -131,7 +135,7 @@ pub fn router(state: AppState) -> Router {
         // resolved before the rate limiter reads it. In the opposite order every
         // client shared one bucket (`tests/rate_limits.rs` pins this down).
         .layer(axum::middleware::from_fn_with_state(
-            api::rate_limit::LimiterState::new(state.rate_limits.clone(), state.public_url.clone()),
+            state.limiter.clone(),
             api::rate_limit::middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(

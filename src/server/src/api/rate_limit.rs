@@ -18,10 +18,14 @@
 //!   token) but fail the reveal token - a wrong password - are limited
 //!   regardless of who sends them. This is the server-side protection of a
 //!   password when the link has leaked, and it needs no correct
-//!   `trusted_proxies` to work. It is enforced by the retrieve handler through
-//!   [`PasswordAttempts`], after the describe token has been checked: a caller
-//!   who knows only the id can neither drain this bucket nor see its `429`, so
-//!   it is neither a way to block a capsule nor an oracle for its existence.
+//!   `trusted_proxies` to work. It is the one exception to "before the
+//!   handler": the retrieve handler enforces it through
+//!   [`LimiterState::password_attempt`] - on the same limiter the middleware
+//!   uses, held in `AppState` - with the paste id it looked up, after the
+//!   describe token has been checked. Every spelling of an id in the URI thus
+//!   shares one budget, and a caller who knows only the id can neither drain
+//!   this bucket nor see its `429`, so it is neither a way to block a capsule
+//!   nor an oracle for its existence.
 //! - **Invalid capabilities** (`invalid_capability`): every describe, retrieve
 //!   or delete that ends in `404` costs a token; with the bucket empty, further
 //!   ones from that IP are refused before any lookup. That throttles
@@ -395,6 +399,36 @@ impl LimiterState {
         *count += 1;
         Some(SlotGuard(Some((self.clone(), ip))))
     }
+
+    /// The per-paste limit on password attempts: admits one attempt on `paste`
+    /// by a link holder, and uses up a token if it `failed` (wrong password).
+    /// `Err(seconds)` when the paste has no attempts left; always `Ok` when the
+    /// limit is switched off.
+    ///
+    /// Called by the retrieve handler with the id it looked up, never by the
+    /// middleware: only the handler knows whether the caller proved the link.
+    /// Checking it before the lookup would let anyone who knows an id see a
+    /// `429` for an existing capsule, and charging every `404` would let them
+    /// block it. And only the handler's id is the one the paste was found by -
+    /// a key taken from the raw URI would give every spelling of the id
+    /// (`%41…` for `A…`) a budget of its own.
+    ///
+    /// Checking and charging happen under one lock: as two steps, parallel
+    /// guesses - reveal tokens precomputed offline from a password list - could
+    /// all pass the check before any of them was charged.
+    pub fn password_attempt(&self, paste: PasteId, failed: bool) -> Result<(), u64> {
+        self.with_bucket(
+            BucketKind::InvalidCapabilityPerPaste,
+            BucketKey::Paste(paste),
+            |bucket, spec, now| {
+                bucket.check(spec, now)?;
+                if failed {
+                    bucket.tokens -= 1.0;
+                }
+                Ok(())
+            },
+        )
+    }
 }
 
 /// Releases an in-flight create slot when the request is done — also when the
@@ -428,41 +462,6 @@ fn too_many_requests(state: &LimiterState, request_id: &str, retry_after: u64) -
     with_retry_after(problem(state, request_id, ApiError::RateLimited), retry_after)
 }
 
-/// The per-paste limit on password attempts, handed to the retrieve handler as
-/// a request extension.
-///
-/// It cannot live in the middleware: only the handler knows whether the caller
-/// proved the link. Checking it before the lookup would let anyone who knows an
-/// id see a `429` for an existing capsule, and charging every `404` would let
-/// them block it.
-#[derive(Clone)]
-pub struct PasswordAttempts {
-    limiter: LimiterState,
-    paste: PasteId,
-}
-
-impl PasswordAttempts {
-    /// Admits one attempt by a link holder, and uses up a token if it `failed`
-    /// (wrong password). `Err(seconds)` when the paste has no attempts left.
-    ///
-    /// Checking and charging happen under one lock: as two steps, parallel
-    /// guesses - reveal tokens precomputed offline from a password list - could
-    /// all pass the check before any of them was charged.
-    pub fn attempt(&self, failed: bool) -> Result<(), u64> {
-        self.limiter.with_bucket(
-            BucketKind::InvalidCapabilityPerPaste,
-            BucketKey::Paste(self.paste),
-            |bucket, spec, now| {
-                bucket.check(spec, now)?;
-                if failed {
-                    bucket.tokens -= 1.0;
-                }
-                Ok(())
-            },
-        )
-    }
-}
-
 /// Takes one token, never below zero: used after the fact, when the request
 /// has already been answered.
 fn charge_one(bucket: &mut Bucket, spec: Spec, now: Instant) -> Result<(), u64> {
@@ -480,7 +479,7 @@ pub fn with_retry_after(mut response: Response, retry_after: u64) -> Response {
 }
 
 /// The middleware handler. Use with `axum::middleware::from_fn_with_state`.
-pub async fn middleware(State(state): State<LimiterState>, mut request: Request, next: Next) -> Response {
+pub async fn middleware(State(state): State<LimiterState>, request: Request, next: Next) -> Response {
     let class = classify(&request);
     if class == EndpointClass::Unclassified {
         return next.run(request).await;
@@ -509,18 +508,6 @@ pub async fn middleware(State(state): State<LimiterState>, mut request: Request,
         })
     {
         return too_many_requests(&state, &request_id, retry_after);
-    }
-
-    // `/api/v1/pastes/{id}/retrieve`: the handler enforces the per-paste
-    // password limit once it knows the caller holds the link. A malformed id
-    // gets its 400 from the handler; there is no paste to protect.
-    if class == EndpointClass::Retrieve
-        && let Some(paste) = request.uri().path().split('/').nth(4).and_then(|id| PasteId::parse(id).ok())
-    {
-        request.extensions_mut().insert(PasswordAttempts {
-            limiter: state.clone(),
-            paste,
-        });
     }
 
     if let Err(retry_after) = state.with_bucket(BucketKind::Requests(class), BucketKey::Ip(ip), |bucket, spec, now| {
