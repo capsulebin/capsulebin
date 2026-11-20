@@ -130,6 +130,19 @@ export function hasQueryOrFragment(base: string): boolean {
     return /[?#]/.test(base);
 }
 
+/**
+ * True if `text` contains a link key fragment: `#` followed by the fragment
+ * prefix (`#v1.`), case-sensitive. Free text a client sends to the server (an
+ * abuse report's description and contact) must not carry one, or the key of a
+ * pasted share or management link crosses the network. The rule is exactly
+ * the server's (`check_text` in `domain/abuse.rs`), so a client that refuses
+ * what this finds never sends a text the server would refuse for a key. A bare
+ * key without `#` is not detected.
+ */
+export function containsKeyFragment(text: string): boolean {
+    return text.includes(`#${FRAGMENT_PREFIX}`);
+}
+
 function parseHttpUrl(text: string, notHttp: string): URL {
     let url: URL;
     try {

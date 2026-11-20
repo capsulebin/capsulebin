@@ -205,6 +205,87 @@ test('the report form sends the id without the key', async ({ page }) => {
     expect(JSON.stringify(sent)).not.toContain('#');
 });
 
+test('the report form refuses a link with its key in the description or contact', async ({
+    page,
+}) => {
+    const { share, manage } = await create(page, {
+        items: [{ type: 'plain', text: 'report me' }],
+    });
+    const reportPosts: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().endsWith('/api/v1/reports') && request.method() === 'POST') {
+            reportPosts.push(request.postData() ?? '');
+        }
+    });
+    const message =
+        'The description or contact contains a link with its key (the part after #). ' +
+        'Remove the key and send again — the id in the first field is enough.';
+
+    await page.goto('/report');
+    await page.fill('[data-report-paste]', share);
+    await page.fill('[data-report-description]', `Please look at ${share}`);
+    await page.click('[data-report-submit]');
+    await expect(page.locator('[data-report-error]')).toHaveText(message);
+    await expect(page.locator('[data-report-description]')).toBeFocused();
+    await expect(page.locator('[data-report-description]')).toHaveValue(`Please look at ${share}`);
+
+    await page.fill('[data-report-description]', 'Browser check of the key refusal.');
+    await page.fill('[data-report-contact]', manage);
+    await page.click('[data-report-submit]');
+    await expect(page.locator('[data-report-error]')).toHaveText(message);
+    await expect(page.locator('[data-report-contact]')).toBeFocused();
+    await expect(page.locator('[data-report-contact]')).toHaveValue(manage);
+
+    // A request would have been sent right after the click; give it time to show.
+    await page.waitForTimeout(500);
+    expect(reportPosts).toEqual([]);
+});
+
+test('a password of only spaces is refused before anything is sent', async ({ page, context }) => {
+    const createPosts: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().endsWith('/api/v1/pastes') && request.method() === 'POST') {
+            createPosts.push(request.url());
+        }
+    });
+    await page.goto('/');
+    await page.fill('[data-item-text]', 'protected by a real password');
+    await page.fill('#create-password', '   ');
+    await page.click('[data-create-submit]');
+
+    const message = page.locator('[data-password-error]');
+    await expect(message).toHaveText(
+        'The password consists only of spaces. Enter a real password, or leave the field ' +
+            'empty for no password.',
+    );
+    await expect(page.locator('#create-password')).toBeFocused();
+    await expect(page.locator('[data-item-text]')).toHaveValue('protected by a real password');
+    await page.waitForTimeout(500);
+    expect(createPosts).toEqual([]);
+
+    const password = 'the real one';
+    await page.fill('#create-password', password);
+    await page.click('[data-create-submit]');
+    const shareField = page.locator('#share-link');
+    await expect(shareField).not.toHaveValue('', { timeout: 30_000 });
+    expect(createPosts).toHaveLength(1);
+    const share = await shareField.inputValue();
+
+    const view = await context.newPage();
+    await view.goto(share);
+    await view.fill('#pwd-input', '   ');
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-error')).toHaveText(
+        'Wrong password, or the capsule is no longer available.',
+        { timeout: 30_000 },
+    );
+    await view.fill('#pwd-input', password);
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-item-panel')).toContainText('protected by a real password', {
+        timeout: 30_000,
+    });
+});
+
 test('hostile HTML in Markdown is removed and never runs', async ({
     page,
     context,

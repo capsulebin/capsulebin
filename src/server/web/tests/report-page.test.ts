@@ -228,3 +228,74 @@ describe('report page errors', () => {
         expect(field('report-error').textContent).toBe(de['report.error.noDescription']);
     });
 });
+
+describe('report page refuses a key in the free text', () => {
+    const SHARE = `https://paste.example/p/${ID}#${KEY}`;
+    const MANAGE = `https://paste.example/de/manage/${ID}#${KEY}`;
+
+    function posts(): Sent[] {
+        return sent.filter((s) => s.method === 'POST');
+    }
+
+    for (const lang of ['en', 'de'] as const) {
+        it(`refuses a share link in the description, in ${lang}`, async () => {
+            await loadPage(`?id=${ID}`, lang);
+            const description = `This one: ${SHARE}`;
+            field<HTMLTextAreaElement>('report-description').value = description;
+            await submit();
+
+            expect(posts()).toHaveLength(0);
+            expect(field('report-error').hidden).toBe(false);
+            expect(field('report-error').textContent).toBe(
+                CATALOGUES[lang]['report.error.containsKey'],
+            );
+            expect(document.activeElement).toBe(field('report-description'));
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe(description);
+        });
+
+        it(`refuses a management link in the contact, in ${lang}`, async () => {
+            await loadPage(`?id=${ID}`, lang);
+            field<HTMLTextAreaElement>('report-description').value = 'spam';
+            field<HTMLInputElement>('report-contact').value = MANAGE;
+            await submit();
+
+            expect(posts()).toHaveLength(0);
+            expect(field('report-error').textContent).toBe(
+                CATALOGUES[lang]['report.error.containsKey'],
+            );
+            expect(document.activeElement).toBe(field('report-contact'));
+            expect(field<HTMLInputElement>('report-contact').value).toBe(MANAGE);
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe('spam');
+        });
+    }
+
+    it('focuses the description when both fields contain a key', async () => {
+        await loadPage(`?id=${ID}`);
+        field<HTMLTextAreaElement>('report-description').value = SHARE;
+        field<HTMLInputElement>('report-contact').value = MANAGE;
+        await submit();
+
+        expect(posts()).toHaveLength(0);
+        expect(document.activeElement).toBe(field('report-description'));
+        expect(field('report-error').textContent).toBe(en['report.error.containsKey']);
+    });
+
+    it('sends the report once the key is removed', async () => {
+        await loadPage(`?id=${ID}`);
+        field<HTMLTextAreaElement>('report-description').value = SHARE;
+        await submit();
+        expect(posts()).toHaveLength(0);
+
+        field<HTMLTextAreaElement>('report-description').value = `https://paste.example/p/${ID}`;
+        field<HTMLInputElement>('report-contact').value = 'me@example.org';
+        await submit();
+        const [post] = posts();
+        expect(JSON.parse(post!.body)).toEqual({
+            paste_id: ID,
+            reason: 'illegal_content',
+            description: `https://paste.example/p/${ID}`,
+            contact: 'me@example.org',
+        });
+        for (const request of sent) expect(request.body).not.toContain(KEY);
+    });
+});

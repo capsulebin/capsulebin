@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    containsKeyFragment,
     hasQueryOrFragment,
     isPasteId,
     LinkError,
@@ -116,6 +117,33 @@ describe('hasQueryOrFragment', () => {
             expect(appended.pathname.endsWith('/api/v1/pastes')).toBe(!refused);
         },
     );
+});
+
+describe('containsKeyFragment', () => {
+    it.each([
+        ['a share link', `https://paste.example/p/${ID}#v1.${SECRET}`],
+        ['a management link', `https://paste.example/manage/${ID}#v1.${SECRET}`],
+        ['a link with a language segment', `https://paste.example/de/p/${ID}#v1.${SECRET}`],
+        ['a bare fragment', `#v1.${SECRET}`],
+        ['the prefix alone', '#v1.'],
+        ['a link inside other text', `see https://paste.example/p/${ID}#v1.${SECRET} please`],
+        ['the fragment in the middle of text', `before #v1.${SECRET}\nafter`],
+    ])('finds the key in %s', (_, text) => {
+        expect(containsKeyFragment(text)).toBe(true);
+    });
+
+    it.each([
+        ['empty text', ''],
+        ['plain text', 'this capsule is spam'],
+        ['a link without a fragment', `https://paste.example/p/${ID}`],
+        ['a link with an empty fragment', `https://paste.example/p/${ID}#`],
+        ['a key without #', `v1.${SECRET}`],
+        ['an upper-case prefix', `https://paste.example/p/${ID}#V1.${SECRET}`],
+        ['another version', `https://paste.example/p/${ID}#v2.${SECRET}`],
+        ['# and v1. apart', `# v1.${SECRET}`],
+    ])('finds no key in %s', (_, text) => {
+        expect(containsKeyFragment(text)).toBe(false);
+    });
 });
 
 describe('parseFragment', () => {
