@@ -181,6 +181,56 @@ fn rejects_unparseable_public_url() {
     }
 }
 
+/// A share or management link pasted into `public_url` by mistake must not
+/// reach stderr and the service log through the error: no message about the
+/// key repeats its value, whichever check refuses it.
+#[test]
+fn public_url_errors_never_repeat_the_value() {
+    const ID: &str = "01JMARKERPASTEID0000000000";
+    const SECRET: &str = "MarkerLinkSecret-0123456789";
+    let dir = tempdir("url-not-repeated");
+
+    for (bad, reason) in [
+        (format!("paste.example/p/{ID}#v1.{SECRET}"), "absolute http(s) URL"),
+        (format!("https://paste .example/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}/de"), "language code"),
+        (format!("https://paste.example/p/{ID}/"), "end with a slash"),
+    ] {
+        let mut config = valid(&dir);
+        config.server.public_url = Some(bad);
+        let message = error(&config);
+        assert!(
+            message.contains("server.public_url") && message.contains(reason),
+            "{reason}: {message}"
+        );
+        for marker in [ID, SECRET, "paste.example"] {
+            assert!(!message.contains(marker), "{reason}: {marker} repeated: {message}");
+        }
+    }
+}
+
+/// A file that is not valid TOML is reported by position and reason, without
+/// the offending line: the parser's own rendering would quote a link written
+/// without quotes, fragment included.
+#[test]
+fn toml_syntax_errors_do_not_quote_the_file() {
+    let dir = tempdir("toml-syntax");
+    let path = dir.join("capsulebin.toml");
+    std::fs::write(
+        &path,
+        "[server]\npublic_url = https://paste.example/p/01JMARKERPASTEID#v1.MarkerLinkSecret\n",
+    )
+    .expect("write config");
+
+    let message = Config::load(Some(&path)).expect_err("must be rejected").to_string();
+    assert!(message.contains("not valid TOML: line 2, column 14: "), "{message}");
+    for marker in ["paste.example", "01JMARKERPASTEID", "MarkerLinkSecret"] {
+        assert!(!message.contains(marker), "{marker} repeated: {message}");
+    }
+}
+
 /// A base that only ends in a language code once the URL parser of a client
 /// has resolved its dot segments is refused like one that plainly does.
 #[test]

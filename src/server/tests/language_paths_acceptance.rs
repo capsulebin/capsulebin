@@ -322,6 +322,7 @@ fn ac25_check_rejects_a_public_url_ending_in_a_language_code() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(!output.status.success(), "{config:?} {env:?} accepted");
             assert!(stderr.contains("server.public_url"), "{config:?} {env:?}: key not named: {stderr}");
+            assert!(!stderr.contains("paste.example"), "{config:?} {env:?}: value repeated: {stderr}");
         }
     }
 }
@@ -390,6 +391,175 @@ fn ac25_check_rejects_a_public_url_with_a_query_or_fragment() {
             assert!(!output.status.success(), "{url} accepted");
             assert!(stderr.contains("server.public_url"), "{url}: key not named: {stderr}");
             assert!(stderr.contains("query or fragment"), "{url}: reason not named: {stderr}");
+            assert!(!stderr.contains("paste.example"), "{url}: value repeated: {stderr}");
+        }
+    }
+}
+
+/// AC25 (fifth review): an operator may paste a share or management link into
+/// `public_url`. Whatever the reason it is refused for, the error names the
+/// key and the reason, never the value: the paste id and the link secret must
+/// not reach stderr and from there the service log. From the file - also with
+/// the quotes forgotten or left open, where the TOML parser refuses the line -
+/// and from the environment.
+#[test]
+fn ac25_check_never_repeats_a_rejected_public_url() {
+    const ID: &str = "01JMARKERPASTEID0000000000";
+    const SECRET: &str = "MarkerLinkSecret-0123456789";
+
+    let dir = tempdir("acc-public-url-echo");
+    let assets = dir.join("assets");
+    write_shells(&assets);
+    // `value` is the text after `public_url = `, quotes included.
+    let config_with = |value: &str, name: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\npublic_url = {value}\nasset_dir = \"{}\"\n\
+                 [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+                assets.display(),
+                dir.join("capsulebin.db").display()
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let check = |config: &std::path::Path, env: Option<&str>| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_capsulebin"));
+        command.arg("--config").arg(config).arg("check");
+        if let Some(url) = env {
+            command.env("CAPSULEBIN__SERVER__PUBLIC_URL", url);
+        }
+        command.output().unwrap()
+    };
+    let assert_silent = |output: std::process::Output, reason: &str, case: &str| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{case}: accepted");
+        assert!(stderr.contains(reason), "{case}: reason {reason:?} not named: {stderr}");
+        for marker in [ID, SECRET, "paste.example"] {
+            assert!(!stderr.contains(marker), "{case}: {marker} in stderr: {stderr}");
+            assert!(!stdout.contains(marker), "{case}: {marker} in stdout: {stdout}");
+        }
+    };
+    let ok = config_with("\"https://ok.example\"", "ok.toml");
+
+    // One value per reason `server.public_url` is refused for. A fragment is
+    // itself a reason, so the later checks see the id in the path only.
+    for (index, (url, reason)) in [
+        (format!("paste.example/p/{ID}#v1.{SECRET}"), "absolute http(s) URL"),
+        (format!("https://paste .example/p/{ID}#v1.{SECRET}"), "not a valid URL"),
+        (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
+        (
+            format!("https://paste.example/manage/{ID}#v1.{SECRET}.{SECRET}"),
+            "query or fragment",
+        ),
+        (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}/de"), "language code"),
+        (format!("https://paste.example/p/{ID}/"), "end with a slash"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = config_with(&format!("\"{url}\""), &format!("bad-{index}.toml"));
+        for (output, source) in [(check(&file, None), "file"), (check(&ok, Some(&url)), "env")] {
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            assert!(stderr.contains("server.public_url"), "{reason} ({source}): key not named: {stderr}");
+            assert_silent(output, reason, &format!("{reason} ({source})"));
+        }
+    }
+
+    // The link without quotes, or with the closing quote missing: refused by
+    // the TOML parser, whose own message would quote the line.
+    let link = format!("https://paste.example/p/{ID}#v1.{SECRET}");
+    for (index, value) in [link.clone(), format!("\"{link}")].into_iter().enumerate() {
+        let file = config_with(&value, &format!("syntax-{index}.toml"));
+        assert_silent(check(&file, None), "not valid TOML: line 2,", &format!("syntax {index}"));
+    }
+
+    // A value of the wrong type, from the file and from the environment.
+    let list = format!("[\"{link}\"]");
+    for (output, source) in [
+        (check(&config_with(&list, "list.toml"), None), "file"),
+        (check(&ok, Some(&list)), "env"),
+    ] {
+        assert_silent(output, "server.public_url", &format!("list ({source})"));
+    }
+}
+
+/// AC25: the rule is a startup error, not only a finding of `check`. `serve`
+/// with a `public_url` that ends in a language code or carries a query or
+/// fragment ends by itself with a failure, names the key and does not repeat
+/// the value - from the file and from the environment.
+#[test]
+fn ac25_serve_does_not_start_with_a_rejected_public_url() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const ID: &str = "01JMARKERPASTEID0000000000";
+    const SECRET: &str = "MarkerLinkSecret-0123456789";
+
+    let dir = tempdir("acc-public-url-serve");
+    let assets = dir.join("assets");
+    write_shells(&assets);
+    let config_with = |url: &str, name: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\npublic_url = \"{url}\"\nbind = \"127.0.0.1:0\"\nasset_dir = \"{}\"\n\
+                 [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+                assets.display(),
+                dir.join(format!("{name}.db")).display()
+            ),
+        )
+        .unwrap();
+        path
+    };
+    // A server that starts would never end: wait a bounded time, then stop it.
+    let serve = |config: &std::path::Path, env: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_capsulebin"));
+        command.arg("--config").arg(config).arg("serve");
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(url) = env {
+            command.env("CAPSULEBIN__SERVER__PUBLIC_URL", url);
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut started = false;
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                started = true;
+                child.kill().unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (started, child.wait_with_output().unwrap())
+    };
+    let ok = config_with("https://ok.example", "ok.toml");
+
+    for (index, (url, reason)) in [
+        (format!("https://paste.example/p/{ID}/de"), "language code"),
+        (format!("https://paste.example/p/{ID}#v1.{SECRET}"), "query or fragment"),
+        (format!("https://paste.example/p/{ID}?secret={SECRET}"), "query or fragment"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = config_with(&url, &format!("bad-{index}.toml"));
+        for ((started, output), source) in [(serve(&file, None), "file"), (serve(&ok, Some(&url)), "env")] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(!started, "{reason} ({source}): the server started");
+            assert!(!output.status.success(), "{reason} ({source}): ended without a failure");
+            assert!(stderr.contains("server.public_url"), "{reason} ({source}): key not named: {stderr}");
+            assert!(stderr.contains(reason), "{reason} ({source}): reason not named: {stderr}");
+            for marker in [ID, SECRET, "paste.example"] {
+                assert!(!stderr.contains(marker), "{reason} ({source}): {marker} in stderr: {stderr}");
+                assert!(!stdout.contains(marker), "{reason} ({source}): {marker} in stdout: {stdout}");
+            }
         }
     }
 }

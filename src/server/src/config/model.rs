@@ -144,23 +144,23 @@ impl ServerConfig {
             .as_deref()
             .ok_or_else(|| invalid("server.public_url is required".to_owned()))?;
 
+        // No message below repeats the value: a share or management link pasted
+        // here by mistake would put its paste id and link secret into stderr and
+        // the service log.
         if !(public_url.starts_with("https://") || public_url.starts_with("http://")) {
-            return Err(invalid(format!(
-                "server.public_url must be an absolute http(s) URL, got {public_url:?}"
-            )));
+            return Err(invalid("server.public_url must be an absolute http(s) URL".to_owned()));
         }
 
         // The prefix alone lets text through that no client can use as a URL.
         let Ok(url) = url::Url::parse(public_url) else {
-            return Err(invalid(format!("server.public_url is not a valid URL, got {public_url:?}")));
+            return Err(invalid("server.public_url is not a valid URL".to_owned()));
         };
 
         // Checked before the trailing slash, which may follow either ("...?x=/").
         if has_query_or_fragment(&url) {
-            return Err(invalid(format!(
-                "server.public_url must not contain a query or fragment, got {public_url:?}: \
-                 paths are appended to it"
-            )));
+            return Err(invalid(
+                "server.public_url must not contain a query or fragment: paths are appended to it".to_owned(),
+            ));
         }
 
         // Checked before the trailing slash, so ".../de/" is told the real reason.

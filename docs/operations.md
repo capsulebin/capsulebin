@@ -259,6 +259,10 @@ See [i18n.md](i18n.md) for the rules in detail.
 - Logs go to stderr. `CAPSULEBIN_LOG` sets the filter (default `info,tower_http=info,sqlx=warn`).
   The access log contains method, redacted path (`/api/v1/pastes/{id}`), status and latency —
   never paste ids, bodies, tokens or report text.
+- Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
+  reason without repeating the value, and a file that is not valid TOML is reported as
+  `line L, column C: <reason>` without the offending line — a share link pasted there by mistake
+  does not end up in the service log.
 
 ## Routine tasks
 

@@ -46,12 +46,12 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    #[error("{path} is not valid TOML: {source}")]
-    Parse {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
-    },
+    /// Position and reason only. The parser's own rendering quotes the
+    /// offending line, which may hold a secret - a share link pasted without
+    /// quotes as `public_url`, a token hash -, and this text reaches stderr and
+    /// the service log.
+    #[error("{path} is not valid TOML: {reason}")]
+    Parse { path: PathBuf, reason: String },
     #[error("environment overlay is not valid: {0}")]
     Env(String),
     #[error("invalid configuration: {0}")]
@@ -74,6 +74,17 @@ pub struct Resolved {
     pub default_language: &'static str,
 }
 
+/// Where and why `text` is not valid TOML, without quoting any of it.
+fn parse_reason(text: &str, error: &toml::de::Error) -> String {
+    let message = error.message();
+    let Some(before) = error.span().and_then(|span| text.get(..span.start)) else {
+        return message.to_owned();
+    };
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |last| last.chars().count()) + 1;
+    format!("line {line}, column {column}: {message}")
+}
+
 impl Config {
     /// Loads the configuration: optional file, then the environment overlay.
     ///
@@ -87,9 +98,9 @@ impl Config {
                     path: path.to_owned(),
                     source,
                 })?;
-                toml::from_str::<toml::Table>(&text).map_err(|source| ConfigError::Parse {
+                toml::from_str::<toml::Table>(&text).map_err(|error| ConfigError::Parse {
                     path: path.to_owned(),
-                    source,
+                    reason: parse_reason(&text, &error),
                 })?
             }
             Some(path) => {
