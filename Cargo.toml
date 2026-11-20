@@ -29,7 +29,10 @@ clap = { version = "4", features = ["derive"] }
 getrandom = "0.4"
 # Operator legal texts (imprint, privacy notice, terms) only; raw HTML is escaped.
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
-rust-embed = "8"
+# Without `debug-embed` a debug build reads `web/dist` from disk on every access.
+# The pages are put together once at startup, so after a web build they would
+# name scripts that are gone: every profile embeds, and `build.rs` recompiles.
+rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

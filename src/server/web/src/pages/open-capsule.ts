@@ -36,6 +36,11 @@ export type PasswordRetry =
 export interface OpenCapsuleHooks {
     /** About to derive keys and decrypt; lets the caller show a spinner. */
     onDecrypting(): void;
+    /**
+     * Right before the retrieve request, also when neither pause below came
+     * first. `false` stops the flow there: nothing is sent.
+     */
+    beforeRetrieve(): boolean;
     /** Show the burn-once warning; resolves once the user confirms. */
     confirmBurn(): Promise<void>;
     /**
@@ -103,6 +108,7 @@ export async function openCapsule(hooks: OpenCapsuleHooks): Promise<OpenCapsuleO
                 return hooks.promptForPassword(header, retry);
             },
             onDecrypting: () => hooks.onDecrypting(),
+            beforeRetrieve: () => hooks.beforeRetrieve(),
         });
         if (outcome.kind !== 'api_error' || !askedForPassword) break;
         const { status, retryAfter } = outcome.error;

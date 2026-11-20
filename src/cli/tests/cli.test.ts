@@ -350,6 +350,28 @@ describe('errors and output', () => {
         expect(server.requests).toHaveLength(0);
     });
 
+    // The API path is appended to the base as text: behind a query or fragment
+    // the request, and a creation token with it, would go to the base's path.
+    it.each([
+        'https://paste.example/team?lang=/de',
+        'https://paste.example/team#/de',
+        'https://paste.example/team?',
+        'https://paste.example/team#',
+        'https://paste.example/team?x=1/',
+        'https://paste.example/team#x//',
+        'https://paste.example?',
+    ])('refuses the server %s, which has a query or fragment', async (base) => {
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '--server', base], io)).toBe(2);
+        expect(io.err()).toContain('--server must not contain a query or fragment');
+        expect(server.requests).toHaveLength(0);
+
+        const fromEnv = testIo({ stdin: 'x', env: { CAPSULEBIN_SERVER: base } });
+        expect(await run(['put'], fromEnv)).toBe(2);
+        expect(fromEnv.err()).toContain('must not contain a query or fragment');
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('does not dump a binary single item onto a terminal', async () => {
         await writeFile(join(cwd, 'img.bin'), new Uint8Array([0, 159, 146, 150]));
         const put = testIo();

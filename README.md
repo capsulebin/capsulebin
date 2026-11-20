@@ -124,8 +124,10 @@ language and answers `/en/…` with `404` where the real server redirects. Vite 
 available there; production requires HTTPS.
 
 `capsulebin.dev.toml` reads assets from `src/server/web/dist` rather than the binary, so an edited
-file takes effect without a rebuild. Without `server.asset_dir`, every build — release builds
-included — serves the copy embedded in the binary; leave it unset in production.
+file takes effect without a rebuild. Without `server.asset_dir`, every build — debug and release
+alike — serves the copy embedded in the binary at compile time; leave it unset in production. Such
+a server shows a newer web build only after another `cargo build` or `cargo run`, which recompiles
+when `src/server/web/dist` has changed.
 
 ### Command line client
 
@@ -157,7 +159,9 @@ node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
   confirmation. `capsulebin --help` lists all options.
 - **`put` refuses a server URL whose path ends in an interface language code**
   (`https://example.org/team/de`, exit code `2`): links below it could not be told apart from the
-  `/de/` language prefix of the pages. The server refuses the same address as `public_url`.
+  `/de/` language prefix of the pages. It also refuses one with a query or fragment, even an
+  empty one (`https://example.org/team?`, exit code `2`): the API path is appended to the URL.
+  The server refuses the same addresses as `public_url`.
 - **Retries are safe.** `put` seals once and re-sends the identical request on network errors,
   `429` and `5xx`; the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.

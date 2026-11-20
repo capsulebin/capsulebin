@@ -71,7 +71,9 @@ const PAGES: [(&str, Page); 7] = [
     ("/terms", Page::Legal(Which::Terms)),
 ];
 
-/// Built frontend assets, embedded into the binary.
+/// Built frontend assets, embedded into the binary in every profile
+/// (`debug-embed`): a debug build serves the web build it was compiled with,
+/// like a release build, not whatever is in `web/dist` at the moment.
 ///
 /// `web/dist` is produced by the frontend build; `build.rs` creates
 /// the directory if it is missing so that `cargo build` works without a prior
@@ -285,7 +287,7 @@ fn with_legal_link(shell: &str, which: Which, href: Option<&str>) -> String {
 }
 
 /// Static assets (JS, CSS, icons). No directory listing and no path traversal:
-/// `rust-embed` only knows the embedded names, and the development mode
+/// `rust-embed` only knows the embedded names, and the directory mode
 /// validates the path. No HTML either: a shell is only served through its
 /// route, with the markers replaced.
 async fn static_file(State(state): State<AppState>, uri: Uri) -> Response {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    hasQueryOrFragment,
     isPasteId,
     LinkError,
     parseFragment,
@@ -99,6 +100,22 @@ describe('trailingLanguage', () => {
     it.each(['example.org/de', 'ftp://example.org/de', 'https://'])('rejects %s', (base) => {
         expect(() => trailingLanguage(base)).toThrow(LinkError);
     });
+});
+
+describe('hasQueryOrFragment', () => {
+    it.each(fixture.query_or_fragment)('is $refused for $base', ({ base, refused }) => {
+        expect(hasQueryOrFragment(base)).toBe(refused);
+    });
+
+    // The reason for the rule: clients append the request path to the base as
+    // text, so behind a query or fragment it never reaches the URL's path.
+    it.each(fixture.query_or_fragment)(
+        'agrees with the URL parser about $base',
+        ({ base, refused }) => {
+            const appended = new URL(`${base}/api/v1/pastes`);
+            expect(appended.pathname.endsWith('/api/v1/pastes')).toBe(!refused);
+        },
+    );
 });
 
 describe('parseFragment', () => {

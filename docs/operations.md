@@ -182,7 +182,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
-| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
+| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -314,8 +314,14 @@ Do not use these links with the CLI.
 
 What to do:
 
-1. Move the instance to a base path that does not end in a language code
-   (`https://example.org/team/paste`, or a host of its own) and set `server.public_url` to it.
+1. Move the instance to a host of its own, served at `/` (`https://paste.example.org`), and set
+   `server.public_url` to it. That is the setup the web interface needs: the server answers
+   pages, `/assets/…` and `/api/…` at the root of its address only, the pages load their scripts
+   and styles from `/assets/`, call `/api/`, and create share and management links directly under
+   the origin. Below a path (`https://example.org/team/paste`) the web interface does not work,
+   whatever the path ends in. Only the API and the CLI build on a base with a path — `put`
+   appends `/api/v1/…`, `/p/<id>` and `/manage/<id>` to its `--server` — and only if the reverse
+   proxy removes that path before it forwards the request; no test covers such a setup.
 2. Links handed out under the old base keep pointing there. Whether and how they are mapped to
    the new base is up to the operator; CapsuleBin does not do it.
 

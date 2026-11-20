@@ -106,6 +106,9 @@ fn rejects_public_url_ending_in_a_language_code() {
     }
 }
 
+/// Base URL vectors shared with `@capsulebin/core`.
+const BASE_FIXTURE: &str = include_str!("../../../core/tests/fixtures/base-language.json");
+
 /// The server and the clients decide by one rule which base URL ends in a
 /// language code; the vectors are shared with `@capsulebin/core`.
 #[test]
@@ -120,13 +123,44 @@ fn trailing_language_matches_the_vectors_shared_with_the_clients() {
         language: Option<String>,
     }
 
-    let json = include_str!("../../../core/tests/fixtures/base-language.json");
-    let fixture: Fixture = serde_json::from_str(json).expect("fixture parses");
+    let fixture: Fixture = serde_json::from_str(BASE_FIXTURE).expect("fixture parses");
     assert!(!fixture.vectors.is_empty());
 
     for Vector { base, language } in fixture.vectors {
         let url = url::Url::parse(&base).expect("vector base parses");
         assert_eq!(model::trailing_language(&url), language.as_deref(), "base {base:?}");
+    }
+}
+
+/// The server and the clients decide by one rule which base URL carries a query
+/// or fragment, and `validate` refuses exactly those, naming the key.
+#[test]
+fn refuses_public_url_with_query_or_fragment_by_the_vectors_shared_with_the_clients() {
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        query_or_fragment: Vec<Vector>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        base: String,
+        refused: bool,
+    }
+
+    let dir = tempdir("query-fragment-url");
+    let fixture: Fixture = serde_json::from_str(BASE_FIXTURE).expect("fixture parses");
+    assert!(!fixture.query_or_fragment.is_empty());
+
+    for Vector { base, refused } in fixture.query_or_fragment {
+        let url = url::Url::parse(&base).expect("vector base parses");
+        assert_eq!(model::has_query_or_fragment(&url), refused, "base {base:?}");
+
+        let mut config = valid(&dir);
+        config.server.public_url = Some(base.clone());
+        let named = config.validate().is_err_and(|err| {
+            let message = err.to_string();
+            message.contains("server.public_url") && message.contains("must not contain a query or fragment")
+        });
+        assert_eq!(named, refused, "base {base:?}");
     }
 }
 

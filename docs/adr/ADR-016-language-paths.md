@@ -118,6 +118,7 @@ language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the Engli
 - A page that has started a retrieval or deletion, or holds a create draft or a started report,
   cannot change language in place; the choice applies from the next page.
 - An instance cannot use a `public_url` whose path ends in `/en` or `/de` (or any later language
-  code), also not through dot segments (`/team/de/.`); such a sub-path has to be renamed. Links
+  code), also not through dot segments (`/team/de/.`), nor one with a query or fragment; such an
+  instance has to move to another base, for the web interface a host of its own at `/`. Links
   issued under such a base before are read by the CLI as carrying a language segment (see the
   upgrade note in `docs/operations.md`).

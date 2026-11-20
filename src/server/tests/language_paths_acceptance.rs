@@ -326,6 +326,74 @@ fn ac25_check_rejects_a_public_url_ending_in_a_language_code() {
     }
 }
 
+/// AC25 (fourth review): paths are appended to `public_url` as text, so a base
+/// with a query or a fragment - also an empty one - is a startup error naming
+/// the key, from the file and from the environment, even when a language code
+/// only appears behind the `?` or `#`. A percent-encoded `?` or `#` is path
+/// and stays accepted.
+#[test]
+fn ac25_check_rejects_a_public_url_with_a_query_or_fragment() {
+    let dir = tempdir("acc-public-url-query");
+    let assets = dir.join("assets");
+    write_shells(&assets);
+    let config_with = |url: &str, name: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\npublic_url = \"{url}\"\nasset_dir = \"{}\"\n\
+                 [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+                assets.display(),
+                dir.join("capsulebin.db").display()
+            ),
+        )
+        .unwrap();
+        path
+    };
+    let check = |config: &std::path::Path, env: Option<&str>| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_capsulebin"));
+        command.arg("--config").arg(config).arg("check");
+        if let Some(url) = env {
+            command.env("CAPSULEBIN__SERVER__PUBLIC_URL", url);
+        }
+        command.output().unwrap()
+    };
+    let ok = config_with("https://paste.example", "ok.toml");
+
+    for (index, url) in ["https://paste.example/team%3Fx=1", "https://paste.example/team%23de"]
+        .into_iter()
+        .enumerate()
+    {
+        for output in [check(&config_with(url, &format!("ok-{index}.toml")), None), check(&ok, Some(url))] {
+            assert!(
+                output.status.success(),
+                "{url} rejected: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    for (index, url) in [
+        "https://paste.example/team?lang=/de",
+        "https://paste.example/team#/de",
+        "https://paste.example/team?x=1",
+        "https://paste.example/team?",
+        "https://paste.example/team#",
+        "https://paste.example?x=1",
+        "https://paste.example#top",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for output in [check(&config_with(url, &format!("bad-{index}.toml")), None), check(&ok, Some(url))] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{url} accepted");
+            assert!(stderr.contains("server.public_url"), "{url}: key not named: {stderr}");
+            assert!(stderr.contains("query or fragment"), "{url}: reason not named: {stderr}");
+        }
+    }
+}
+
 /// AC3 + AC5: only a path segment that is exactly a known language code is a
 /// prefix. A segment that merely starts with one, carries a region or differs
 /// in case is neither redirected (default language) nor served as a page (any

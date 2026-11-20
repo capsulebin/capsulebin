@@ -114,6 +114,22 @@ export function trailingLanguage(base: string): Language | null {
     return isKnownLanguage(last) ? last : null;
 }
 
+/**
+ * True if the text of a server base URL carries a query or a fragment, also
+ * an empty one (`…/team?`, `…/team#`). Request paths and links are appended to
+ * the base as text, so they would end up inside the query or fragment: the
+ * request for `https://example.org/team?x=` would go to `/team`, together with
+ * a creation token. Clients refuse such a base, and the server refuses it as
+ * `server.public_url` (`has_query_or_fragment` in `config/model.rs`; both are
+ * checked against `tests/fixtures/base-language.json`).
+ *
+ * In an http(s) URL every literal `?` or `#` starts or lies within one of the
+ * two, so the text decides; percent-encoded ones (`%3F`, `%23`) are path.
+ */
+export function hasQueryOrFragment(base: string): boolean {
+    return /[?#]/.test(base);
+}
+
 function parseHttpUrl(text: string, notHttp: string): URL {
     let url: URL;
     try {

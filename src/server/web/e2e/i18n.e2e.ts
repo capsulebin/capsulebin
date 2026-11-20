@@ -503,6 +503,56 @@ test('once the language switch is loading the page a burn capsule cannot be open
     expect(retrieves).toHaveLength(1);
 });
 
+// A capsule without burn warning or password is retrieved without a click, as
+// soon as the descriptor is there. If that happens in the old document, the
+// capsule is retrieved twice: once behind a page that is about to go, and once
+// by the German page.
+test('once the language switch is loading the page the old one does not retrieve', async ({
+    page,
+    context,
+}) => {
+    const { share } = await create(page, { items: [{ type: 'plain', text: 'Retrieved once' }] });
+    const view = await context.newPage();
+    const retrieves: string[] = [];
+    view.on('request', (request) => {
+        if (request.url().endsWith('/retrieve')) retrieves.push(request.url());
+    });
+
+    // Hold the first descriptor until the language has been switched; the German
+    // page takes its time, so the old document has it to act on the answer.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let reached = () => {};
+    const requested = new Promise<void>((resolve) => (reached = resolve));
+    let first = true;
+    await view.route('**/api/v1/pastes/*/describe', async (route) => {
+        if (first) {
+            first = false;
+            reached();
+            await held;
+        }
+        await route.continue();
+    });
+    await view.route('**/de/p/*', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await route.continue();
+    });
+
+    await view.goto(share);
+    await requested;
+    await view.evaluate(() => {
+        document.querySelector<HTMLButtonElement>('[data-language-switch] [lang="de"]')?.click();
+    });
+    release();
+
+    await expect(view).toHaveURL(/\/de\/p\//);
+    await expect(view.locator('html')).toHaveAttribute('lang', 'de');
+    await expect(view.locator('.cb-item-panel')).toContainText('Retrieved once', {
+        timeout: 30_000,
+    });
+    expect(retrieves).toHaveLength(1);
+});
+
 // A started report is a draft like a filled create form; nothing of it is stored.
 test('on a started report the language switch only stores the choice', async ({ page }) => {
     await page.goto('/report');

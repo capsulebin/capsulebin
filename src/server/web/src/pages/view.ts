@@ -595,11 +595,10 @@ class CbViewPage extends LitElement {
     async #openCapsule(): Promise<void> {
         const outcome = await openCapsule({
             onDecrypting: () => {
-                // The retrieve request follows: loading the page in another language
-                // now could burn the capsule here and show it nowhere.
-                languageFromNextPage(shell);
                 this.phase = 'decrypting';
             },
+            // A capsule without burn warning or password gets here without a click.
+            beforeRetrieve: startOpening,
             confirmBurn: () => this.#awaitBurnConfirm(),
             promptForPassword: (header, retry) => this.#promptForPassword(header, retry),
         });
@@ -638,10 +637,12 @@ function passwordRetryMessage(retry: PasswordRetry | undefined): string {
 }
 
 /**
- * The user's go-ahead for the retrieval (burn confirmation, password): refused
- * while the language switch is loading this page in another language - the
- * capsule would be burned here and shown nowhere. Otherwise the switch only
- * stores the choice from this click on, not only from the request that follows
+ * The go-ahead for the retrieval - the user's (burn confirmation, password) and
+ * once more right before the request, which a capsule without either reaches on
+ * its own: refused while the language switch is loading this page in another
+ * language - the capsule would be retrieved or burned here and shown nowhere,
+ * and the new page would retrieve it again. Otherwise the switch only stores
+ * the choice from here on: after a click not only from the request that follows
  * the key derivation.
  */
 function startOpening(): boolean {

@@ -155,6 +155,14 @@ impl ServerConfig {
             return Err(invalid(format!("server.public_url is not a valid URL, got {public_url:?}")));
         };
 
+        // Checked before the trailing slash, which may follow either ("...?x=/").
+        if has_query_or_fragment(&url) {
+            return Err(invalid(format!(
+                "server.public_url must not contain a query or fragment, got {public_url:?}: \
+                 paths are appended to it"
+            )));
+        }
+
         // Checked before the trailing slash, so ".../de/" is told the real reason.
         if let Some(language) = trailing_language(&url) {
             return Err(invalid(format!(
@@ -170,6 +178,16 @@ impl ServerConfig {
 
         Ok(())
     }
+}
+
+/// True if the parsed `public_url` carries a query or a fragment, also an empty
+/// one (`.../team?`, `.../team#`). Share links, problem type URIs and the
+/// clients' request URLs append a path to the base as text, which would end up
+/// inside the query or fragment. The same rule as `hasQueryOrFragment` in
+/// `@capsulebin/core`, which the CLI applies to `put --server` (both are
+/// checked against `src/core/tests/fixtures/base-language.json`).
+pub(super) fn has_query_or_fragment(public_url: &url::Url) -> bool {
+    public_url.query().is_some() || public_url.fragment().is_some()
 }
 
 /// The known language code the path of the parsed `public_url` ends in, if

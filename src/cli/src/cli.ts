@@ -9,7 +9,7 @@
  */
 
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { LinkError, trailingLanguage } from '@capsulebin/core';
+import { hasQueryOrFragment, LinkError, trailingLanguage } from '@capsulebin/core';
 import { put } from './commands/put';
 import { get } from './commands/get';
 import { remove } from './commands/delete';
@@ -154,9 +154,11 @@ function checkOptions(command: string, values: Values): void {
 }
 
 /**
- * Refuses a server URL that links cannot be built on: not http(s), or ending
- * in a language code, where `get` and `delete` would read the code in the
- * link as the language segment and contact the base without it.
+ * Refuses a server URL that requests and links cannot be built on: not
+ * http(s); with a query or fragment, which would swallow every path appended
+ * to it; or ending in a language code, where `get` and `delete` would read
+ * the code in the link as the language segment and contact the base without
+ * it. Takes the URL as given, before any trailing slash is removed.
  */
 function checkServer(server: string): void {
     let language;
@@ -166,6 +168,11 @@ function checkServer(server: string): void {
         if (!(err instanceof LinkError)) throw err;
     }
     if (language === undefined) throw usage('--server must be an http(s) URL');
+    if (hasQueryOrFragment(server)) {
+        throw usage(
+            '--server must not contain a query or fragment: the API path is appended to it',
+        );
+    }
     if (language !== null) {
         throw usage(
             `--server must not end in the language code "${language}": links below it would be ` +
@@ -196,12 +203,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
 
         switch (command) {
             case 'put': {
-                const server = (values.server ?? io.env['CAPSULEBIN_SERVER'] ?? '').replace(
-                    /\/+$/,
-                    '',
-                );
+                const given = values.server ?? io.env['CAPSULEBIN_SERVER'] ?? '';
+                const server = given.replace(/\/+$/, '');
                 if (!server) throw usage('no server: pass --server URL or set CAPSULEBIN_SERVER');
-                checkServer(server);
+                checkServer(given);
 
                 let as;
                 if (values.as !== undefined) {

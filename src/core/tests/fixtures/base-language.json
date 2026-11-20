@@ -1,5 +1,5 @@
 {
-    "description": "Server base URLs and the known language code their path ends in (null: none). One rule for the server (server.public_url) and the clients (put --server): the path as the WHATWG URL parser normalizes it, its last non-empty segment, compared exactly. Read by src/core/tests/links.test.ts and src/server/src/config/tests.rs.",
+    "description": "Server base URLs, checked by one rule each for the server (server.public_url) and the clients (put --server). vectors: the known language code the path ends in (null: none) - the path as the WHATWG URL parser normalizes it, its last non-empty segment, compared exactly. query_or_fragment: whether the base is refused because it carries a query or a fragment, also an empty one. Read by src/core/tests/links.test.ts and src/server/src/config/tests.rs.",
     "vectors": [
         { "base": "https://example.org/de", "language": "de" },
         { "base": "https://example.org/en", "language": "en" },
@@ -31,5 +31,26 @@
         { "base": "https://example.org/team?lang=/de", "language": null },
         { "base": "https://example.org/team#/de", "language": null },
         { "base": "https://de.example.org", "language": null }
+    ],
+    "query_or_fragment": [
+        { "base": "https://example.org/team?lang=/de", "refused": true },
+        { "base": "https://example.org/team#/de", "refused": true },
+        { "base": "https://example.org/team?", "refused": true },
+        { "base": "https://example.org/team#", "refused": true },
+        { "base": "https://example.org/team?#", "refused": true },
+        { "base": "https://example.org/team/?x=1", "refused": true },
+        { "base": "https://example.org/team?x=1/", "refused": true },
+        { "base": "https://example.org/team#x/", "refused": true },
+        { "base": "https://example.org?", "refused": true },
+        { "base": "https://example.org#", "refused": true },
+        { "base": "https://example.org?x=1", "refused": true },
+        { "base": "http://example.org:8080/team/en?x=1#y", "refused": true },
+        { "base": "https://example.org", "refused": false },
+        { "base": "https://example.org/", "refused": false },
+        { "base": "https://example.org/team", "refused": false },
+        { "base": "https://example.org/team/", "refused": false },
+        { "base": "https://example.org/team%3Fx=1", "refused": false },
+        { "base": "https://example.org/team%23x", "refused": false },
+        { "base": "http://example.org:8080/a/b", "refused": false }
     ]
 }

@@ -159,11 +159,14 @@ Critical rules:
 - **Unknown keys are a startup error** — a typo must not silently disable a security setting.
 - **Every setting has an env equivalent:** `CAPSULEBIN__<TABLE>__<KEY>`.
 - **`server.public_url` is required, no default** — it appears in `problem+json` type URIs
-  and share links, so it must come from configuration, not a request header. Its path must not
-  end in a known language code (`…/team/de`, also after dot segments are resolved: `…/team/de/.`):
-  links below it would be ambiguous with the language prefix. CLI `put` refuses such a `--server`
-  by the same rule (`trailing_language` in `config/model.rs`, `trailingLanguage` in core
-  `links.ts`), kept equal by the shared vectors `src/core/tests/fixtures/base-language.json`.
+  and share links, so it must come from configuration, not a request header. It must not carry a
+  query or fragment, also an empty one (`…/team?`, `…#`): paths are appended to it as text
+  (`has_query_or_fragment` in `config/model.rs`, `hasQueryOrFragment` in core `links.ts`; CLI `put`
+  refuses such a `--server` too). Its path must not end in a known language code (`…/team/de`,
+  also after dot segments are resolved: `…/team/de/.`): links below it would be ambiguous with the
+  language prefix. CLI `put` refuses such a `--server` by the same rule (`trailing_language` in
+  `config/model.rs`, `trailingLanguage` in core `links.ts`). Both rules are kept equal on both
+  sides by the shared vectors `src/core/tests/fixtures/base-language.json`.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
   must not be an open write target.
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
@@ -342,7 +345,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
 | `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |
-| `build.rs` | Embeds `web/dist` and `migrations/` into the binary |
+| `build.rs` | Creates `web/dist` if missing and makes Cargo recompile when it changes; `rust-embed` (with `debug-embed`: every profile) embeds it at compile time |
 
 ### TypeScript core (`src/core/`)
 
@@ -353,7 +356,7 @@ npm run e2e -w @capsulebin/web
 | `src/paste.ts` | High-level create/retrieve/delete operations |
 | `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`) |
 | `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI) |
-| `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in |
+| `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in; `hasQueryOrFragment()`: a base URL with a `?` or `#` |
 | `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
 | `src/public_header.ts` | Protocol constants, public header type and its canonical serialization |
 | `src/helpers/bytes.ts` | Byte array utilities (base64url, hex, concatenation) |
@@ -398,7 +401,7 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
-| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL ending in a language code |
+| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code |
 | `src/commands/{put,get,delete}.ts` | The three commands |
 | `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping |
 | `src/items.ts` | Presentation/language inference for input files |
