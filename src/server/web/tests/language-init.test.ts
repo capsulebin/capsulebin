@@ -74,10 +74,10 @@ describe('language-init.js', () => {
         expect(source).not.toMatch(/\bimport\b|\bexport\b|\bfetch\b/);
     });
 
-    it.each(SHELLS)('is loaded by %s.html blocking, before theme-init.js', (shell) => {
+    it.each(SHELLS)('is loaded by %s.html blocking, after theme-init.js', (shell) => {
         const head = readTemplate(shell).split('</head>')[0]!;
         expect(head).not.toMatch(/<script[^>]*language-init\.js[^>]*(defer|async|type=)/);
-        expect(head.indexOf('/language-init.js')).toBeLessThan(head.indexOf('/theme-init.js'));
+        expect(head.indexOf('/theme-init.js')).toBeLessThan(head.indexOf('/language-init.js'));
     });
 
     it('prefers the stored choice over the browser language', () => {

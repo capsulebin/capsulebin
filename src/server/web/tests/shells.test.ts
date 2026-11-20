@@ -104,8 +104,9 @@ describe('templates', () => {
         const head = html.slice(0, html.indexOf('</head>'));
         const order = [
             'name="capsulebin-languages"',
-            '<script src="/language-init.js"></script>',
+            '<meta name="color-scheme" content="light dark" />',
             '<script src="/theme-init.js"></script>',
+            '<script src="/language-init.js"></script>',
             '<script type="module"',
         ].map((part) => head.indexOf(part));
 

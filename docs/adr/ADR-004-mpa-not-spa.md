@@ -99,11 +99,10 @@ Pages without meaningful state may stay plain DOM code.
 
 - Switching between views is a real page load. With four views and no shared state that costs
   nothing.
-- A new route needs an entry in three places: `vite.config.ts`, the server route, and `Shell` in
-  `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the mapping down. Since
-  ADR-016: `SHELLS` in `scripts/shells.ts` and the dev server's routes in `vite.config.ts`, and
-  `PAGES` (from which the routes of every language and the redirects are built) and `Shell` in
-  `api/assets.rs`.
+- A new route needs an entry in `SHELLS` in `scripts/shells.ts`, the dev server's routes in
+  `vite.config.ts`, and `PAGES` (from which the routes of every language and the redirects are
+  built) and `Shell` in `api/assets.rs`. The unit test `every_route_maps_to_one_shell` pins the
+  mapping down.
 - Each document loads its own entry bundle, which keeps the shells small — the create page loads no
   Markdown renderer, the view page no editor.
 - `lit` is a runtime dependency of `@capsulebin/web` and part of the dependency review (`npm audit`)

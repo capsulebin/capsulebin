@@ -388,7 +388,7 @@ npm run e2e -w @capsulebin/web
 | `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
 | `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix and default language |
 | `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
-| `public/language-init.js` | Head script: moves the page to the stored, browser or default language before the paint |
+| `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
 | `src/styles/tokens.css` | Design tokens |
 | `src/styles/base.css` | Base styles |

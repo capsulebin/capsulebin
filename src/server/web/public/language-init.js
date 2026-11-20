@@ -19,8 +19,10 @@
  * does nothing.
  *
  * Like theme-init.js this is an external classic script without defer/async, so
- * that it runs before the first paint, and it runs before theme-init.js because
- * after a redirect the theme no longer matters. The storage key is duplicated
+ * that it runs before the first paint. It runs after theme-init.js, which sets
+ * the color-scheme meta first: a document this script replaces is never styled,
+ * and without the meta the browser would paint it light, a bright flash in dark
+ * mode. The storage key is duplicated
  * from src/language.ts on purpose (importing it would make this a deferred
  * module); a test keeps both in sync.
  */

@@ -306,7 +306,7 @@ change, and capsules, burn tombstones, reports and moderation decisions from 1.0
 #### A `public_url` whose path ends in a language code
 
 An instance whose `server.public_url` has a path ending in an interface language code
-(`https://example.org/team/de`, `…/team/en`) no longer starts. The same holds when the path only
+(`https://example.org/team/de`, `…/team/en`) does not start. The same holds when the path only
 ends in a code once its dot segments are resolved, as every client's URL parser does
 (`…/team/de/.`, `…/team/x/../de`). `capsulebin --config … check` reports it, naming
 `server.public_url`, so step 3 above fails before the service is started.

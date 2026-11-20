@@ -16,12 +16,23 @@
  * The storage key is duplicated here on purpose (see src/theme.ts). Importing it
  * would turn this file into a module and destroy the very property it exists
  * for. A test keeps both places in sync.
+ *
+ * It is the first head script and also narrows <meta name="color-scheme"> to an
+ * explicit choice. When language-init.js (the next script) moves the page to
+ * another language, the current document is never styled; without the meta the
+ * browser would paint it in its default light canvas, a bright flash in dark
+ * mode. The meta needs no style, so it stays within the CSP. Once the stylesheet
+ * applies, `color-scheme` in tokens.css takes precedence over the meta.
  */
 (function () {
     try {
         var choice = localStorage.getItem('capsulebin.theme');
         if (choice === 'light' || choice === 'dark') {
             document.documentElement.setAttribute('data-theme', choice);
+            var meta = document.querySelector('meta[name="color-scheme"]');
+            if (meta) {
+                meta.setAttribute('content', choice);
+            }
         }
     } catch (e) {
         /* No access to localStorage: prefers-color-scheme decides. */

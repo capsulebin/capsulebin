@@ -52,6 +52,10 @@ function writeChoice(choice: ThemeChoice): void {
 /**
  * Sets or removes `data-theme` on the root element. For `auto` the attribute is
  * removed so that the media query in tokens.css takes over again.
+ *
+ * `<meta name="color-scheme">` (set by public/theme-init.js) is left alone: once
+ * the stylesheet applies, `color-scheme` in tokens.css overrides it, and the next
+ * document runs theme-init.js again with the new choice.
  */
 export function applyChoice(choice: ThemeChoice): void {
     const root = document.documentElement;

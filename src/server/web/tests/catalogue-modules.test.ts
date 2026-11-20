@@ -232,15 +232,23 @@ describe('catalogue modules in the build output', () => {
                 expect(head().indexOf(meta)).toBeLessThan(head().indexOf('/language-init.js'));
             });
 
-            it('loads language-init.js blocking, before theme-init.js and every module', () => {
+            it('declares the color scheme once, before every script', () => {
+                const metas = [...head().matchAll(/<meta name="color-scheme"[^>]*>/g)];
+                expect(metas).toHaveLength(1);
+                expect(metas[0]![0]).toContain('content="light dark"');
+                expect(metas[0]!.index).toBeLessThan(head().indexOf('<script'));
+            });
+
+            it('loads theme-init.js, then language-init.js blocking, then every module', () => {
                 const scripts = [...head().matchAll(/<script\b[^>]*>/g)].map(([tag]) => tag);
-                const init = scripts.findIndex((tag) => tag.includes('src="/language-init.js"'));
                 const theme = scripts.findIndex((tag) => tag.includes('src="/theme-init.js"'));
+                const init = scripts.findIndex((tag) => tag.includes('src="/language-init.js"'));
                 const firstModule = scripts.findIndex((tag) => tag.includes('type="module"'));
-                expect(init).toBe(0);
+                expect(theme).toBe(0);
+                expect(init).toBe(1);
+                expect(scripts[theme]).not.toMatch(/\b(defer|async|type)\b/);
                 expect(scripts[init]).not.toMatch(/\b(defer|async|type)\b/);
-                expect(theme).toBeGreaterThan(init);
-                expect(firstModule).toBeGreaterThan(theme);
+                expect(firstModule).toBeGreaterThan(init);
                 // No script outside the head could run before it either.
                 expect(count(built(), '<script')).toBe(scripts.length);
             });
