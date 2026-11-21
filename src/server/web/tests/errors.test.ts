@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { ApiError } from '@capsulebin/core';
+import { ApiError, RESPONSE_TOO_LARGE, TIMEOUT } from '@capsulebin/core';
 
 import de from '../src/i18n/de.json';
 import en from '../src/i18n/en.json';
@@ -52,5 +52,14 @@ describe('API errors', () => {
         expect(apiErrorText(problem(409, 'id_conflict'))).toBe(de['error.generic']);
         expect(apiErrorText(problem(418, null))).toBe(de['error.generic']);
         expect(apiErrorText(new Error('English message'))).toBe(de['error.generic']);
+    });
+
+    it('limits and timeouts read as network errors', async () => {
+        for (const language of ['en', 'de'] as const) {
+            await setPageLanguage(language);
+            const network = (language === 'en' ? en : de)['error.network'];
+            expect(apiErrorText(problem(0, RESPONSE_TOO_LARGE))).toBe(network);
+            expect(apiErrorText(problem(0, TIMEOUT))).toBe(network);
+        }
     });
 });

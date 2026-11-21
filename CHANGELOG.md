@@ -32,6 +32,12 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   100 000 iterations or a password salt other than 16 bytes before asking for the password, so the
   issuer of a link cannot choose a KDF cheap enough to guess the password offline.
 - The web client and the CLI follow no redirect on an API request.
+- A hostile or broken server cannot exhaust the web client or the CLI: every API answer is read
+  with a byte limit (64 KiB, a retrieve up to the largest valid capsule) and cancelled above it,
+  each request has a fixed deadline (30 seconds for describe and delete, 10 minutes for create and
+  retrieve) and an answer that stalls for 30 seconds is abandoned. Both show as a network error;
+  the CLI exits with `7` and the reason `response_too_large` or `timeout`. Clients refuse a
+  ciphertext or capsule above the 10 MiB format limit before decrypting or decoding it.
 - A password of only whitespace is refused instead of silently creating an unprotected capsule.
 - PADMÉ padding, so the ciphertext size reveals little more than the order of magnitude.
 
@@ -67,9 +73,19 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   delete accept at most 4 KiB, reports 32 KiB.
 - Subcommands `serve`, `check`, `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`,
   `reports` and `moderation`.
-- A container image: distroless without OpenSSL, non-root, configured by environment variables,
-  with the database on a `/data` volume and a health check that needs no shell or `curl`. Every
-  change and a weekly run scan it for known vulnerabilities in the base image.
+- Database files are owner-only from the first byte: the server creates a missing database `0600`
+  whatever the umask (its `-wal`/`-shm` follow), and `serve` and `check` warn about existing
+  database files other users can access, without changing them.
+- `backup` writes and verifies its snapshot in a private directory and renames it to the output
+  name, refusing an existing entry there instead of replacing or following it. `restore` verifies
+  and migrates a private copy of the backup's main file before the old database moves aside, undoes
+  every move on a failure, and keeps the old database with its `-wal`/`-shm`; `restore --dry-run`
+  test-migrates that copy and changes nothing. A database missing after an interrupted restore stops
+  the server instead of being replaced by an empty one.
+- A container image: distroless without OpenSSL, non-root, configured by environment variables or a
+  mounted configuration file, with the database on a `/data` volume and a health check that needs
+  no shell or `curl` and nothing but the address it probes. Every change and a weekly run scan it
+  for known vulnerabilities in the base image.
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
 - Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an
@@ -119,6 +135,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`
   or `CAPSULEBIN_ALLOW_HTTP=1`.
 - Stable exit codes, `--json` output, safe retries and confirmation before consuming a burn capsule.
+- `put` stops reading its inputs at the 10 MiB capsule limit (regular files are checked by size
+  before any is read) and ends with exit code `2` without sending anything, instead of reading a
+  large file, an endless pipe or `/dev/zero` into memory.
 - `get` writes capsule content only to files, never to stdout: a single item to the current
   directory, several items to a new directory `capsule-<date>-<id prefix>` (`--here`: the current
   directory, `-o DIR`: `DIR`).

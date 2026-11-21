@@ -129,7 +129,8 @@ Byte 14..    Manifest (UTF-8 JSON) + items (concatenated bytes, no delimiters)
 ```
 
 - Max 16 items, max 10 MiB plaintext per capsule, max 64 KiB manifest.
-- Padded with `0x00` to the PADMÉ length; decoders reject non-zero padding.
+- Padded with `0x00` to the PADMÉ length (capped at 10 MiB); decoders reject non-zero padding and
+  refuse input above `MAX_CAPSULE_BYTES` before scanning it.
 - Reference implementation: `src/core/src/capsule.ts`.
 - Golden vectors: `docs/test-vectors/capsule-v1.json` (checked by `src/core/tests/golden-vectors.test.ts`).
 
@@ -250,6 +251,43 @@ logs one warning per minute at most, without id, text or contact; the throttle i
 (`CeilingWarning` in `api/reports.rs`), not a process-wide static, so instances do not share it;
 `reports list` (text) starts with `open reports: N of M (at most K per capsule)`, `--json` unchanged.
 
+### Database files, backup and restore
+
+- **Private from the first byte.** `db::connect` creates a missing database file itself
+  (`db::create_private_file`: `create_new`, `0600` on Unix) and then opens it with
+  `create_if_missing(false)` (`:memory:` excepted); SQLite gives `-wal`/`-shm` the main file's mode.
+  Never let SQLite or `VACUUM INTO` create a file in a path others can reach, and never fix modes
+  with a later `chmod` (it cannot revoke a descriptor opened in between) or by changing the umask.
+- **Existing files are only reported.** `db::permission_warnings` (database, existing `-wal`/`-shm`
+  with any group/other bit; directory with a group/other write bit): `serve` logs, `check` prints
+  `warning: …` and stays `ok:`/exit 0. Nothing is `chmod`ed.
+- **No fixed scratch names.** The write probe in `DatabaseConfig::validate` is
+  `.capsulebin-write-probe-<16 hex>`, created exclusively and removed; backup and restore stages are
+  `0700` directories `.<output>.backup-<16 hex>` (next to the output) and
+  `.<file>.restore-<16 hex>` (next to the database), all named by `db::random_name` (`getrandom`),
+  stages removed by a drop guard. The shared file helpers live in `db.rs`: `db::parent_or_current`
+  (behind `DatabaseConfig::directory()`, the one source for the database directory, and the backup
+  stage's directory) and `db::sidecars` (`-wal`/`-shm` names) — do not re-implement them.
+- **Backup order** (`backup::create`): `occupied(output)` check → stage → `VACUUM INTO` the stage
+  → `verify_file` → `occupied(output)` re-check → `rename` the snapshot to the output. `rename`
+  follows no symlink but replaces an entry created after the re-check; that window is accepted
+  like restore's (planting there needs write access to the output directory, which could replace
+  the backup anyway) — a hard link would make backups fail on filesystems without hard links.
+- **Restore order** (`backup::restore`): collision check (target, or with `--force`
+  `<file>.pre-restore-<now>` and its sidecars, via `symlink_metadata`) → stage → copy only the main
+  file → `verify_file` on the copy (never on the input: RUSTSEC-2026-0459) → `db::connect` +
+  `db::verify` + `wal_checkpoint(TRUNCATE)` → collision re-check → move database, `-wal`, `-shm`
+  aside → rename the copy into place. The moves use `rename`, which replaces a destination created
+  after the re-check; that window is accepted (stopped server; planting there needs write access to
+  the database directory) — publishing by hard link would make restore need hard links on the
+  database volume. Every move is recorded and undone in reverse on a failure;
+  if undoing fails, `BackupError::RollbackFailed` names what to move by hand. `restore_dry_run`
+  stops after the checkpoint. Failure points are a `#[cfg(test)]` step hook, no production flag.
+- **Restore leftovers.** The names come from `db::pre_restore_prefix` and
+  `db::restore_stage_prefix` only. A missing database next to any `<file>.pre-restore-*` entry or a
+  `.<file>.restore-*` directory is `DbError::RestoreLeftovers` for every command that opens it, not
+  a new empty database; next to an existing database they are ignored.
+
 ### Rate limiting
 
 Per-endpoint-class, per-client-IP token buckets (`requests_per_minute` or `requests_per_hour`,
@@ -301,14 +339,14 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 |---------|---------|
 | `serve`  | Start the server |
 | `check`  | Validate configuration, database, migrations (no port opened) |
-| `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`) |
+| `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`). Dispatched before `Config::validate`: reads only `server.bind` (nothing with `--address`), writes nothing |
 | `migrate`| Apply pending migrations and exit |
 | `prune`  | Apply retention policy once and exit |
 | `token`  | Generate a creation token + the hash to configure (domain-separated) |
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
-| `backup` | `VACUUM INTO` snapshot of the live DB (compacted, 0600, verified, never overwrites) |
-| `restore`| Verify a backup and replace the DB (server stopped; `--force` moves the old DB aside, `--dry-run`) |
+| `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
+| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy only) |
 
 ### Test commands (CI gates)
 ```sh
@@ -344,10 +382,15 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
+| `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; dry-run changes nothing. |
+| `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
+| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema. |
 | `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation. Fails on an edited released migration. |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
 | `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
 | `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`); 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
+| `src/core/tests/limits.test.ts`, `limits.acceptance.test.ts` | Core API client against a fake `fetch`: oversized bodies (every endpoint, error statuses, without/wrong/correct `Content-Length`) cancelled after at most the limit plus one chunk; a capsule at `MAX_CAPSULE_BYTES` still opens; total and idle deadlines with fake timers abort the signal. `limits.acceptance.test.ts`: the edges (an error body of exactly 64 KiB read, one byte more cut off; a create still waiting after 30 s; a describe or error body stalled for 30 s times out). Shared fakes (`endlessBody`, `stallingBody`, `observe`, `sealedPaste`) in `limits-support.ts`. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
@@ -357,7 +400,7 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
 | `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete (retrieved content compared from the written files), incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
-| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, `CAPSULEBIN_PASSWORD` bound to `--server`, link channels (stdin, `--link-file`, `--delete-link-file`), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory, `--here`/`-o`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
+| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, response limits and timeouts (exit `7`, retry counts), `put`'s input limit (before reading, endless stdin, `/dev/zero`), `CAPSULEBIN_PASSWORD` bound to `--server`, link channels (stdin, `--link-file`, `--delete-link-file`), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory, `--here`/`-o`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
 | `src/cli/tests/escape.test.ts` | The escaping functions of `terminal.ts` over every code point and byte in U+0000–U+00FF plus seeded random input: no control character emitted, text without one unchanged. |
 | `src/cli/tests/terminal.test.ts` | The bundled CLI on a real pseudo-terminal (python3 `pty`): hidden password prompt, burn confirmation, Ctrl-C/EOF → exit `8` with no guarded request, `stty` restored after every run. Fails (no skip) without `python3`, with a message naming it (`pty-requirement.test.ts`); skipped on Windows. |
 | `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
@@ -397,9 +440,9 @@ npm run e2e -w @capsulebin/web
 | `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs; the colour stylesheet as a `BrandingFile` (`branding/colors.rs`: `Colors` parsing, built-in palette `TOKENS`, `CONTRAST_PAIRS`, `stylesheet()`, `contrast_warnings()`) |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
-| `src/db.rs` | Database connection pool, migration runner |
+| `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
-| `src/backup.rs` | Backup (`VACUUM INTO`), backup verification, restore |
+| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with rollback and `restore_dry_run` (tests in `backup/tests.rs`) |
 | `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |
@@ -431,10 +474,10 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/crypto.ts` | Key derivation, encryption/decryption (Web Crypto) |
-| `src/capsule.ts` | Capsule file format encode/decode |
+| `src/capsule.ts` | Capsule file format encode/decode; `decode` refuses input above `MAX_CAPSULE_BYTES` first |
 | `src/paste.ts` | High-level create/retrieve/delete operations |
-| `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`); follows no redirect (`ApiError` code `redirect_refused`, exported as `REDIRECT_REFUSED`, `Location` not passed on); `MalformedHeaderError` for a describe header the parser refuses |
-| `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI) |
+| `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`); follows no redirect (`ApiError` code `redirect_refused`, exported as `REDIRECT_REFUSED`, `Location` not passed on); `MalformedHeaderError` for a describe header the parser refuses; every body (errors too) read as a counted stream, cancelled above 64 KiB, a successful retrieve above base64url of `MAX_CIPHERTEXT_BYTES` (`MAX_CAPSULE_BYTES` + 16) + 1 KiB → code `response_too_large` (`RESPONSE_TOO_LARGE`); total deadline 30 s describe/delete, 10 min create/retrieve, 30 s idle per body → code `timeout` (`TIMEOUT`); both status `0`, fixed, not configurable |
+| `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI); a ciphertext above `MAX_CIPHERTEXT_BYTES` is `invalid_capsule` before decrypting |
 | `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in; `hasQueryOrFragment()`: a base URL with a `?` or `#` |
 | `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
 | `src/public_header.ts` | Protocol constants (incl. `MIN_PBKDF2_ITERATIONS`, `MAX_PBKDF2_ITERATIONS`, `PASSWORD_SALT_BYTES`), public header type, its parser (password parameter bounds) and canonical serialization |
@@ -482,13 +525,13 @@ npm run e2e -w @capsulebin/web
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
 | `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code; `get --server` (else a usable `CAPSULEBIN_SERVER`) is the anchor for `CAPSULEBIN_PASSWORD`; `get --here` (refused together with `-o`); error output through `escapeDiagnostic`/`jsonLine` |
-| `src/commands/{put,get,delete}.ts` | The three commands; `put --delete-link-file` (exclusive `0600` file written before the upload, removed on failure); `get` never writes item content to stdout: a single item goes to the current directory, several to a new `0700` directory `capsule-<local date>-<id prefix>` (non-recursive `mkdir`, free name ` (n)` if taken), `--here` the current directory, `-o DIR` created `0700` with parents; each file opened `wx` with mode `0600` (no temp file, `link` or `rename`), on `EEXIST` the next free name `name (n).ext`, at most 1000 attempts (`no_free_name`); a failed write removes the files and the empty new directory of this run; `safeFileName` keeps the last path component and replaces C0, DEL and C1 |
+| `src/commands/{put,get,delete}.ts` | The three commands; `put` sums regular file sizes and refuses above `MAX_CAPSULE_BYTES` before reading, then reads all inputs (files as streams, stdin) within one shared budget, exit `2` (`the input exceeds the capsule limit of 10485760 bytes`); `put` retries `timeout`, never `response_too_large`; `put --delete-link-file` (exclusive `0600` file written before the upload, removed on failure); `get` never writes item content to stdout: a single item goes to the current directory, several to a new `0700` directory `capsule-<local date>-<id prefix>` (non-recursive `mkdir`, free name ` (n)` if taken), `--here` the current directory, `-o DIR` created `0700` with parents; each file opened `wx` with mode `0600` (no temp file, `link` or `rename`), on `EEXIST` the next free name `name (n).ext`, at most 1000 attempts (`no_free_name`); a failed write removes the files and the empty new directory of this run; `safeFileName` keeps the last path component and replaces C0, DEL and C1 |
 | `src/terminal.ts` | `escapeDiagnostic` (every control character incl. `\n`, for stderr: applied centrally in `run()`'s error output, to `created …`/`wrote …` lines, the `secrets.ts` mismatch notice and `main.ts`'s last-resort message), `jsonLine` (every `--json` output; DEL/C1 as `\u00NN`). Backslashes are not doubled |
-| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping (core's `REDIRECT_REFUSED` → `7`, checked before the status); `promptStopped()`: Ctrl-C (`interrupted`) or EOF (`input_closed`) at a prompt → `8` |
+| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping (core's `REDIRECT_REFUSED`, `RESPONSE_TOO_LARGE`, `TIMEOUT` → `7` with their own reason, checked before the status); `promptStopped()`: Ctrl-C (`interrupted`) or EOF (`input_closed`) at a prompt → `8` |
 | `src/items.ts` | Presentation/language inference for input files |
 | `src/secrets.ts` | Password and creation-token sources (file, env, prompt — never argv); `put` refuses a whitespace-only password; `CAPSULEBIN_PASSWORD` for `get` only when the link's base equals the anchor; `readLink`: positional link, `-` (stdin) or `--link-file` |
 | `src/transport.ts` | HTTPS-or-loopback policy (`localhost`, `127.0.0.0/8`, `[::1]`; else `--allow-http`/`CAPSULEBIN_ALLOW_HTTP=1`), `normalizeBase()` for comparing server bases |
-| `src/io.ts` | Process I/O behind an interface, replaced in tests; `terminalPrompt` gives readline a real `Writable` (muted for hidden input), restores the terminal on answer, Ctrl-C and EOF |
+| `src/io.ts` | Process I/O behind an interface, replaced in tests; `readStdin(limit?)` and `readBounded()` stop after `limit + 1` bytes (the stdin link of `readLink` is read unbounded); `terminalPrompt` gives readline a real `Writable` (muted for hidden input), restores the terminal on answer, Ctrl-C and EOF |
 | `tests/cli.test.ts` | End-to-end against the in-memory API in `src/core/tests/fake-server.ts` |
 | `tests/terminal.test.ts`, `tests/pty.ts`, `tests/pty-driver.py` | The bundled CLI (built with `scripts.build` from `package.json`, into a temp dir) in a python3 `pty` pseudo-terminal against the fake API on `127.0.0.1:0`; input is sent only after the expected prompt text appeared; without python3 on PATH `requirePython()` in `pty.ts` throws a message naming it (checked by `tests/pty-requirement.test.ts`) |
 
@@ -503,7 +546,7 @@ including the acceptance run against a release binary. Dependency advisories are
 `Rust`, `TypeScript` (on the Node.js version in `.node-version`), `TypeScript (Node 26)` (the tests
 on the newest LTS), `Acceptance (release binary)`, `Browser (Chromium, Firefox, WebKit)` (the
 Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`,
-scans the image with Grype and waits for the container to report healthy), `Support windows` and
+scans the image with Grype and waits until both an environment-configured container and one configured only by a read-only mounted file report healthy), `Support windows` and
 `Dependency audit` — each a required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
 and the base image digests.
 
@@ -565,6 +608,10 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
   token or marker must stay literal (`fill_tokens` in `api/assets.rs` never rescans an inserted
   value; tokens filled one `replace` after another would expand it). Never accept SVG or other
   active documents from the operator (ADR-017).
+- **Database files and operator scratch entries are created by CapsuleBin, exclusively and private**
+  — never leave creation to SQLite or `VACUUM INTO` in a reachable path, never use a fixed scratch
+  name, never verify or open a restore input in place (see [Database files, backup and
+  restore](#database-files-backup-and-restore)).
 - **Report text is personal data** — never log it; it has its own retention (`abuse.report_retention`).
 - **The public header is canonical JSON** — field order and whitespace are fixed because it's
   AES-GCM AAD. Changing serialization breaks all existing capsules.

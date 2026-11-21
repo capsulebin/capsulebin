@@ -216,6 +216,21 @@ describe('Capsule.decode', () => {
         expect(Capsule.decode(encoded.subarray(0, end)).items).toHaveLength(1);
     });
 
+    it('refuses input above the format limit', () => {
+        const encoded = new Capsule([textItem()]).encode();
+        const atLimit = new Uint8Array(MAX_CAPSULE_BYTES);
+        atLimit.set(encoded);
+        expect(Capsule.decode(atLimit).items).toHaveLength(1);
+
+        const above = new Uint8Array(MAX_CAPSULE_BYTES + 1);
+        above.set(encoded);
+        expect(() => Capsule.decode(above)).toThrow(CapsuleError);
+        expect(() => Capsule.decode(above)).toThrow(`${MAX_CAPSULE_BYTES} byte limit`);
+        // Refused before the padding is scanned: a non-zero byte in it changes nothing.
+        above[above.length - 1] = 1;
+        expect(() => Capsule.decode(above)).toThrow(`${MAX_CAPSULE_BYTES} byte limit`);
+    });
+
     it('rejects non-zero bytes after the last item', () => {
         const encoded = new Capsule([textItem()]).encode().slice();
         expect(encoded.at(-1)).toBe(0);

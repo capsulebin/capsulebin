@@ -95,7 +95,16 @@ MemoryDenyWriteExecute=true
 WantedBy=multi-user.target
 ```
 
-`UMask=0077` keeps the database and its `-wal`/`-shm` readable by the service user only.
+CapsuleBin creates a missing database file itself, exclusively and with mode `0600`, whatever the
+umask; SQLite gives its `-wal` and `-shm` the same mode. Backups are written `0600` as well (see
+[Backups](#backups)). `UMask=0077` is defence in depth for anything else the service writes.
+
+Existing files are never changed. `serve` (in its log) and `check` (as `warning: …` on stderr,
+still `ok:` and exit 0) warn about a database, `-wal` or `-shm` that grants any permission to
+group or others, and about a database directory that group or others can write. Each warning names
+the path and its octal mode; fix it with `chmod` if the access is not intended. The startup check
+that the database directory is writable creates and removes a file with a random name
+(`.capsulebin-write-probe-<hex>`) and never opens an entry that already exists.
 
 ### Container
 
@@ -104,7 +113,7 @@ Releases publish `ghcr.io/capsulebin/capsulebin:<version>` (also tagged `<major>
 [README](../README.md#installation). The `Dockerfile` at the repository root builds the same image
 locally: it builds the web client, embeds it into the binary and copies the result into a
 distroless image without OpenSSL — no shell, no package manager, user `65532`. It is configured through
-environment variables only and keeps the database on the `/data` volume.
+environment variables or a mounted configuration file and keeps the database on the `/data` volume.
 
 ```sh
 docker pull ghcr.io/capsulebin/capsulebin:1.0.0   # or: docker build -t capsulebin .
@@ -131,14 +140,28 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
   with a published port that is usually the bridge gateway, not `127.0.0.1`. Check the peer
   address in the access log once and narrow the range to it.
 - The image's health check runs `capsulebin healthcheck`, which probes `/health/ready` from inside
-  the container (see [Health and logs](#health-and-logs)). Podman drops `HEALTHCHECK` from images
+  the container (see [Health and logs](#health-and-logs)). It runs without `--config` and needs only
+  `CAPSULEBIN__SERVER__BIND`, which the image sets and which overrides a `bind` in a mounted file,
+  so it works for a container configured by a file as well. Podman drops `HEALTHCHECK` from images
   in its default OCI format; build with `podman build --format docker` to keep it.
 - Logs go to stderr without colour codes, so `docker logs` shows plain lines.
 - Operator commands run in the container: `docker exec capsulebin capsulebin reports list`.
   Backups go to the volume, e.g. `docker exec capsulebin capsulebin backup --output
   /data/backup-2026-11-18.db`; copy them off the host from there.
-- Restore with the container stopped, from a one-off container on the same volume:
-  `docker run --rm -v capsulebin-data:/data capsulebin restore --input /data/backup-….db --force`.
+- Restore with the container stopped, from a one-off container on the same volume. `restore`
+  validates the configuration like `serve`, so give it the same settings — at least
+  `CAPSULEBIN__SERVER__PUBLIC_URL`, or the mounted file with `--config` (see [Restore](#restore)):
+
+  ```sh
+  docker stop capsulebin
+  docker run --rm -v capsulebin-data:/data \
+    -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
+    capsulebin restore --input /data/backup-2026-11-18.db --force
+  # with a configuration file:
+  # docker run --rm -v capsulebin-data:/data -v ./capsulebin.toml:/etc/capsulebin/capsulebin.toml:ro \
+  #   capsulebin --config /etc/capsulebin/capsulebin.toml restore --input /data/backup-2026-11-18.db --force
+  docker start capsulebin
+  ```
 
 ### Reverse proxy
 
@@ -343,7 +366,10 @@ See [branding.md](branding.md) for the rules in detail.
   non-zero unless it answers `200` — for container health checks, where there is no `curl`.
   `--live` probes `/health/live` instead; use that where an unhealthy container gets restarted,
   because a database that is briefly unavailable is a reason to wait, not to restart. `--address`
-  overrides the address for a server started with `serve --bind`.
+  overrides the address for a server started with `serve --bind`; no configuration is read then.
+  Otherwise the configuration (`--config` file and environment) is loaded only for `server.bind`:
+  the command validates nothing else (no `public_url` needed), never writes to the database
+  directory and opens neither the database nor a port.
 - Logs go to stderr. `CAPSULEBIN_LOG` sets the filter (default `info,tower_http=info,sqlx=warn`).
   The access log contains method, path, status and latency — never paste ids, bodies, tokens or
   report text. The path is never the one the client sent: it is the template of the matched route
@@ -373,10 +399,17 @@ See [branding.md](branding.md) for the rules in detail.
 capsulebin --config /etc/capsulebin.toml backup --output /backups/capsulebin-$(date +%F).db
 ```
 
-Safe while serving. The file is consistent, compacted and `0600`. Store backups as carefully as the
-database: they contain ciphertext, verifiers and abuse reports with contact details. Rotate them —
-an old backup is where deleted capsules survive the longest. Never copy the live database file
-directly.
+Safe while serving. The file is consistent, compacted and `0600`. It is written and verified inside
+a new private directory (`.<name>.backup-<random hex>`, mode `0700`) next to the output, then
+renamed to the output name; the directory is removed afterwards, also on failure. An existing
+entry at the output name — a file, a directory or a symlink, dangling or not — is refused, checked
+before the snapshot and again right before the rename. The rename never follows a symlink; only an
+entry created in the output directory between that last check and the rename would be replaced,
+which needs write access to that directory (and whoever has it could replace the backup anyway).
+The rename stays within the output's directory, so any filesystem works as a destination. Store
+backups as carefully as the database: they contain ciphertext, verifiers and abuse reports with
+contact details. Rotate them — an old backup is where deleted capsules survive the longest. Never
+copy the live database file directly.
 
 ### Restore
 
@@ -387,9 +420,44 @@ capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-202
 systemctl start capsulebin
 ```
 
-`--force` moves the current database and its `-wal`/`-shm` to `<file>.pre-restore-<timestamp>`;
-delete that once the restored instance is confirmed working. Restore only backups you made
-yourself.
+The server must be stopped. `restore` never opens the input file with SQLite and never touches it:
+
+1. It refuses if a name it would write is taken: without `--force` an existing database, with
+   `--force` `<file>.pre-restore-<timestamp>` or its `-wal`/`-shm`.
+2. It copies only the backup's main file (never a `-wal` or `-shm` next to it) into a new private
+   directory `.<file>.restore-<random hex>` (`0700`, copy `0600`) next to the database, so the
+   database directory needs room for one more copy.
+3. It verifies integrity, CapsuleBin schema and that the schema is not newer than the binary on
+   that copy, applies pending migrations to it like `serve` would, and checkpoints it so it is one
+   self-contained file.
+4. Only then, with `--force`, the current database and its `-wal`/`-shm` move to
+   `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
+
+A failure at any step undoes the moves made so far and removes the private directory: the
+configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored
+one, never neither. If moving a file back fails as well, the error lists what to move where by hand.
+Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed working.
+
+`--dry-run` runs steps 1 to 3 on a private copy, prints the backup's contents and the schema
+version the migration reached, then removes the copy; nothing else is created or changed. Without
+`--force` it also says when the restore would need `--force`.
+
+Restore only backups you made yourself: the bundled SQLite treats a database as trusted input, and
+a crafted file can trigger
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459) (exception in `deny.toml`).
+Verifying and migrating only a private copy of the main file keeps a `-wal` next to the backup from
+reaching SQLite, but does not make an untrusted main file safe. The exception goes once SQLx allows
+a fixed SQLite.
+
+**Interrupted restore.** If the restore process is killed or the machine loses power during the
+cutover, the database file may be missing while `<file>.pre-restore-*` or a
+`.<file>.restore-*` directory remains. Then `serve`, `check` and every other command that opens the
+database refuse to start and name those entries instead of creating an empty database. Run the
+restore again (it works next to an older `<file>.pre-restore-*` and leaves it alone), or move the
+old database (and its `-wal`/`-shm`) back to the configured path. Without a database file and
+without such entries, the first start creates a new database as usual; next to an existing
+database these entries block nothing. A `.<file>.restore-*` or `.<name>.backup-*` directory left by
+a killed run is not removed automatically; delete it once no restore or backup is running.
 
 ### Upgrades
 

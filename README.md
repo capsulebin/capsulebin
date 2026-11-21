@@ -227,8 +227,18 @@ node src/cli/dist/cli.js delete --link-file notes.link
   `/de/` language prefix of the pages. It also refuses one with a query or fragment, even an
   empty one (`https://example.org/team?`, exit code `2`): the API path is appended to the URL.
   The server refuses the same addresses as `public_url`.
+- **`put` stops at the capsule limit.** All inputs together, files and stdin, may hold at most
+  10 MiB (10485760 bytes). Regular files whose sizes sum above that are refused before any of them
+  is read; stdin, pipes, special files and growing files are read only up to the first byte beyond
+  the limit. Either way `put` ends with exit code `2`, naming the limit, and sends nothing.
+- **A server cannot hold the client forever.** Each request has a deadline: 30 seconds for
+  describing and deleting, 10 minutes for creating and retrieving; an answer that delivers no data
+  for 30 seconds is abandoned. The deadlines are fixed. An answer larger than any valid one (a
+  retrieve above the largest capsule, anything else above 64 KiB) is cut off. Both end with exit
+  code `7`, reason `timeout` or `response_too_large`. A burn capsule whose retrieve times out after
+  the server answered is consumed.
 - **Retries are safe.** `put` seals once and re-sends the identical request on network errors,
-  `429` and `5xx` (never after a redirect); the server answers a replay like the original
+  timeouts, `429` and `5xx` (never after a redirect or an oversized answer); the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.
 - **Burn capsules are not consumed by accident.** `get` asks first, and refuses
   non-interactively unless `--yes` is given. Once retrieved, an existing entry does not stop the
@@ -241,12 +251,12 @@ node src/cli/dist/cli.js delete --link-file notes.link
 | --- | --- |
 | `serve` | Start the server |
 | `check` | Verify configuration, database and migrations without opening a port |
-| `healthcheck` | Probe the running server's `/health/ready` (`--live`: `/health/live`); exit 0 if healthy. For container health checks |
+| `healthcheck` | Probe the running server's `/health/ready` (`--live`: `/health/live`); exit 0 if healthy. Needs only the address (`server.bind` or `--address`), validates nothing else. For container health checks |
 | `migrate` | Apply pending migrations and exit |
 | `prune` | Apply the retention policy (capsules, closed reports, moderation records) once and exit |
 | `token` | Generate a creation token and the hash to configure for it |
 | `backup --output FILE` | Consistent, compacted snapshot of the live database (owner-only file) |
-| `restore --input FILE` | Verify a backup and put it in place of the database (server stopped; `--force`, `--dry-run`) |
+| `restore --input FILE` | Verify and migrate a private copy of a backup, then put it in place of the database (server stopped; `--force` keeps the old one aside, `--dry-run` changes nothing) |
 | `reports list\|show\|review\|close` | Work through the abuse report queue |
 | `moderation disable\|delete\|restore\|status` | Block, remove or restore a capsule by id — without decrypting it |
 
@@ -257,20 +267,28 @@ not match it.
 
 ```sh
 capsulebin backup --output /backups/capsulebin-$(date +%F).db   # while the server runs
-capsulebin restore --input /backups/capsulebin-2026-11-17.db --dry-run   # verify only
+capsulebin restore --input /backups/capsulebin-2026-11-17.db --dry-run   # verify, change nothing
 capsulebin restore --input /backups/capsulebin-2026-11-17.db --force     # server stopped
 ```
 
 `backup` uses SQLite's `VACUUM INTO`: a consistent snapshot of the live database without its
 write-ahead log, compacted so that pages freed by deleted or burned capsules are not copied. The
-file is created with owner-only permissions and verified (integrity and schema) after writing; an
-existing file is never overwritten.
+snapshot is written owner-only into a private directory next to the output, verified (integrity and
+schema) there and only then renamed to the output name; an existing entry there — a file or a
+symlink — is refused (checked again right before the rename) and never followed.
 
-`restore` verifies the backup before touching anything, uses only its main file — never a `-wal`
-next to it — and refuses to replace an existing database unless `--force` is given. Even then the
-old database is moved to `<file>.pre-restore-<timestamp>` together with its `-wal`/`-shm` (which may
-hold committed data), never deleted. Opening the restored file applies the migrations an older
-backup lacks.
+`restore` copies only the backup's main file — never a `-wal` next to it — into a private directory
+next to the database, verifies and migrates that copy, and only then swaps it in. It refuses to
+replace an existing database unless `--force` is given; even then the old database is moved to
+`<file>.pre-restore-<timestamp>` together with its `-wal`/`-shm` (which may hold committed data),
+never deleted. A failure on the way puts everything back: the configured path holds either the old
+or the restored database, never neither. If a restore is killed halfway and the database is
+missing, the server refuses to start rather than create an empty one. `--dry-run` verifies and
+test-migrates a private copy and changes nothing. Details are in the
+[operations guide](docs/operations.md#restore).
+
+The server creates its database files owner-only whatever the umask, and `serve` and `check` warn
+about database files other local users can access, without changing them.
 
 A backup contains ciphertext, verifiers and abuse reports with contact details: store it as
 carefully as the database. Deleted capsules can survive in older backups — burn and delete only
@@ -505,7 +523,9 @@ are worth repeating here:
   as trusted input. Restoring a database or `-wal` file from an untrusted source is unsupported —
   the bundled SQLite is currently affected by
   [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459), which only such a file can
-  trigger (see the exception in `deny.toml`).
+  trigger (see the exception in `deny.toml`). Until that is fixed, `restore` verifies and migrates
+  only a private copy of the backup's main file, so a `-wal` next to it never reaches SQLite; the
+  main file itself must still be your own.
 
 ## Contributing
 
