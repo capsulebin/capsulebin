@@ -32,6 +32,7 @@ use axum::{
 };
 
 use crate::AppState;
+use crate::api::access_log::ServedAsset;
 use crate::branding::{Branding, Tagline};
 use crate::config::{KNOWN_LANGUAGES, language_prefix};
 use crate::legal::{LegalPages, Which, escape};
@@ -457,6 +458,8 @@ async fn static_file(State(state): State<AppState>, uri: Uri) -> Response {
                     HeaderValue::from_static("public, max-age=31536000, immutable"),
                 );
             }
+            // Only a file that exists in the asset source is named in the log.
+            response.extensions_mut().insert(ServedAsset(format!("/{path}")));
             response
         }
         // Unknown path: generic, with no hint about what does exist.

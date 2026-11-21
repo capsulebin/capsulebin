@@ -139,12 +139,11 @@ the other theme's values; the `data-theme` blocks (the manual toggle) are more s
 over the system preference in both directions. Without colours every `/branding/…css` path is the
 generic `404`.
 
-**Access log:** a branding file's URL — `/branding/` followed directly by 16 lowercase hex digits
-and `.png`, `.webp`, `.ico` or `.css` — is logged verbatim (it is a content hash, useful when
-diagnosing caching). Any other segment below `/branding/` is redacted as on every other path: to
-`{id}`, unless it has the shape of a build asset name (`colors.css`, `logo.png` stay verbatim, as
-anywhere in a path). `webp` is known only for branding file names, so it stays redacted everywhere
-else (`/p/<id>.webp` → `/p/{id}`).
+**Access log:** each configured branding file and the colour stylesheet is a route of its own,
+registered under its URL, so the access log records that URL as the route's template, verbatim
+(`/branding/<16 hex>.<ext>`: a content hash, useful when diagnosing caching). Every other path
+below `/branding/` answers the generic `404` and is logged as `{unmatched}`, like any request
+that matched no route; nothing from the request reaches the log.
 
 `/favicon.svg` is part of the web build (`public/favicon.svg`, the CapsuleBin symbol in white on a
 rounded `#0f766e` tile, fixed colours) and served like any static file as `image/svg+xml`. A
@@ -264,7 +263,7 @@ It links no colour stylesheet and shows the built-in colours only.
 | `src/server/tests/branding.rs` | `/branding/` serving (both asset modes, read once at startup, same file twice, generic `404`), and every page in `en`/`de` from its own test shells via `server.asset_dir`: default, escaped name, token-like name, logo, `hide_name`, all keys set, favicon alone; tagline for every language, overridden by `[branding.de]`, only `[branding.de]`, empty, escaped and literal; the attribution with only the project's name linked |
 | `src/server/tests/branding_colors.rs` | The stylesheet served from memory in both asset modes; without colours every `/branding/…css` the generic `404`; every page in `en`/`de` (legal pages included) with exactly one link last in the head and otherwise unchanged, without colours no link |
 | `src/server/tests/branding_acceptance.rs` | The real binary: every unknown key, refused value (colours from file and environment included) and every unusable or unreadable file stops `check` and `serve` with a non-zero exit code and a message naming the key (no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr with `ok:` and exit 0, and in the `WARN` log of a started `serve` |
-| `src/server/src/api/access_log.rs` (unit) | Branding file URLs verbatim for every extension; any other segment below `/branding/` under the general rules (redacted, asset-shaped names such as `colors.css` kept); `webp` elsewhere redacted |
+| `src/server/tests/logging.rs` | A configured branding file logged by its literal URL; a branding-shaped path on an instance without that file logged as `{unmatched}` |
 | `src/server/web/tests/contrast.test.ts` | Every pair of `contrast-pairs.json` on all four palette blocks of `tokens.css` |
 | `src/server/web/tests/shells.test.ts` | No literal `CapsuleBin` in the templates, the attribution as the last footer item with only the project's name linked (the only link without the prefix token), `{project}` turned into the link after escaping and refused inside a comment, the tagline markers around the create page's slogan and nowhere else |
 | `src/server/web/tests/dev-server.acceptance.test.ts` | The dev server leaves no token unfilled and the tagline region in place |
@@ -400,9 +399,11 @@ real shells are covered by the shell tests and the browser tests.
 - **Warnings only from `serve` and `check`** — the two commands where an operator looks at the
   configuration; `check` writes them to stderr so its stdout stays one `ok:` line.
   (20261120-branding-colours)
-- **Branding file names logged verbatim only directly below `/branding/`** — a strict shape rule
-  (16 lowercase hex + a branding extension) instead of `webp` as a general asset extension, which
-  would have left `/p/<id>.webp` unredacted. (20261120-branding-colours)
+- **Branding file URLs reach the access log as route templates** — the log records only the
+  template of the matched route, and branding routes are registered under their configured,
+  content-hashed URL, so they stay visible without any filename rule. The earlier shape rule
+  (16 lowercase hex + a branding extension, 20261120-branding-colours) is gone with the path
+  redaction it extended. (20261121-limiter-log-bounds)
 
 ## Limits and open points
 
@@ -428,3 +429,5 @@ real shells are covered by the shell tests and the browser tests.
 - 2026-11-20 20261120-branding-colours: `[branding.colors.light]`/`[branding.colors.dark]` with a
   generated stylesheet under `/branding/` linked from every page; contrast warnings in `serve` and
   `check`; branding file URLs logged verbatim in the access log.
+- 2026-11-21 20261121-limiter-log-bounds: branding URLs reach the access log as route templates;
+  any other `/branding/` path is logged as `{unmatched}`.
