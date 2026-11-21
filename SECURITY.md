@@ -15,7 +15,6 @@ older releases do not receive backports.
 | Version | Supported |
 | --- | --- |
 | 1.x (latest release) | yes |
-| < 1.0 | no |
 
 ## What counts as a vulnerability
 

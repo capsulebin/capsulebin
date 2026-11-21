@@ -13,12 +13,12 @@ metadata.
 
 ## Status
 
-**1.0** — the first stable release. The protocol (envelope, capsule file format, crypto profile and
-HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by every later 1.x release, and
-breaking changes need a new version in the path or format
+**1.0** — the first stable version, not yet released. The protocol (envelope, capsule file format,
+crypto profile and HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by every later
+1.x release, and breaking changes need a new version in the path or format
 ([ADR-003](docs/adr/ADR-003-protocol-versioning.md), [crypto profile](docs/crypto-profile.md),
-[capsule file format](docs/capsule-file-format.md)).
-What changed between releases is in the [changelog](CHANGELOG.md).
+[capsule file format](docs/capsule-file-format.md)). What changed between releases is in the
+[changelog](CHANGELOG.md).
 
 What 1.0 contains:
 
@@ -32,6 +32,11 @@ What 1.0 contains:
   scheduled purge, rate limiting, backup and restore, health endpoints.
 - **Abuse handling:** a report form and an operator CLI for the report queue and moderation, without
   the operator ever decrypting a capsule.
+- **Interface languages:** English and German; the default language without a path prefix, the
+  other under its prefix (`/de/`).
+- **Legal pages and branding:** imprint, privacy notice and terms (built-in texts in both
+  languages), and per instance a name, tagline, logo, favicon and theme colours; every page says
+  "Powered by CapsuleBin".
 
 ## Installation
 
@@ -39,7 +44,7 @@ Every release on the [releases page](https://github.com/capsulebin/capsulebin/re
 
 | File | Contents |
 | --- | --- |
-| `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, changelog and example configuration |
+| `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, README, changelog and example configuration |
 | `capsulebin-cli-<version>.mjs` | The command line client as one file for Node.js 24 or newer |
 | `capsulebin-<version>-source.spdx.json` | SBOM of the locked Rust and npm dependencies |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Checksums of all files and their cosign signature |
@@ -75,7 +80,8 @@ To build from source instead, see [Development](#development).
 | `src/core` | `@capsulebin/core` — capsule format, crypto, API client; no DOM, no build step |
 | `migrations` | SQLite schema, embedded into the binary |
 | `docs/adr` | Architecture decisions and their rationale |
-| `docs` | Language-neutral capsule format and crypto profile specs, plus `test-vectors` |
+| `docs` | Language-neutral capsule format and crypto profile specs, threat model, operations handbook, privacy notice, interface languages, branding, plus `test-vectors` |
+| `scripts` | `smoke.sh` (acceptance test of a release binary), `reproducible-web.sh`, `release-notes.sh`, `support-windows.mjs` |
 
 `docs/test-vectors` holds the fixtures that keep implementations of the capsule format in step,
 including negative vectors for every rejection rule. The format is specified in
@@ -162,12 +168,12 @@ node src/cli/dist/cli.js delete --link-file notes.link
   file or the variable is used exactly as given, surrounding spaces included; one made only of
   whitespace makes `put` stop with exit code `2` instead of creating an unprotected capsule.
 - **Links can stay off the command line.** A link passed as an argument is visible to other local
-  users (`ps`) and lands in the shell history; it still works, for compatibility. `get` and
-  `delete` also take `-` (the first line of stdin) or `--link-file PATH` (the first line of the
-  file). `put --delete-link-file PATH` writes the management link to a new file with mode `0600`
-  instead of stderr (and the JSON output names the file as `delete_link_file` instead of
-  `delete_url`); an existing file or symlink is refused before anything is uploaded, and the file
-  is removed again if the create fails.
+  users (`ps`) and lands in the shell history; it works, but the alternatives below keep it private.
+  `get` and `delete` also take `-` (the first line of stdin) or `--link-file PATH` (the first line
+  of the file). `put --delete-link-file PATH` writes the management link to a new file with mode
+  `0600` instead of stderr (and the JSON output names the file as `delete_link_file` instead of
+  `delete_url`); an existing file or symlink is refused before anything is uploaded, and the file is
+  removed again if the create fails.
 - **`CAPSULEBIN_PASSWORD` only goes to the server you name.** `get` uses it only when the link's
   server equals `get --server` (else `CAPSULEBIN_SERVER`): same scheme, host and port and the
   same path, compared without trailing slashes and the language segment. A given `get --server`
@@ -319,6 +325,10 @@ A moderated capsule answers exactly like an unknown one — there is no "removed
 reports and moderation records are deleted after `abuse.report_retention` (default 90 days); open
 ones stay until they are closed. Report text is personal data and is never logged.
 
+Open reports are capped per capsule (`abuse.max_open_reports_per_paste`, default 10) and per
+instance (`abuse.max_open_reports`, default 1000). A report above a cap gets the same `202` and is
+not stored; `reports list` starts with the current count and both caps.
+
 ## Configuration
 
 `capsulebin.example.toml` documents every setting with its default. Two properties are worth
@@ -342,6 +352,20 @@ CapsuleBin actually does with the configured retention and limits. Each can be r
 text, a file or a link. `[legal.<lang>.*]` gives a section in another language; without one, that
 language's pages show the default language's section, marked with its `lang`. See
 [Legal pages](docs/operations.md#legal-pages) in the operations handbook.
+
+### Interface languages
+
+Every page exists in English and German. `[i18n] default_language` (default `en`) chooses the
+language served without a path prefix; the other is served under its prefix (`/de/…`). Share and
+management links carry no prefix; the browser's stored or preferred language is applied by the
+page itself. See [docs/i18n.md](docs/i18n.md).
+
+### Branding
+
+`[branding]` sets the instance's name, tagline (per language), logo, dark-mode logo, favicon
+(PNG/WebP/ICO, no SVG) and light and dark theme colours. The footer attribution "Powered by
+CapsuleBin", with "CapsuleBin" linked to `source_url`, cannot be switched off. See
+[docs/branding.md](docs/branding.md).
 
 ### Retention
 
@@ -424,13 +448,18 @@ Versioned in the path. The capsule and cryptography versions are independent of 
 | `GET` | `/api/v1/reports` | Report policy: enabled, contact, reason codes, limits |
 | `GET` | `/health/live` | The process is alive |
 | `GET` | `/health/ready` | Configuration, database and schema are usable |
+| `GET` | `/branding/<hash>.<ext>` | A configured logo, favicon or the generated colour stylesheet; immutable caching |
+
+The pages (`/`, `/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms`) exist in
+the default language without a prefix and under `/<lang>/` for every other language.
 
 Errors are `application/problem+json` with a stable `code` field and a request id that is also
 echoed in `X-Request-Id`. Clients branch on `code`, never on `title`.
 
-An identical re-submission of a create request (same id, verifiers, header, ciphertext and
-options) is answered with the original `201`, so clients can retry safely
-([ADR-011](docs/adr/ADR-011-idempotent-create.md)); any other reuse of an id is `409`.
+An identical re-submission of a create request (same id, verifiers, header, ciphertext and options)
+is answered with the original `201`, so clients can retry safely
+([ADR-011](docs/adr/ADR-011-idempotent-create.md)); any other reuse of an id, including one of a
+deleted, burned or purged capsule, is `409`.
 
 Unknown, expired, disabled, deleted, consumed and wrong-capability all answer **identically**. Every
 endpoint that takes a paste id requires a capability derived from the link, so a caller who knows
@@ -463,7 +492,8 @@ every response including the 404. With `CAPSULEBIN_CLI` set (as in CI) it also d
 CLI through `put`, `get` and `delete` against the binary. The browser tests in
 `src/server/web/e2e` (Playwright) run the embedded web client against the same binary in Chromium,
 Firefox and WebKit: create, open with a password, every item kind, delete, burn and report, plus
-hostile Markdown. Any CSP or Trusted Types violation, page error or executed XSS canary fails a
+hostile Markdown, the legal pages, the German interface and language switch, and a branded
+instance. Any CSP or Trusted Types violation, page error or executed XSS canary fails a
 test — jsdom, which the unit tests use, enforces neither.
 
 ```sh
@@ -488,15 +518,15 @@ Several test suites are worth knowing about because they encode rules rather tha
 - `src/server/tests/logging.rs` captures real log output across a request cycle and
   fails if a payload, a capability secret, a token or a full paste id appears in it. Logs outlive
   pastes, so this is a security test.
-- `src/core/tests/properties.test.ts` and `src/server/tests/properties.rs` are property-based
-  tests (fast-check, proptest) for every parser that reads untrusted input — the capsule decoder,
-  the public header, base64url, links, paste ids, verifiers, units, report validation and the
-  access-log redaction. Arbitrary input may only fail in the documented way, accepted values
-  round-trip, and every value has exactly one accepted spelling.
+- `src/core/tests/properties.test.ts` and `src/server/tests/properties.rs` are property-based tests
+  (fast-check, proptest) for every parser that reads untrusted input — the capsule decoder, the
+  public header, base64url, links, paste ids, verifiers, units and report validation. Arbitrary
+  input may only fail in the documented way, accepted values round-trip, and every value has exactly
+  one accepted spelling.
 - `src/server/tests/concurrency.rs` races requests through the whole HTTP stack: 32 concurrent
-  retrievals of a burn paste yield exactly one handout, normal retrievals are all counted, a delete
-  racing retrievals leaves a clean tombstone. `smoke.sh` repeats the burn race with 20 real
-  connections against the release binary.
+  retrievals of a burn paste yield exactly one handout, concurrent retrievals of a normal paste all
+  succeed and set the last-retrieval timestamp, a delete racing retrievals leaves a clean tombstone.
+  `smoke.sh` repeats the burn race with 20 real connections against the release binary.
 - `src/server/web/tests/contrast.test.ts` computes the WCAG contrast ratio of every design token
   pair, so the accessibility claim is verified rather than asserted.
 

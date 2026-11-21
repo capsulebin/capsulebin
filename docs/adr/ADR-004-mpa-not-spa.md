@@ -8,14 +8,14 @@ The web client is TypeScript; Vite serves only as a dev server and bundler. Its 
 the server routes and the asset layout, and it has to fit the CSP (ADR-005): no inline styles, no
 `eval`, Trusted Types for every HTML sink.
 
-The four views have very different shapes. Create, manage and report are mostly forms wired up
-once. The recipient view moves through a small state machine (loading → password prompt → KDF
-progress → decrypting → items / burned / unavailable), switches between items, toggles Markdown
-preview and source, and manages object URLs for downloads.
+The five views (create, view, manage, report, legal) have very different shapes. Create, manage and
+report are mostly forms wired up once. The recipient view moves through a small state machine
+(loading → password prompt → KDF progress → decrypting → items / burned / unavailable), switches
+between items, toggles Markdown preview and source, and manages object URLs for downloads.
 
 ## Decision
 
-**The client is a multi-page application:** four HTML documents, each with its own entry point.
+**The client is a multi-page application:** five HTML documents, each with its own entry point.
 
 | Route | Document | Purpose |
 | --- | --- | --- |
@@ -25,10 +25,10 @@ preview and source, and manages object URLs for downloads.
 | `GET /report` | `report.html` | Report |
 | `GET /imprint`, `/privacy`, `/terms` | `legal.html` | Legal pages, filled in by the server (ADR-015) |
 
-Vite builds this through `rolldownOptions.input` with five entries. Shared code (`shell.ts`,
-`theme.ts`, styles) automatically ends up in a common chunk.
+Vite builds this through `rolldownOptions.input` with one entry per generated shell (five per
+language). Shared code (`shell.ts`, `theme.ts`, styles) automatically ends up in a common chunk.
 
-**Amendment (ADR-016):** every route above exists once per known interface language, served from
+**Per language (ADR-016):** every route above exists once per known interface language, served from
 a shell generated for that language. The default language (`i18n.default_language`, `en` unless
 configured) keeps the paths above; every other language has them under its prefix:
 
@@ -80,7 +80,7 @@ Pages without meaningful state may stay plain DOM code.
 ## Rejected
 
 - **An SPA with a history router.** Would require server-side rewriting of every path onto one
-  document plus a routing layer in the client. For four views without shared state that is pure
+  document plus a routing layer in the client. For five views without shared state that is pure
   overhead — and each route here carries a different secret in its fragment, so they specifically
   do *not* share state.
 - **One document with hash routing.** The fragment already carries the link secret. Using it for
@@ -97,7 +97,7 @@ Pages without meaningful state may stay plain DOM code.
 
 ## Consequences
 
-- Switching between views is a real page load. With four views and no shared state that costs
+- Switching between views is a real page load. With five views and no shared state that costs
   nothing.
 - A new route needs an entry in `SHELLS` in `scripts/shells.ts`, the dev server's routes in
   `vite.config.ts`, and `PAGES` (from which the routes of every language and the redirects are

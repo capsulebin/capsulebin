@@ -93,7 +93,9 @@ Field rules:
 
 - **`schema_version`** — mandatory, integer, must equal `1`. An unrecognized
   value is an error, not a fallback.
-- **`title`** — mandatory key, either a string or `null`.
+- **`title`** — a string or `null`. Encoders always write the key (`null` when
+  untitled); a decoder treats an absent key as `null` and rejects any other
+  type.
 - **`items`** — mandatory, a non-empty array, at most `16` entries (`MAX_ITEMS`).
 - **`items[].id`** — mandatory string. A ULID (26 characters, Crockford
   base32), unique within the manifest. Not validated as a ULID by the decoder,
@@ -136,6 +138,7 @@ causing an over-read.
 Every one of these must be rejected, not warned about or silently corrected:
 
 - Input longer than `MAX_CAPSULE_BYTES` (checked first, before the header).
+- Input shorter than the 14-byte header.
 - Wrong magic bytes.
 - An unrecognized framing version.
 - A manifest length exceeding `MAX_MANIFEST_BYTES`, or exceeding the bytes

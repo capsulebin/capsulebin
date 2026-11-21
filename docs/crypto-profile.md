@@ -8,9 +8,10 @@ the server never sees capsule plaintext or keys — is recorded in
 TypeScript rather than compiled to WebAssembly is recorded in
 [ADR-009](adr/ADR-009-typescript-cli-and-core-package.md).
 
-The reference implementation is `@capsulebin/core`
-(`src/core/src/crypto.ts` and `src/core/src/public_header.ts`), shared unmodified by the
-web client and the CLI. Conformance is checked against
+The reference implementation is `@capsulebin/core` (`src/core/src/paste.ts`
+for the derivations and verifiers, `src/core/src/crypto.ts` for the
+primitives, `src/core/src/public_header.ts` for the header), shared unmodified
+by the web client and the CLI. Conformance is checked against
 [`test-vectors/capsule-v1.json`](test-vectors/capsule-v1.json).
 
 ## Primitives
@@ -61,14 +62,17 @@ delete-secret (32 random bytes, independent)
     └─ SHA-256("capsule/v1/delete" || delete-secret) ──► delete-verifier   (stored by the server)
 ```
 
+The paste id is 16 random bytes chosen by the client and sent as unpadded
+base64url (22 characters); the server accepts only that form.
+
 - `hkdf_salt` is 16 random bytes, generated once per capsule and carried in
   the public header (see below) so the recipient can repeat the derivation.
-- The two HKDF calls use the **same** `ikm` (the link secret) and the **same**
-  `salt`, but different `info` labels. This domain separation is what makes
-  the reveal token learn-able by the server (it is presented on every
-  retrieval) without exposing the content key: HKDF's `info` parameter is
-  one-way with respect to the derived output, so possessing `reveal-token`
-  gives no way to compute `content-key`.
+- The content-key and reveal-token derivations use the **same** `ikm` (the
+  link secret) and the **same** `salt`, but different `info` labels. This
+  domain separation is what makes the reveal token learn-able by the server
+  (it is presented on every retrieval) without exposing the content key:
+  HKDF's `info` parameter is one-way with respect to the derived output, so
+  possessing `reveal-token` gives no way to compute `content-key`.
 - The **describe token** is the capability to read the descriptor (public
   header and lifecycle metadata). It cannot use `hkdf_salt`, because that salt
   lives in the public header the descriptor returns; it uses the paste id's
@@ -134,8 +138,7 @@ offline brute-force oracle decoupled from the rate limit. See [ADR-001](adr/ADR-
   a password is asked for or anything is derived from it — not in the PBKDF2
   primitive, which stays usable with any parameters. A client treats such a
   header as an invalid capsule, not as a network failure. The server stores
-  the header as opaque bytes and does not check it. No CapsuleBin client has
-  created a header outside these rules; the
+  the header as opaque bytes and does not check it. The
   [test vectors](test-vectors/capsule-v1.json) include headers a parser must
   accept and refuse (`public_header`), and the password vectors use the floor.
 - The `info` concatenation is `info_label || 0x00 || password_key` — a single
@@ -169,7 +172,10 @@ verifier, and checks a presented value against it in constant time
 | Create (token mode, operator-configured) | creation token | `SHA-256("capsule/v1/creation" || token)` |
 
 All verifiers are 32 bytes (SHA-256 output), encoded as base64url without
-padding on the wire.
+padding on the wire. The creation verifier never travels: the operator
+configures it as `token_hashes = ["sha256:<base64url>"]`, and its input is the
+token's text as sent in `Authorization: Bearer <token>` (the UTF-8 bytes of
+its base64url string), while the other verifiers hash the decoded bytes.
 
 Retrieval is gated on the describe and reveal tokens rather than on the paste id alone: the id
 travels in the URL path (server logs, proxies, browser history), while the link secret lives in
@@ -182,8 +188,9 @@ key exposure, offline password brute-forcing).
 The public header is a small JSON object, sent to and stored by the server
 **unencrypted** — it has to be, since a recipient needs `nonce`, `hkdf_salt`
 and `password.*` before it can derive anything else. The server hands it out
-only with the descriptor, i.e. to a holder of the describe token or the delete
-secret. Nothing in it reveals capsule content, item count, or size.
+only with the descriptor and with a successful retrieval, i.e. to a holder of
+the describe token (or, for the descriptor, of the delete secret). Nothing in
+it reveals capsule content, item count, or size.
 
 ```json
 {
@@ -204,21 +211,24 @@ secret. Nothing in it reveals capsule content, item count, or size.
 `password` is present only when the capsule requires one; its absence means
 the capsule has no password.
 
-**Canonical serialization**: since the header is authenticated as AES-GCM
-AAD, its byte representation must be reproducible — the same logical header
-must serialize to the exact same bytes on every implementation, every time.
-The rule: `JSON.stringify` with no added whitespace, fields in the order shown
-above (`password` last, omitted entirely rather than `null` when absent). Any
-implementation must serialize in this fixed field order — an implementation
-that reorders keys, changes whitespace, or emits `password: null` instead of
-omitting the key would produce a header that fails AAD verification on every
-other implementation, even though the logical content is identical. This
-requirement applies to the header only; the capsule manifest is inside the
-ciphertext and is authenticated as a whole, so it needs no canonical form
-(see [capsule-file-format.md](capsule-file-format.md)).
+**Canonical serialization**: since the header is authenticated as AES-GCM AAD,
+its byte representation must be reproducible — the same logical header must
+serialize to the exact same bytes on every implementation, every time. The
+rule for encoders: `JSON.stringify` with no added whitespace, fields in the
+order shown above (`password` last, omitted entirely rather than `null` when
+absent). A decoder uses the header bytes exactly as stored (the
+base64url-decoded `public_header` it received) as AAD and never re-serializes
+them; re-serializing a header written in another form would fail AAD
+verification. This requirement applies to the header only; the capsule
+manifest is inside the ciphertext and is authenticated as a whole, so it needs
+no canonical form (see [capsule-file-format.md](capsule-file-format.md)).
 
-A header is rejected if `envelope_format`, `content_format` or `cipher` do not
-match the values above exactly.
+A header is rejected if it is not a JSON object; if `envelope_format`,
+`content_format` or `cipher` do not match the values above exactly; if `nonce`
+or `hkdf_salt` is missing, not a string, or does not decode to 12 and 16
+bytes; or if `password` is present (and not `null`) but is not an object with
+`required: true` and `kdf: "PBKDF2-HMAC-SHA-256"` and valid parameters (see
+above). Unknown top-level keys are ignored.
 
 ## Version constants
 
@@ -227,7 +237,7 @@ match the values above exactly.
 | `envelope_format` | `1` |
 | `content_format` | `"capsule-file-v1"` |
 | `cipher` | `"AES-256-GCM"` |
-| Fragment prefix | `"v1."` (prepended to the base64url link secret in the share URL fragment) |
+| Fragment prefix | `"v1."` (prepended to the base64url link secret in the share link's fragment and to the delete secret in the management link's) |
 
 A change to any derivation, cipher choice or serialization rule bumps
 `envelope_format` and ships new test vectors — never a silent change under the

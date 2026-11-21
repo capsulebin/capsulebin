@@ -35,8 +35,9 @@ future third-party implementation is checked against the same vectors, not again
 `@capsulebin/core`'s source.
 
 **The public header is AAD.** The canonically serialized public header goes into AES-GCM as
-additional authenticated data, so it must serialize deterministically — fixed field order, no
-implementation-dependent formatting (see `docs/crypto-profile.md`). The container inside the
+additional authenticated data, so encoders serialize it deterministically — fixed field order, no
+implementation-dependent formatting — and decoders authenticate the stored bytes as received (see
+`docs/crypto-profile.md`). The container inside the
 ciphertext is under no such requirement: it is covered by the tag as a whole, so it needs
 unambiguous parsing rather than canonical encoding.
 

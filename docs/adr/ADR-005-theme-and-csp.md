@@ -20,7 +20,7 @@ block. `font-src 'self'` together with the ban on third party resources rules ou
 **All colours and measures as CSS custom properties** in `src/server/web/src/styles/tokens.css`. The accent is
 teal; in the dark theme it is lightened, because `#0f766e` drops below 3:1 on a dark ground.
 
-**Theme resolution written three times**, so that a manual toggle can override the system
+**Theme resolution written in four blocks**, so that a manual toggle can override the system
 preference in *both* directions:
 
 ```css
@@ -63,9 +63,10 @@ the CSP is unchanged. Once the stylesheet applies, `color-scheme` in `tokens.css
   system setting does not match the situation.
 - **`[data-theme]` only, without the media query.** The first visit would have no theme and would
   always start light.
-- **Using `localStorage` for anything beyond the theme choice.** Persistence is a side channel. Only
-  `light|dark` is stored; for `auto` the entry is removed. A test asserts that after using the
-  toggle exactly one key exists in `localStorage`.
+- **Using `localStorage` for anything beyond the theme and the language choice.** Persistence is a
+  side channel. Only `light|dark` (theme) and a language code (ADR-016) are stored; for `auto` the
+  entry is removed. A test asserts that after using the toggle exactly one key exists in
+  `localStorage`.
 
 ## Consequences
 

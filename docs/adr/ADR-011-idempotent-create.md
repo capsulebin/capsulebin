@@ -72,4 +72,3 @@ retired id cannot succeed: its row, and with it the original request, is gone.
 - `retired_ids` holds only the id, with no timestamp, verifier, size or status, and has no retention
   rule or setting: anything more would be metadata kept forever, and a switch would reopen the gap.
   It grows by one entry (about 40 bytes) per purged capsule; lookups stay a primary-key probe.
-- Rows purged before migration `0004` left no record; their ids are free.

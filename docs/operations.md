@@ -136,9 +136,10 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
   An environment value is taken verbatim as a string (unless it reads as a boolean, an integer or
   an array): quotes and escape sequences such as `\n` are not interpreted, so Markdown passed this
   way does not come out as written.
-- `trusted_proxies` must name the address the proxy connects *from* as the container sees it —
-  with a published port that is usually the bridge gateway, not `127.0.0.1`. Check the peer
-  address in the access log once and narrow the range to it.
+- `trusted_proxies` must name the address the proxy connects *from* as the container sees it — with
+  a published port that is usually the bridge gateway, not `127.0.0.1` (`docker network inspect
+  bridge`, `Gateway`). CapsuleBin never logs client addresses, so take the proxy's source address
+  from the Docker side and narrow the range to it.
 - The image's health check runs `capsulebin healthcheck`, which probes `/health/ready` from inside
   the container (see [Health and logs](#health-and-logs)). It runs without `--config` and needs only
   `CAPSULEBIN__SERVER__BIND`, which the image sets and which overrides a `bind` in a mounted file,
@@ -149,13 +150,16 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
   Backups go to the volume, e.g. `docker exec capsulebin capsulebin backup --output
   /data/backup-2026-11-18.db`; copy them off the host from there.
 - Restore with the container stopped, from a one-off container on the same volume. `restore`
-  validates the configuration like `serve`, so give it the same settings — at least
-  `CAPSULEBIN__SERVER__PUBLIC_URL`, or the mounted file with `--config` (see [Restore](#restore)):
+  validates the configuration like `serve`, so give it the same settings — the server's environment
+  variables (at least `CAPSULEBIN__SERVER__PUBLIC_URL` and, in `token` mode,
+  `CAPSULEBIN__CREATION__TOKEN_HASHES`) and the same mounted legal and branding files, or the
+  mounted file with `--config` (see [Restore](#restore)):
 
   ```sh
   docker stop capsulebin
   docker run --rm -v capsulebin-data:/data \
     -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
+    -e CAPSULEBIN__CREATION__TOKEN_HASHES='["sha256:…"]' \
     capsulebin restore --input /data/backup-2026-11-18.db --force
   # with a configuration file:
   # docker run --rm -v capsulebin-data:/data -v ./capsulebin.toml:/etc/capsulebin/capsulebin.toml:ro \
@@ -208,13 +212,13 @@ proxy or CDN must honour it. No page response depends on `Accept-Language`, so n
 keyed on it.
 
 **Slow and parallel uploads are the proxy's job.** CapsuleBin has no request or body timeout of its
-own and no instance-wide budget for uploads in flight; what it limits is the size of each body
-(`pastes.max_plaintext_size` for create; fixed 4 KiB for describe, retrieve and delete and 32 KiB
-for reports, `413 payload_too_large` above) and, if configured, uploads per client
-(`rate_limits.create.max_concurrent`). Let the proxy end a body that stalls (nginx
-`client_body_timeout`, Caddy `servers { timeouts { read_body … } }` in the global options) and cap
-connections per client (nginx `limit_conn`). nginx buffers the whole body before passing it on
-(the default `proxy_request_buffering on`), so a slow client ties up the proxy, not CapsuleBin.
+own and no instance-wide budget for uploads in flight; what it limits is the size of each body (for
+create `pastes.max_plaintext_size` × 4/3 plus 64 KiB, the base64 upload; fixed 4 KiB for describe,
+retrieve and delete and 32 KiB for reports, `413 payload_too_large` above) and, if configured,
+uploads per client (`rate_limits.create.max_concurrent`). Let the proxy end a body that stalls
+(nginx `client_body_timeout`, Caddy `servers { timeouts { read_body … } }` in the global options)
+and cap connections per client (nginx `limit_conn`). nginx buffers the whole body before passing it
+on (the default `proxy_request_buffering on`), so a slow client ties up the proxy, not CapsuleBin.
 
 **`trusted_proxies` must list the proxy, not the clients.** Too broad a range lets clients pick
 their own address for rate limiting by sending `X-Forwarded-For`; empty behind a proxy makes every
@@ -224,7 +228,7 @@ client share the proxy's bucket.
 
 | Setting | Recommendation |
 | --- | --- |
-| `server.public_url` | The address users reach, without a trailing slash. It must be a valid http(s) URL; text that does not parse as one is refused at startup. User information (`https://user:pass@paste.example.org`, also only a user name or only a password, also percent-encoded) is refused at startup: it would reach every share link and every error's type URI. So is any whitespace or control character anywhere in the value, including a leading or trailing space or newline: the URL parser would silently drop some of them, while the value as written is what the server puts in front of every error's type URI. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
+| `server.public_url` | The address users reach, without a trailing slash (refused at startup). It must be a valid http(s) URL; text that does not parse as one is refused at startup. User information (`https://user:pass@paste.example.org`, also only a user name or only a password, also percent-encoded) is refused at startup: it would reach every share link and every error's type URI. So is any whitespace or control character anywhere in the value, including a leading or trailing space or newline: the URL parser would silently drop some of them, while the value as written is what the server puts in front of every error's type URI. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
 | `creation.mode` | `token` (default). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
@@ -232,7 +236,7 @@ client share the proxy's bucket.
 | `abuse.contact`, `abuse.report_retention` | Set a contact; keep closed reports no longer than needed (default 90 days). |
 | `abuse.max_open_reports_per_paste`, `abuse.max_open_reports` | Ceilings on open reports (status open or reviewing): 10 per capsule, 1000 on the instance by default; integers of at least 1. A report above a ceiling is not stored, and the reporter is told nothing different (see [Abuse handling runbook](#abuse-handling-runbook)). To stop taking reports, set `abuse.enabled = false` — `0` is refused. |
 | `legal.*` | A public instance in the EU usually needs an imprint and a privacy notice. Set `[legal.operator]`; see [Legal pages](#legal-pages). |
-| `branding.*` | Optional: name, tagline, logo and favicon of the instance; `source_url` if you run a modified version. See [Branding](#branding). |
+| `branding.*` | Optional: name, tagline, logo, favicon and theme colours of the instance; `source_url` if you run a modified version. See [Branding](#branding). |
 | `database.synchronous` | `full` (default). Lower only if you accept losing acknowledged writes on power loss. |
 
 ## Legal pages
@@ -311,7 +315,7 @@ and English is under `/en/`.
 - Any other prefix is an unknown path (`404`).
 - `server.public_url` must not end in a language code (see
   [Settings that matter](#settings-that-matter)); the CLI's `put` refuses such a `--server` by
-  the same rule. For an existing instance with such an address see [Upgrades](#upgrades).
+  the same rule.
 - The footer link labels and the legal pages follow the page language (see
   [Legal pages](#legal-pages)); the CLI and the API's error texts stay English.
 
@@ -354,6 +358,10 @@ favicon = "/etc/capsulebin/branding/favicon.png"        # PNG or ICO
 - Every page says "Powered by CapsuleBin" in its footer, with "CapsuleBin" linked to the source
   code (AGPL-3.0, section 13), opened in a new tab. It cannot be switched off. If you run a
   modified version, set `source_url` to your source code (an absolute http(s) URL).
+- `[branding.colors.light]` and `[branding.colors.dark]` set the theme colours (the 18 colour
+  tokens, `#rgb`/`#rrggbb`), served as a generated stylesheet at `/branding/<hash>.css`. A colour
+  pair below the built-in contrast thresholds is a warning — printed by `check` (still `ok:`) and
+  logged by `serve` — never an error.
 
 See [branding.md](branding.md) for the rules in detail.
 
@@ -377,14 +385,14 @@ See [branding.md](branding.md) for the rules in detail.
   language's prefix, `/health/ready`, a configured `/branding/<hash>.<ext>`), the path of a static
   file the server actually served (`/assets/…`, `/favicon.svg`), or `{unmatched}` for everything
   that answered the generic `404`. A `429` or `413` on a route logs that route's template.
-- The rate limiter keeps its buckets in memory, at most 100 000 per client and 100 000 per capsule
-  (password attempts); this is fixed, not a setting. A table at its ceiling logs a warning at most
-  once a minute (`rate limiter table full`, with `table` and `ceiling`, never an address or id).
-  For the client table it means a flood of addresses: each new address pushes out the least
+- The rate limiter keeps its buckets in memory, at most 100 000 client buckets and 100 000 capsule
+  buckets (password attempts); this is fixed, not a setting. A table at its ceiling logs a warning
+  at most once a minute (`rate limiter table full`, with `table` and `ceiling`, never an address or
+  id). For the client table it means a flood of addresses: each new address pushes out the least
   recently used one, which then starts with a fresh budget. For the capsule table it means wrong
   passwords on capsules it does not yet track get `429` until budgets refill (about a minute at the
-  default; each `429` says `Retry-After: 6`, the refill time of one attempt, so clients retry
-  sooner than a slot may free up); correct passwords still open.
+  default; each `429` says `Retry-After: 6`, the refill time of one attempt, so clients retry sooner
+  than a slot may free up); correct passwords still open.
 - Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
   reason (e.g. `must not contain user information`,
   `must not contain whitespace or control characters`) without repeating the value, and a file
@@ -481,41 +489,15 @@ a killed run is not removed automatically; delete it once no restore or backup i
 
 Migrations only move forward. To roll back, restore the backup from step 1 with the old binary.
 
-The test suite upgrades a database written by 1.0 on every change: a released migration cannot
-change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable;
-their ids, once purged, are retired like any other.
-
-#### A `public_url` whose path ends in a language code
-
-An instance whose `server.public_url` has a path ending in an interface language code
-(`https://example.org/team/de`, `…/team/en`) does not start. The same holds when the path only
-ends in a code once its dot segments are resolved, as every client's URL parser does
-(`…/team/de/.`, `…/team/x/../de`). `capsulebin --config … check` reports it, naming
-`server.public_url`, so step 3 above fails before the service is started.
-
-Share and management links already issued under such a base are ambiguous: the CLI reads the
-language code in them as the language prefix of a page and drops it, so `get` and `delete` would
-address the base without it (`https://example.org/team` instead of `https://example.org/team/de`).
-Do not use these links with the CLI.
-
-What to do:
-
-1. Move the instance to a host of its own, served at `/` (`https://paste.example.org`), and set
-   `server.public_url` to it. That is the setup the web interface needs: the server answers
-   pages, `/assets/…` and `/api/…` at the root of its address only, the pages load their scripts
-   and styles from `/assets/`, call `/api/`, and create share and management links directly under
-   the origin. Below a path (`https://example.org/team/paste`) the web interface does not work,
-   whatever the path ends in. Only the API and the CLI build on a base with a path — `put`
-   appends `/api/v1/…`, `/p/<id>` and `/manage/<id>` to its `--server` — and only if the reverse
-   proxy removes that path before it forwards the request; no test covers such a setup.
-2. Links handed out under the old base keep pointing there. Whether and how they are mapped to
-   the new base is up to the operator; CapsuleBin does not do it.
+The test suite checks on every change that a database at an older schema migrates and stays
+usable, and that no existing migration is edited.
 
 ### Retention
 
 The purge job runs at start and then daily; `capsulebin prune` applies it once on demand (for
 example after lowering a threshold). It also removes closed abuse reports and moderation records
-older than `abuse.report_retention`.
+older than `abuse.report_retention`; with `purge.enabled = false` capsules are no longer
+purged on schedule, but that report retention still runs daily.
 
 A purged capsule's id stays in the table `retired_ids`, alone and permanently, so it can never be
 created again ([ADR-011](adr/ADR-011-idempotent-create.md)); no rule, setting or command removes it.
@@ -547,10 +529,14 @@ capsulebin moderation restore <paste-id>            # only after disable
 capsulebin reports close <report-id> --resolution action_taken|no_action|duplicate|invalid
 ```
 
+`--reason` takes `illegal_content`, `malware`, `phishing`, `spam`, `personal_data`, `copyright` or
+`other`. `reports list` takes `--status` (default `open`), `--limit` (default 100) and `--json`.
+
 - `reports list` starts with a line like `open reports: 3 of 1000 (at most 10 per capsule)`; when
   the instance ceiling is reached it adds `the limit is reached: new reports are not stored until
-  open ones are closed`. The server log then also says `report not stored: open report limit
-  reached` — at most once a minute, without the capsule or the report. Work through the queue and
+  open ones are closed`. Whenever a report is dropped at either
+  ceiling, the server log says `report not stored: open report limit reached` — at most once a
+  minute, without the capsule or the report. Work through the queue and
   close what is done (`duplicate` for repeats about the same capsule); if the queue is full of junk,
   close it as `invalid` and consider `rate_limits.report`. Raise a ceiling only if genuine reports
   are being lost: the ceilings are what keeps anyone who knows one id from growing the queue and the
@@ -576,4 +562,4 @@ capsulebin reports close <report-id> --resolution action_taken|no_action|duplica
 | Database or backup stolen | Content stays protected without the links. Reports in it contain contact data — treat it as a personal-data breach. Rotate creation tokens. |
 | Server compromised | Assume served JavaScript may have been modified: web users of that period may have exposed keys. Rebuild from a trusted binary, rotate tokens, inform users. CLI users were not exposed through served code. |
 | Disk full | SQLite refuses writes; reads continue. Free space, run `prune`, check `pastes.max_plaintext_size` and the byte quota. |
-| `/health/ready` reports a schema mismatch | The binary and the database disagree. Run `check` with the matching binary; never edit `_sqlx_migrations` by hand. |
+| `/health/ready` answers `503` with `database: unavailable`, the log says `schema is at version … but this build expects …` | The binary and the database disagree. Run `check` with the matching binary; never edit `_sqlx_migrations` by hand. |

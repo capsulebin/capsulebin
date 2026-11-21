@@ -17,9 +17,9 @@ CapsuleBin does not ship a hand-maintained OpenAPI document.
   profile and the golden vectors (`docs/capsule-file-format.md`, `docs/crypto-profile.md`,
   `docs/test-vectors/`). They are what a second implementation has to get right, and they are
   enforced by tests.
-- The HTTP surface is four paste endpoints and the report endpoint plus health checks, documented in the README with its error
-  model (`problem+json`, stable `code`, identical answers for every unavailable case, replay
-  semantics from ADR-011).
+- The HTTP surface is four paste endpoints and the two report endpoints plus health checks,
+  documented in the README with its error model (`problem+json`, stable `code`, identical answers
+  for every unavailable case, replay semantics from ADR-011).
 
 ## Rejected
 
