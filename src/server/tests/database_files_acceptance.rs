@@ -339,7 +339,14 @@ fn missing_database_with_restore_leftovers_is_not_recreated() {
         let (fresh_config, fresh) = setup(&format!("db-files-leftover-{case}-fresh"));
         assert_ok(&run(&fresh_config, "check"));
         assert!(fresh.exists(), "{case}: no database created without leftovers");
+        // `check` may exit before its last connection checkpoints, leaving
+        // pages in the `-wal`: copy the sidecars too, or the copy is torn.
         std::fs::copy(&fresh, &database).unwrap();
+        for suffix in ["-wal", "-shm"] {
+            if sidecar(&fresh, suffix).exists() {
+                std::fs::copy(sidecar(&fresh, suffix), sidecar(&database, suffix)).unwrap();
+            }
+        }
         assert_ok(&run(&config, "check"));
         assert_ok(&run(&config, "migrate"));
         serve(&config).stop();
