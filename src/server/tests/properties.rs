@@ -1,13 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Property-based tests for the server-side parsers that read request data or
-//! configuration: paste ids, verifiers, size and duration units, report
-//! validation, and the access-log path redaction.
+//! configuration: paste ids, verifiers, size and duration units and report
+//! validation.
 //!
 //! The properties are what a fuzzer would check: no input panics, accepted
 //! values round-trip, and there is exactly one accepted spelling of each value.
 
-use capsulebin_server::api::access_log::redact_path;
 use capsulebin_server::config::units::{ByteSize, HumanDuration};
 use capsulebin_server::domain::abuse::NewReport;
 use capsulebin_server::domain::{PasteId, Verifier};
@@ -80,26 +79,6 @@ proptest! {
                 prop_assert!(contact.chars().all(|c| !c.is_control()));
                 prop_assert!(!contact.contains("#v1."));
             }
-        }
-    }
-
-    #[test]
-    fn the_access_log_never_records_a_paste_id(bytes in any::<[u8; 16]>(), prefix in prop::sample::select(vec!["/p", "/manage", "/api/v1/pastes", "/report", "/anything"]), suffix in prop::sample::select(vec!["", "/retrieve", "/", "?x=1"])) {
-        let id = PasteId::from_bytes(bytes).encode();
-        let redacted = redact_path(&format!("{prefix}/{id}{suffix}"));
-        prop_assert!(!redacted.contains(&id), "{} leaked into {}", id, redacted);
-    }
-
-    #[test]
-    fn the_access_log_records_only_known_segments_or_placeholders(path in "(/[A-Za-z0-9._~%-]{0,24}){0,6}") {
-        let redacted = redact_path(&path);
-        for segment in redacted.split('/').filter(|s| !s.is_empty()) {
-            prop_assert!(
-                segment == "{id}"
-                    || ["api", "v1", "pastes", "retrieve", "reports", "health", "live", "ready", "manage", "report", "p", "assets", "problems"].contains(&segment)
-                    || segment.contains('.'),
-                "unexpected segment {:?} in {:?}", segment, redacted
-            );
         }
     }
 }

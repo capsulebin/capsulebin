@@ -112,7 +112,13 @@ impl AppState {
 ///
 /// Layer order matters and is not cosmetic:
 ///
-/// - The security headers and the request id sit **outermost**, so they reach
+/// - Every layer is added with `Router::layer`, so it wraps each route and the
+///   fallback and runs **after routing**: `MatchedPath` is already known. The
+///   access log wraps everything else, the trace span first and the middleware
+///   that records the route template right inside it, so the template reaches
+///   the log for every response, including the rejections below.
+/// - Below the access log, the security headers and the request id sit
+///   **outermost**, so they reach
 ///   every response including rejections produced by the layers below. A header
 ///   set only on the success path is not a security boundary.
 /// - The client IP is resolved before the rate limiter runs, and the server
@@ -161,8 +167,12 @@ pub fn router(state: AppState) -> Router {
     }
 
     app.layer(axum::middleware::from_fn(api::request_id::middleware))
-        // Records method and a redacted path only - never the full URI, which
-        // would put paste ids into the access log. See `api::access_log`.
+        // Records the route template (or a served asset, or `{unmatched}`) into
+        // the access log span - never the request path, which would put paste
+        // ids into the log. Inside the trace layer, so it fills that span, and
+        // outside every rejecting layer, so a `429` or `413` logs the template.
+        .layer(axum::middleware::from_fn(api::access_log::record_path))
+        // Opens the span with the method and an empty path. See `api::access_log`.
         .layer(api::access_log::layer())
         .with_state(state)
 }

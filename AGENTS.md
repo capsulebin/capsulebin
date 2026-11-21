@@ -262,7 +262,15 @@ count, checked in the retrieve handler so callers with only the id can neither d
 `problem+json` with a computed `Retry-After`.
 Uses `X-Forwarded-For` when the peer is in `server.trusted_proxies`. Requires the client IP layer to
 run before the limiter and the server to serve with connect info (see `router()`/`serve.rs`).
-In-memory only, resets on restart; full buckets are swept above 10 000 entries.
+In-memory only, resets on restart. Two tables, client buckets and paste buckets (password
+attempts), each capped at 100 000 entries (`CLIENT_CEILING`/`PASTE_CEILING`, fixed, no setting);
+work per admission is bounded (a new key lets a sweep cursor drop up to `SWEEP_STEP` = 8 refilled
+buckets, never a full scan under the lock). At the ceiling the client table evicts its least
+recently used bucket; the paste table never evicts a budget — a wrong password on an untracked paste
+is `429` with `Retry-After` = one token's refill time (6 s at the default, when a tracked paste
+would admit the next attempt; a slot may free up only later), a correct one passes and creates no bucket. A saturated table warns at
+most once a minute (table and ceiling, no address or id). The clock is injectable for tests
+(`bounded_for_tests`).
 
 ## Build and test
 
@@ -332,7 +340,7 @@ npm run e2e -w @capsulebin/web
 |------|-----------------|
 | `src/server/tests/db_no_plaintext.rs` | Plaintext never appears in any DB column (text, hex, or base64). **Mandatory CI gate.** |
 | `src/server/tests/secure_delete.rs` | Burned and deleted ciphertext is gone from the raw database file and WAL after a checkpoint (`secure_delete`). |
-| `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text. **Mandatory CI gate.** |
+| `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text; the access log's `path` is a route template (also on `429`/`413`/`401`), a served asset or `{unmatched}`, also for seeded random paths. **Mandatory CI gate.** |
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
@@ -410,8 +418,8 @@ npm run e2e -w @capsulebin/web
 | `src/api/branding.rs` | One route per configured branding file and the colour stylesheet, served from memory with its MIME type and immutable caching |
 | `src/api/problem.rs` | `application/problem+json` error responses |
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
-| `src/api/access_log.rs` | Redacted access logging (method + redacted path only; branding file names directly below `/branding/` kept) |
-| `src/api/rate_limit.rs` | Token-bucket rate limiting (per minute or per hour) |
+| `src/api/access_log.rs` | Access log: method and a `path` never taken from the request — the matched route template (`MatchedPath`, recorded by `record_path` right inside the trace layer and outside every rejecting layer), the path of a file `static_file` served (`ServedAsset` response extension), or `{unmatched}` |
+| `src/api/rate_limit.rs` | Token-bucket rate limiting (per minute or per hour); bucket tables `Table<K>` with ceiling, LRU list and sweep cursor |
 | `src/api/reports.rs` | Report endpoint and policy; 32 KiB body limit, `enabled` checked before the body, ceiling warning throttled by `CeilingWarning` (one per `AppState`) |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
@@ -542,7 +550,10 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
 - **Never log a payload, capability secret, token, or full paste ID** — see `access_log.rs`.
 - **Never compare verifiers with `==`** — always use constant-time comparison (`subtle` crate).
 - **Layer order in `router()` is security-critical** — security headers and request ID must
-  be outermost so they reach every response, including rejections.
+  be outermost (below only the access log) so they reach every response, including rejections;
+  the access log's `record_path` must stay outside every rejecting layer, so a `429` or `413` logs
+  the route template. Never log a path taken from the request: no filename or segment heuristic,
+  only `MatchedPath`, a served asset or `{unmatched}`.
 - **Indistinguishable error responses** — don't add different status codes or messages for
   "not found" vs "wrong capability" vs "expired" vs "moderated".
 - **Page routes and the redirect from the default language's prefix never inspect the path id** —

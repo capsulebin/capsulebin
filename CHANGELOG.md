@@ -51,8 +51,12 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Retention rules (expired, never retrieved, inactive) with a scheduled daily purge and `prune`.
 - Per-client rate limits, a daily byte quota and concurrent-upload limit, with trusted-proxy-aware
   client addresses; a per-paste limit on password attempts (on by default) that only callers
-  holding the link can trigger.
-- Strict security headers and CSP on every response; redacted access logs.
+  holding the link can trigger. The limiter's memory is capped (100 000 client and 100 000
+  per-capsule buckets) with bounded work per request; a flood of addresses evicts the least recently
+  used client, never a password budget.
+- Strict security headers and CSP on every response; the access log records the matched route's
+  template (`/de/p/{id}`), the path of a served static file, or `{unmatched}`, never the request
+  path.
 - Abuse reports and operator moderation without decryption
   ([ADR-013](docs/adr/ADR-013-abuse-reports-and-moderation.md)). Open reports are capped per
   capsule and per instance (`abuse.max_open_reports_per_paste`, default 10;
