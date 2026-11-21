@@ -145,7 +145,8 @@ node src/cli/dist/cli.js put notes.md main.rs logo.png --expires 7d
 # From stdin, burn after the first retrieval, password from the environment
 echo "db password: hunter2" | CAPSULEBIN_PASSWORD=... node src/cli/dist/cli.js put --burn --password
 
-node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…'            # one item → stdout
+node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…'            # one item → ./, several → ./capsule-DATE-ID/
+node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…' --here     # all items → ./
 node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…' -o out/    # all items → out/
 node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
 
@@ -186,27 +187,35 @@ node src/cli/dist/cli.js delete --link-file notes.link
   written paths on `get`, `{"error": {"reason", "message"}}` on failure. DEL and U+0080–U+009F
   are written as `\u007f`/`\u00NN` escapes (the parsed value is unchanged), so no control
   character reaches a terminal showing the output.
-- **The sender's bytes do not control your terminal.** When `get` writes a single text, code or
-  Markdown item to a terminal, control characters are shown as visible escapes: C0 and DEL as
-  `\x1b`, C1 (U+0080–U+009F) as `\u009b`, a byte that is not valid UTF-8 as `\xNN`; `\n`, `\t`
-  and `\r\n` stay, a lone `\r` is escaped (it would overwrite the line). A pipe or file gets the
-  plaintext byte for byte; `get --raw` writes it unchanged to a terminal too. Everything written to
-  stderr from the server or the capsule (problem titles and codes, manifest text in error
-  messages, file names in `wrote …` lines, link bases) has every control character escaped,
-  newlines included, whether or not stderr is a terminal. Backslashes are not doubled: the
-  escapes are for reading, not for decoding back.
-- **Decrypted files are private.** Files `get` writes (`-o DIR`, several items, a file item sent
-  to a terminal) are created with mode `0600`, and a directory it creates for `-o` (parents too)
-  with `0700`; an existing directory keeps its mode. Each item is written to a fresh temporary file
-  in the target directory and then put in place, so an existing entry — a symlink above all — is
-  never written through, and a failed write leaves neither a partial file nor the temporary one.
-  Without `-o`, several items go to the current directory. Characters in file names that are
-  controls (C0, DEL, C1) or not allowed on common file systems become `_`.
+- **Capsule content never goes to stdout.** `get` writes every item to a file, whatever its kind
+  and whether stdout is a terminal or a pipe; without `--json` stdout stays empty. So no sender's
+  bytes reach the terminal as content, and nothing has to be escaped or passed through raw.
+  Everything written to stderr from the server or the capsule (problem titles and codes, manifest
+  text in error messages, file and directory names in `created …`/`wrote …` lines, link bases) has
+  every control character shown as a visible escape — C0 and DEL as `\x1b`, C1 (U+0080–U+009F) as
+  `\u009b` — newlines included, whether or not stderr is a terminal. Backslashes are not doubled:
+  the escapes are for reading, not for decoding back.
+- **Where `get` writes.** A single item goes to the current directory. Several items go to a new
+  directory `capsule-<YYYY-MM-DD>-<first 8 characters of the paste id>` in the current directory
+  (local date; if that name is taken, `… (1)`, `… (2)`, …), named on stderr and as `directory` in
+  the `--json` output. `--here` writes several items directly into the current directory, `-o DIR`
+  into `DIR`, created with its parents if missing; `--here` and `-o` together are a usage error
+  (exit code `2`). Only the last path component of an item's name is used; characters in it that
+  are controls (C0, DEL, C1) or not allowed on common file systems become `_`.
+- **Decrypted files are private and never overwrite anything.** Every file is created new with
+  mode `0600`; the directory for several items and a directory created for `-o` (parents too) get
+  `0700`, an existing `-o` directory keeps its mode. A name that is taken by anything — a file, a
+  directory, a symlink, even a dangling one — is never opened, followed or replaced: the item gets
+  the next free name (`name (1).ext`, `name (2).ext`, …), so two items of the same name give two
+  files. After 1000 taken names `get` stops (exit code `1`, reason `no_free_name`) naming the
+  item. If a write fails, the files this run created are removed again, and so is the directory it
+  created for several items.
 - **Prompts work on a terminal and give it back.** The hidden password prompt and the burn
   confirmation restore the terminal (echo, line mode) on an answer, Ctrl-C and EOF; Ctrl-C ends
   with exit code `8` (reason `interrupted`), EOF (Ctrl-D on an empty line) with `8` (reason
   `input_closed`), both before the request the prompt guards.
-- **Exit codes** are stable: `0` ok, `2` usage, `3` not available (unknown, expired, deleted,
+- **Exit codes** are stable: `0` ok, `1` unexpected or local failure (e.g. a file that cannot be
+  written, no free file name), `2` usage, `3` not available (unknown, expired, deleted,
   consumed, wrong link or password — indistinguishable by design), `4` a burn capsule someone
   else retrieved concurrently, `5` undecryptable or not a valid capsule (also a public header
   whose password parameters the [crypto profile](docs/crypto-profile.md) refuses), `6` rejected by
@@ -222,10 +231,9 @@ node src/cli/dist/cli.js delete --link-file notes.link
   `429` and `5xx` (never after a redirect); the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.
 - **Burn capsules are not consumed by accident.** `get` asks first, and refuses
-  non-interactively unless `--yes` is given. Once retrieved, output never fails over an existing
-  entry — a free name (`name (1).ext`) is chosen. With `--force` an existing file or symlink at
-  the name is replaced (the symlink itself, never its target; the new file is `0600`, whatever
-  the old one's mode was); a directory at the name still gets a free name.
+  non-interactively unless `--yes` is given. Once retrieved, an existing entry does not stop the
+  output — a free name (`name (1).ext`) is chosen, within 1000 suffixes — and several items never
+  need `-o`.
 
 ### Subcommands
 

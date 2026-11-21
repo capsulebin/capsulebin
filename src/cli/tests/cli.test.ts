@@ -15,14 +15,12 @@ import {
     readlink,
     stat,
     symlink,
-    unlink,
     writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-    concatByteArrays,
     decodeUtf8,
     encodeUtf8,
     fromBase64url,
@@ -38,12 +36,11 @@ import { buildItem } from '../src/items';
 import { escapeDiagnostic } from '../src/terminal';
 import { createFakeServer, type FakeServer } from '../../core/tests/fake-server';
 
-// While set, every file write fails after the file was opened; `linkError`
-// makes every hard link fail with that code (a file system without hard links).
+// While set, every file write fails after the file was opened;
 // `failOpenNumber` makes only the write through the n-th opened file fail.
+// `get` creates every file in place: `link` and `rename` must not be used.
 const fsHooks = vi.hoisted(() => ({
     failWrites: false,
-    linkError: undefined as string | undefined,
     failOpenNumber: undefined as number | undefined,
     opens: 0,
 }));
@@ -61,13 +58,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
             }
             return handle;
         },
-        link: async (...args: Parameters<typeof fs.link>) => {
-            if (fsHooks.linkError !== undefined) {
-                throw Object.assign(new Error('hard links not supported'), {
-                    code: fsHooks.linkError,
-                });
-            }
-            return fs.link(...args);
+        link: async () => {
+            throw new Error('link must not be used');
+        },
+        rename: async () => {
+            throw new Error('rename must not be used');
         },
     };
 });
@@ -86,14 +81,12 @@ beforeEach(async () => {
 afterEach(() => {
     vi.unstubAllGlobals();
     fsHooks.failWrites = false;
-    fsHooks.linkError = undefined;
     fsHooks.failOpenNumber = undefined;
     fsHooks.opens = 0;
 });
 
 interface TestIo extends Io {
     out(): string;
-    outBytes(): Uint8Array;
     err(): string;
     prompts: string[];
 }
@@ -104,7 +97,6 @@ function testIo(
         env?: Record<string, string>;
         interactive?: boolean;
         answers?: string[];
-        stdoutTTY?: boolean;
     } = {},
 ): TestIo {
     const out: Uint8Array[] = [];
@@ -115,7 +107,6 @@ function testIo(
     return {
         stdout: {
             write: (chunk) => out.push(typeof chunk === 'string' ? encoder.encode(chunk) : chunk),
-            isTTY: options.stdoutTTY ?? false,
         },
         stderr: { write: (chunk) => err.push(chunk) },
         readStdin: async () =>
@@ -133,10 +124,22 @@ function testIo(
         cwd,
         sleep: async () => {},
         out: () => Buffer.concat(out).toString('utf8'),
-        outBytes: () => new Uint8Array(Buffer.concat(out)),
         err: () => err.join(''),
         prompts,
     };
+}
+
+/** The paths a `get` reported on stderr (`wrote <path>`). */
+function wrotePaths(io: TestIo): string[] {
+    return [...io.err().matchAll(/^wrote (.*)$/gm)].map((match) => match[1]!);
+}
+
+/** The content of the one file a `get` wrote; its stdout stayed empty. */
+async function written(io: TestIo): Promise<string> {
+    expect(io.out()).toBe('');
+    const paths = wrotePaths(io);
+    expect(paths, io.err()).toHaveLength(1);
+    return readFile(paths[0]!, 'utf8');
 }
 
 async function putText(text: string, ...args: string[]) {
@@ -153,14 +156,15 @@ async function putText(text: string, ...args: string[]) {
 }
 
 describe('put → get → delete', () => {
-    it('round-trips stdin through a capsule and back to stdout', async () => {
+    it('round-trips stdin through a capsule and back to a file', async () => {
         const created = await putText('hello from stdin\n');
         expect(created.share_url).toMatch(new RegExp(`^${SERVER}/p/[A-Za-z0-9_-]{22}#v1\\.`));
         expect(created.delete_url).toMatch(new RegExp(`^${SERVER}/manage/${created.id}#v1\\.`));
 
         const io = testIo();
         expect(await run(['get', created.share_url], io)).toBe(0);
-        expect(io.out()).toBe('hello from stdin\n');
+        expect(await written(io)).toBe('hello from stdin\n');
+        expect(wrotePaths(io)).toEqual([join(cwd, 'stdin')]);
     });
 
     it('deletes with the management link, after which get reports not available', async () => {
@@ -176,7 +180,7 @@ describe('put → get → delete', () => {
 
         const io = testIo();
         expect(await run(['get', withPrefix(created.share_url)], io), io.err()).toBe(0);
-        expect(io.out()).toBe('hallo');
+        expect(await written(io)).toBe('hallo');
 
         expect(await run(['delete', withPrefix(created.delete_url)], testIo())).toBe(0);
         expect(server.pastes.has(created.id)).toBe(false);
@@ -212,18 +216,6 @@ describe('put → get → delete', () => {
         expect(await readFile(join(cwd, 'out', 'blob.bin'))).toEqual(Buffer.from([0, 1, 2, 255]));
         expect(await readFile(join(cwd, 'out', 'main.rs'), 'utf8')).toBe('fn main() {}\n');
     });
-
-    it('writes a multi-item capsule to the current directory when no -o is given', async () => {
-        await writeFile(join(cwd, 'a.txt'), 'a');
-        await writeFile(join(cwd, 'b.txt'), 'b');
-        const io = testIo();
-        await run(['put', '-s', SERVER, 'a.txt', 'b.txt'], io);
-
-        const getIo = testIo();
-        expect(await run(['get', io.out().trim()], getIo)).toBe(0);
-        // Existing files are kept; the retrieved ones get free names.
-        expect((await readdir(cwd)).sort()).toEqual(['a (1).txt', 'a.txt', 'b (1).txt', 'b.txt']);
-    });
 });
 
 describe('link channels', () => {
@@ -237,7 +229,7 @@ describe('link channels', () => {
 
         const io = testIo({ stdin: form(created.share_url) + '\n' });
         expect(await run(['get', '-'], io), io.err()).toBe(0);
-        expect(io.out()).toBe('from stdin');
+        expect(await written(io)).toBe('from stdin');
 
         const del = testIo({ stdin: form(created.delete_url) + '\r\nignored\n' });
         expect(await run(['delete', '-'], del), del.err()).toBe(0);
@@ -254,7 +246,7 @@ describe('link channels', () => {
 
         const io = testIo();
         expect(await run(['get', '--link-file', 'share'], io), io.err()).toBe(0);
-        expect(io.out()).toBe('from a file');
+        expect(await written(io)).toBe('from a file');
 
         const del = testIo();
         expect(await run(['delete', '--link-file', join(cwd, 'manage')], del), del.err()).toBe(0);
@@ -449,7 +441,7 @@ describe('put options', () => {
         ).toBe(3);
         const ok = testIo({ env: { CAPSULEBIN_PASSWORD: 'hunter22' } });
         expect(await run(['get', '-s', SERVER, shareUrl], ok)).toBe(0);
-        expect(ok.out()).toBe('secret note');
+        expect(await written(ok)).toBe('secret note');
     });
 
     it('prompts twice for a new password on a terminal', async () => {
@@ -480,7 +472,7 @@ describe('burn after retrieval', () => {
 
         const yes = testIo();
         expect(await run(['get', created.share_url, '--yes'], yes)).toBe(0);
-        expect(yes.out()).toBe('once');
+        expect(await written(yes)).toBe('once');
         expect(yes.err()).toContain('deleted from the server');
 
         // Afterwards it is gone like any unavailable capsule (the server does not
@@ -598,19 +590,6 @@ describe('errors and output', () => {
         expect(fromEnv.err()).toContain('must not contain a query or fragment');
         expect(server.requests).toHaveLength(0);
     });
-
-    it('does not dump a binary single item onto a terminal', async () => {
-        await writeFile(join(cwd, 'img.bin'), new Uint8Array([0, 159, 146, 150]));
-        const put = testIo();
-        await run(['put', '-s', SERVER, 'img.bin'], put);
-
-        const io = testIo({ stdoutTTY: true });
-        expect(await run(['get', put.out().trim()], io)).toBe(0);
-        expect(io.outBytes()).toHaveLength(0);
-        expect(io.err()).toContain('binary file written to');
-        // The source file is still there, so the copy gets a free name.
-        expect(await readFile(join(cwd, 'img (1).bin'))).toEqual(Buffer.from([0, 159, 146, 150]));
-    });
 });
 
 describe('transport', () => {
@@ -658,7 +637,7 @@ describe('transport', () => {
 
         const getIo = testIo();
         expect(await run(['get', created.share_url], getIo), getIo.err()).toBe(0);
-        expect(getIo.out()).toBe('x');
+        expect(await written(getIo)).toBe('x');
         expect(await run(['delete', created.delete_url], testIo())).toBe(0);
     });
 
@@ -692,12 +671,12 @@ describe('transport', () => {
 
         const viaEnv = testIo({ env: { CAPSULEBIN_ALLOW_HTTP: '1' } });
         expect(await run(['get', created.share_url], viaEnv), viaEnv.err()).toBe(0);
-        expect(viaEnv.out()).toBe('over http');
+        expect(await written(viaEnv)).toBe('over http');
         const viaFlag = testIo();
         expect(await run(['get', '--allow-http', created.share_url], viaFlag), viaFlag.err()).toBe(
             0,
         );
-        expect(viaFlag.out()).toBe('over http');
+        expect(await written(viaFlag)).toBe('over http');
         const deleted = testIo();
         expect(
             await run(['delete', created.delete_url, '--allow-http'], deleted),
@@ -786,14 +765,14 @@ describe('get --server and CAPSULEBIN_PASSWORD', () => {
         const shareUrl = await protectedCapsule();
         const io = testIo({ env });
         expect(await run(['get', '--server', anchor, shareUrl], io), io.err()).toBe(0);
-        expect(io.out()).toBe('secret note');
+        expect(await written(io)).toBe('secret note');
     });
 
     it('uses the environment password for a link with a language segment', async () => {
         const shareUrl = (await protectedCapsule()).replace(`${SERVER}/`, `${SERVER}/de/`);
         const io = testIo({ env });
         expect(await run(['get', '-s', SERVER, shareUrl], io), io.err()).toBe(0);
-        expect(io.out()).toBe('secret note');
+        expect(await written(io)).toBe('secret note');
     });
 
     it('takes CAPSULEBIN_SERVER as the trusted server without --server', async () => {
@@ -856,7 +835,7 @@ describe('get --server and CAPSULEBIN_PASSWORD', () => {
             answers: ['hunter22'],
         });
         expect(await run(['get', shareUrl], right)).toBe(0);
-        expect(right.out()).toBe('secret note');
+        expect(await written(right)).toBe('secret note');
         expect(retrieves()).toHaveLength(2);
     });
 
@@ -875,7 +854,7 @@ describe('get --server and CAPSULEBIN_PASSWORD', () => {
         for (const value of ['not a url', 'https://paste.example/de', 'http://paste.example']) {
             const io = testIo({ env: { CAPSULEBIN_SERVER: value } });
             expect(await run(['get', created.share_url], io), io.err()).toBe(0);
-            expect(io.out()).toBe('open');
+            expect(await written(io)).toBe('open');
         }
 
         const shareUrl = await protectedCapsule();
@@ -939,7 +918,7 @@ describe('new passwords', () => {
         expect(await run(['get', '--password-file', 'trimmed', shareUrl], testIo())).toBe(3);
         const ok = testIo();
         expect(await run(['get', '--password-file', 'spaced', shareUrl], ok)).toBe(0);
-        expect(ok.out()).toBe('spaced');
+        expect(await written(ok)).toBe('spaced');
     });
 });
 
@@ -1023,12 +1002,16 @@ describe('file output', () => {
     const posix = process.platform !== 'win32';
     const mode = async (path: string) => (await stat(path)).mode & 0o777;
 
-    /** Puts files from `src/` (created with the given contents) and returns the share link. */
+    /**
+     * Puts files (created with the given contents in a directory outside
+     * `cwd`) into one capsule and returns the share link.
+     */
     async function putFiles(files: [string, string | Uint8Array][]): Promise<string> {
+        const sources = await mkdtemp(join(tmpdir(), 'capsulebin-src-'));
         const names: string[] = [];
         for (const [index, [name, content]] of files.entries()) {
-            const dir = join(cwd, 'src', String(index));
-            await mkdir(dir, { recursive: true });
+            const dir = join(sources, String(index));
+            await mkdir(dir);
             await writeFile(join(dir, name), content);
             names.push(join(dir, name));
         }
@@ -1036,6 +1019,22 @@ describe('file output', () => {
         expect(await run(['put', '-s', SERVER, ...names], io), io.err()).toBe(0);
         return io.out().trim();
     }
+
+    /** The directory a multi-item capsule gets without `-o`/`--here`, on 2026-01-05. */
+    function capsuleDir(link: string): string {
+        const id = /\/p\/([A-Za-z0-9_-]{22})#/.exec(link)![1]!;
+        return `capsule-2026-01-05-${id.slice(0, 8)}`;
+    }
+
+    beforeEach(() => {
+        // Late in the evening, local time: the directory name uses the local date.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(2026, 0, 5, 23, 59));
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
 
     async function withUmask<T>(umask: number, body: () => Promise<T>): Promise<T> {
         const previous = process.umask(umask);
@@ -1052,28 +1051,23 @@ describe('file output', () => {
                 ['a.txt', 'a'],
                 ['b.txt', 'b'],
             ]);
-            const binary = await putFiles([['img.bin', new Uint8Array([0, 159, 146, 150])]]);
+            const single = await putFiles([['img.bin', new Uint8Array([0, 159, 146, 150])]]);
 
-            for (const force of [false, true]) {
-                const flags = force ? ['--force'] : [];
-                const sub = force ? 'forced' : 'plain';
+            const intoNew = testIo();
+            expect(await run(['get', multi], intoNew), intoNew.err()).toBe(0);
+            const here = testIo();
+            expect(await run(['get', multi, '--here'], here), here.err()).toBe(0);
+            const created = join(cwd, 'new', 'out');
+            const intoDir = testIo();
+            expect(await run(['get', multi, '-o', created], intoDir), intoDir.err()).toBe(0);
+            const one = testIo();
+            expect(await run(['get', single], one), one.err()).toBe(0);
 
-                const intoCwd = testIo();
-                expect(await run(['get', multi, ...flags], intoCwd), intoCwd.err()).toBe(0);
-                const created = join(cwd, 'new', sub, 'out');
-                const intoDir = testIo();
-                expect(await run(['get', multi, '-o', created, ...flags], intoDir)).toBe(0);
-                const tty = testIo({ stdoutTTY: true });
-                expect(await run(['get', binary, ...flags], tty), tty.err()).toBe(0);
-
-                const written = (intoCwd.err() + intoDir.err() + tty.err()).match(
-                    /(?<=^(wrote|binary file written to) ).*$/gm,
-                )!;
-                expect(written).toHaveLength(5);
-                for (const path of written) expect(await mode(path), path).toBe(0o600);
-                expect(await mode(created)).toBe(0o700);
-                expect(await mode(join(cwd, 'new', sub))).toBe(0o700);
-            }
+            const written = [intoNew, here, intoDir, one].flatMap(wrotePaths);
+            expect(written).toHaveLength(7);
+            for (const path of written) expect(await mode(path), path).toBe(0o600);
+            expect(await mode(join(cwd, capsuleDir(multi)))).toBe(0o700);
+            expect(await mode(created)).toBe(0o700);
             expect(await mode(join(cwd, 'new'))).toBe(0o700);
 
             const existing = join(cwd, 'existing');
@@ -1085,136 +1079,227 @@ describe('file output', () => {
         });
     });
 
-    it('never follows a symlink at the target name', async () => {
-        const link = await putFiles([['note.txt', 'from the capsule']]);
+    it('never opens, follows or replaces an existing entry at the target name', async () => {
+        const link = await putFiles([
+            ['note.txt', 'first'],
+            ['note.txt', 'second'],
+        ]);
         const out = join(cwd, 'out');
         await mkdir(out);
         const outside = join(cwd, 'outside.txt');
         await writeFile(outside, 'keep me');
         const dangling = join(cwd, 'nowhere.txt');
+        await writeFile(join(out, 'note.txt'), 'old');
+        await symlink(outside, join(out, 'note (1).txt'));
+        await symlink(dangling, join(out, 'note (2).txt'));
+        await mkdir(join(out, 'note (3).txt'));
 
-        for (const target of [outside, dangling]) {
-            await symlink(target, join(out, 'note.txt'));
-
-            const io = testIo();
-            expect(await run(['get', link, '-o', out, '--json'], io), io.err()).toBe(0);
-            const [item] = JSON.parse(io.out()).items;
-            expect(item.path).toBe(join(out, 'note (1).txt'));
-            expect(await readFile(item.path, 'utf8')).toBe('from the capsule');
-            expect(await readlink(join(out, 'note.txt'))).toBe(target);
-
-            const forced = testIo();
-            expect(await run(['get', link, '-o', out, '-f', '--json'], forced)).toBe(0);
-            expect(JSON.parse(forced.out()).items[0].path).toBe(join(out, 'note.txt'));
-            const entry = await lstat(join(out, 'note.txt'));
-            expect(entry.isFile()).toBe(true);
-            if (posix) expect(entry.mode & 0o777).toBe(0o600);
-            expect(await readFile(join(out, 'note.txt'), 'utf8')).toBe('from the capsule');
-
-            expect(await readFile(outside, 'utf8')).toBe('keep me');
-            await expect(access(dangling)).rejects.toThrow();
-            expect((await readdir(out)).sort()).toEqual(['note (1).txt', 'note.txt']);
-            for (const name of await readdir(out)) await unlink(join(out, name));
-        }
-    });
-
-    it('replaces a file with --force, keeps duplicate names apart and skips a directory', async () => {
-        const out = join(cwd, 'out');
-        await mkdir(join(out, 'dir.txt'), { recursive: true });
-        await writeFile(join(out, 'same.txt'), 'old');
-        await chmod(join(out, 'same.txt'), 0o644);
-        const link = await putFiles([
-            ['same.txt', 'first'],
-            ['same.txt', 'second'],
-            ['dir.txt', 'not a directory'],
-        ]);
-
-        for (const flags of [['--force'], []]) {
-            const io = testIo();
-            expect(await run(['get', link, '-o', out, '--json', ...flags], io), io.err()).toBe(0);
-            const paths = JSON.parse(io.out()).items.map((i: { path: string }) => i.path);
-            if (flags.length) {
-                expect(paths).toEqual([
-                    join(out, 'same.txt'),
-                    join(out, 'same (1).txt'),
-                    join(out, 'dir (1).txt'),
-                ]);
-            }
-            expect(await readFile(paths[0], 'utf8')).toBe('first');
-            expect(await readFile(paths[1], 'utf8')).toBe('second');
-            expect(await readFile(paths[2], 'utf8')).toBe('not a directory');
-            if (posix) expect(await mode(join(out, 'same.txt'))).toBe(0o600);
-            expect((await lstat(join(out, 'dir.txt'))).isDirectory()).toBe(true);
-        }
-        expect(await readFile(join(out, 'same.txt'), 'utf8')).toBe('first');
-    });
-
-    it('leaves no partial or temporary file when a write fails', async () => {
-        const link = await putFiles([['note.txt', 'lost']]);
-        const out = join(cwd, 'out');
-        await mkdir(out);
-        await writeFile(join(out, 'other.txt'), 'x');
-        const before = await readdir(out);
-
-        for (const flags of [[], ['--force']]) {
-            fsHooks.failWrites = true;
-            const io = testIo();
-            expect(await run(['get', link, '-o', out, ...flags], io)).not.toBe(0);
-            expect(await readdir(out)).toEqual(before);
-        }
-    });
-
-    it('leaves nothing behind when the copy fails where hard links are unsupported', async () => {
-        const link = await putFiles([['note.txt', 'lost']]);
-        const out = join(cwd, 'out');
-        await mkdir(out);
-        await writeFile(join(out, 'other.txt'), 'x');
-        const before = await readdir(out);
-
-        fsHooks.linkError = 'EPERM';
-        // Let the temporary file be written, then fail the write of the fallback copy (the second
-        // file opened).
-        fsHooks.opens = 0;
-        fsHooks.failOpenNumber = 2;
         const io = testIo();
-        expect(await run(['get', link, '-o', out], io)).not.toBe(0);
-        expect(fsHooks.opens).toBeGreaterThanOrEqual(2);
-        expect(await readdir(out)).toEqual(before);
+        expect(await run(['get', link, '-o', out, '--json'], io), io.err()).toBe(0);
+        const paths = JSON.parse(io.out()).items.map((i: { path: string }) => i.path);
+        expect(paths).toEqual([join(out, 'note (4).txt'), join(out, 'note (5).txt')]);
+        expect(await readFile(paths[0], 'utf8')).toBe('first');
+        expect(await readFile(paths[1], 'utf8')).toBe('second');
+
+        expect(await readFile(join(out, 'note.txt'), 'utf8')).toBe('old');
+        expect(await readlink(join(out, 'note (1).txt'))).toBe(outside);
+        expect(await readFile(outside, 'utf8')).toBe('keep me');
+        expect(await readlink(join(out, 'note (2).txt'))).toBe(dangling);
+        await expect(access(dangling)).rejects.toThrow();
+        expect((await lstat(join(out, 'note (3).txt'))).isDirectory()).toBe(true);
+        expect(await readdir(join(out, 'note (3).txt'))).toEqual([]);
+        expect((await readdir(out)).sort()).toEqual([
+            'note (1).txt',
+            'note (2).txt',
+            'note (3).txt',
+            'note (4).txt',
+            'note (5).txt',
+            'note.txt',
+        ]);
     });
 
-    it.each(['EPERM', 'ENOTSUP', 'EXDEV'])(
-        'writes a copy where a hard link fails with %s, never through a symlink',
-        async (code) => {
-            const link = await putFiles([['note.txt', 'from the capsule']]);
-            const out = join(cwd, 'out');
-            await mkdir(out);
-            const outside = join(cwd, 'outside.txt');
-            await writeFile(outside, 'keep me');
-            await symlink(outside, join(out, 'note.txt'));
-            const dangling = join(cwd, 'nowhere.txt');
-            await symlink(dangling, join(out, 'note (1).txt'));
-            fsHooks.linkError = code;
+    it('has no --force, -f or --raw and fails naming the item when no name is free', async () => {
+        const link = await putFiles([['note.txt', 'x']]);
+        for (const flag of ['--force', '-f', '--raw']) {
+            const io = testIo();
+            expect(await run(['get', link, flag], io), flag).toBe(2);
+        }
+        const help = testIo();
+        expect(await run(['--help'], help)).toBe(0);
+        expect(help.out()).not.toMatch(/--force|-f,|--raw/);
 
-            await withUmask(0o000, async () => {
-                const io = testIo();
-                expect(await run(['get', link, '-o', out, '--json'], io), io.err()).toBe(0);
-                const [item] = JSON.parse(io.out()).items;
-                expect(item.path).toBe(join(out, 'note (2).txt'));
-                expect(await readFile(item.path, 'utf8')).toBe('from the capsule');
-                if (posix) expect(await mode(item.path)).toBe(0o600);
-            });
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        await writeFile(join(out, 'note.txt'), 'taken');
+        for (let n = 1; n < 1000; n++) await writeFile(join(out, `note (${n}).txt`), 'taken');
+        const before = (await readdir(out)).sort();
 
-            expect(await readlink(join(out, 'note.txt'))).toBe(outside);
-            expect(await readlink(join(out, 'note (1).txt'))).toBe(dangling);
-            expect(await readFile(outside, 'utf8')).toBe('keep me');
-            await expect(access(dangling)).rejects.toThrow();
-            expect((await readdir(out)).sort()).toEqual([
-                'note (1).txt',
-                'note (2).txt',
-                'note.txt',
-            ]);
-        },
-    );
+        const io = testIo();
+        const code = await run(['get', link, '-o', out], io);
+        expect(code).not.toBe(0);
+        expect(code).not.toBe(2);
+        expect(io.err()).toContain('note.txt');
+        expect(io.err()).toContain('no free name');
+        expect((await readdir(out)).sort()).toEqual(before);
+    });
+
+    it('leaves the output location as it was when a write fails', async () => {
+        const single = await putFiles([['note.txt', 'lost']]);
+        const multi = await putFiles([
+            ['a.txt', 'a'],
+            ['b.txt', 'b'],
+        ]);
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        await writeFile(join(out, 'other.txt'), 'x');
+        const beforeOut = await readdir(out);
+        const beforeCwd = await readdir(cwd);
+
+        fsHooks.failWrites = true;
+        expect(await run(['get', single, '-o', out], testIo())).not.toBe(0);
+        expect(await readdir(out)).toEqual(beforeOut);
+        fsHooks.failWrites = false;
+
+        // The first item is written, the second fails: both the file and the
+        // capsule's new directory are removed, and so is the file in cwd.
+        for (const flags of [[], ['--here'], ['-o', out]]) {
+            fsHooks.opens = 0;
+            fsHooks.failOpenNumber = 2;
+            const io = testIo();
+            expect(await run(['get', multi, ...flags], io), flags.join(' ')).not.toBe(0);
+            expect(fsHooks.opens).toBe(2);
+            expect(await readdir(cwd)).toEqual(beforeCwd);
+            expect(await readdir(out)).toEqual(beforeOut);
+        }
+    });
+
+    it('writes a multi-item capsule into a new directory named after the date and id', async () => {
+        const link = await putFiles([
+            ['a.txt', 'a'],
+            ['b.txt', 'b'],
+        ]);
+        const name = capsuleDir(link);
+        await writeFile(join(cwd, name), 'a file');
+        await symlink(join(cwd, 'elsewhere'), join(cwd, `${name} (1)`));
+        const dir = join(cwd, `${name} (2)`);
+
+        const io = testIo();
+        expect(await run(['get', link], io), io.err()).toBe(0);
+        expect(io.out()).toBe('');
+        expect(io.err()).toContain(`created ${dir}\n`);
+        expect(wrotePaths(io)).toEqual([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+        expect(await readFile(join(dir, 'b.txt'), 'utf8')).toBe('b');
+        expect(await readFile(join(cwd, name), 'utf8')).toBe('a file');
+        await expect(access(join(cwd, 'elsewhere'))).rejects.toThrow();
+
+        const json = testIo();
+        expect(await run(['get', link, '--json'], json), json.err()).toBe(0);
+        const result = JSON.parse(json.out());
+        const next = join(cwd, `${name} (3)`);
+        expect(result.directory).toBe(next);
+        expect(result.items.map((i: { path: string }) => i.path)).toEqual([
+            join(next, 'a.txt'),
+            join(next, 'b.txt'),
+        ]);
+    });
+
+    it('writes items directly into the current directory with --here, or into -o DIR', async () => {
+        const link = await putFiles([
+            ['a.txt', 'a'],
+            ['b.txt', 'b'],
+        ]);
+        await writeFile(join(cwd, 'a.txt'), 'kept');
+
+        const here = testIo();
+        expect(await run(['get', link, '--here'], here), here.err()).toBe(0);
+        expect(wrotePaths(here)).toEqual([join(cwd, 'a (1).txt'), join(cwd, 'b.txt')]);
+        expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('kept');
+        expect(await readFile(join(cwd, 'a (1).txt'), 'utf8')).toBe('a');
+
+        const out = testIo();
+        expect(await run(['get', link, '-o', 'out'], out), out.err()).toBe(0);
+        expect(wrotePaths(out)).toEqual([join(cwd, 'out', 'a.txt'), join(cwd, 'out', 'b.txt')]);
+        expect(out.err()).not.toContain('created ');
+
+        const before = server.requests.length;
+        const both = testIo();
+        expect(await run(['get', link, '--here', '-o', 'out'], both)).toBe(2);
+        expect(both.err()).toContain('--here');
+        expect(server.requests).toHaveLength(before);
+
+        const help = testIo();
+        expect(await run(['--help'], help)).toBe(0);
+        const getSection = help.out().split('get options:')[1]!.split('delete options:')[0]!;
+        expect(getSection).toContain('--here');
+    });
+
+    it.each([
+        ['note.txt', 'plain text\n'],
+        ['main.rs', 'fn main() {}\n'],
+        ['README.md', '# Title\n'],
+        ['blob.bin', new Uint8Array([0, 1, 2, 0x1b, 0x9b, 255])],
+    ])('writes a single item %s to a file, never to stdout', async (name, content) => {
+        const link = await putFiles([[name, content]]);
+
+        const io = testIo();
+        expect(await run(['get', link], io), io.err()).toBe(0);
+        expect(io.out()).toBe('');
+        expect(wrotePaths(io)).toEqual([join(cwd, name)]);
+        expect(new Uint8Array(await readFile(join(cwd, name)))).toEqual(
+            typeof content === 'string' ? encodeUtf8(content) : content,
+        );
+
+        const json = testIo();
+        expect(await run(['get', link, '--json'], json), json.err()).toBe(0);
+        const result = JSON.parse(json.out());
+        expect(result.directory).toBe(cwd);
+        expect(result.items[0].path).toBe(join(cwd, name.replace(/(\.\w+)$/, ' (1)$1')));
+    });
+
+    // Acceptance (AC17): the capsule's directory is created non-recursively, so an
+    // existing directory of that name is not reused.
+    it('does not reuse an existing directory with the capsule directory name', async () => {
+        const link = await putFiles([
+            ['a.txt', 'a'],
+            ['b.txt', 'b'],
+        ]);
+        const name = capsuleDir(link);
+        await mkdir(join(cwd, name));
+        await writeFile(join(cwd, name, 'mine.txt'), 'mine');
+
+        const io = testIo();
+        expect(await run(['get', link], io), io.err()).toBe(0);
+        const dir = join(cwd, `${name} (1)`);
+        expect(io.err()).toContain(`created ${dir}\n`);
+        expect(wrotePaths(io)).toEqual([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+        expect(await readdir(join(cwd, name))).toEqual(['mine.txt']);
+        expect(await readFile(join(cwd, name, 'mine.txt'), 'utf8')).toBe('mine');
+    });
+
+    // Acceptance (AC19): no content on stdout even when stdout is a terminal.
+    it('writes a single item to a file when stdout is a terminal, also with -o', async () => {
+        const link = await putFiles([['note.txt', 'on a tty \x1b[31m\n']]);
+        for (const args of [[], ['-o', 'out']]) {
+            const io = testIo();
+            (io.stdout as { isTTY?: boolean }).isTTY = true;
+            expect(await run(['get', link, ...args], io), io.err()).toBe(0);
+            expect(io.out()).toBe('');
+            const dir = args.length ? join(cwd, 'out') : cwd;
+            expect(wrotePaths(io)).toEqual([join(dir, 'note.txt')]);
+            expect(await readFile(join(dir, 'note.txt'), 'utf8')).toBe('on a tty \x1b[31m\n');
+        }
+    });
+
+    // Acceptance (AC4): a failed write of a single item into the current directory.
+    it('leaves the current directory as it was when a single item write fails', async () => {
+        const single = await putFiles([['note.txt', 'lost']]);
+        const before = (await readdir(cwd)).sort();
+        fsHooks.failWrites = true;
+        const io = testIo();
+        expect(await run(['get', single], io)).not.toBe(0);
+        expect(io.out()).toBe('');
+        expect((await readdir(cwd)).sort()).toEqual(before);
+    });
 });
 
 describe('terminal output', () => {
@@ -1251,56 +1336,6 @@ describe('terminal output', () => {
                 }),
         );
     }
-
-    // ESC, BEL, a lone CR, DEL, C1 CSI and an invalid byte, among text that stays.
-    const HOSTILE = concatByteArrays(
-        encodeUtf8('red \x1b[31m bell \x07 a\rb del \x7f csi \u009b bad '),
-        new Uint8Array([0xff]),
-        encodeUtf8(' tab\tcrlf\r\nGrüße ✓ 😀\n'),
-    );
-    const SHOWN =
-        'red \\x1b[31m bell \\x07 a\\x0db del \\x7f csi \\u009b bad \\xff tab\tcrlf\r\nGrüße ✓ 😀\n';
-    const C1 = /[\u0080-\u009f]/;
-
-    it('shows control characters and invalid bytes of a single item as escapes on a TTY', async () => {
-        const link = await publish(HOSTILE);
-        const io = testIo({ stdoutTTY: true });
-        expect(await run(['get', link], io), io.err()).toBe(0);
-
-        expect(io.out()).toBe(SHOWN);
-        const bytes = io.outBytes();
-        for (const [i, byte] of bytes.entries()) {
-            const crlf = byte === 0x0d && bytes[i + 1] === 0x0a;
-            const allowed = byte === 0x09 || byte === 0x0a || crlf;
-            expect(allowed || (byte >= 0x20 && byte !== 0x7f), `byte ${byte} at ${i}`).toBe(true);
-        }
-        expect(decodeUtf8(bytes)).not.toMatch(C1);
-    });
-
-    it('writes the item byte for byte to a pipe, and to a TTY with --raw', async () => {
-        const link = await publish(HOSTILE);
-        const piped = testIo();
-        expect(await run(['get', link], piped)).toBe(0);
-        expect(piped.outBytes()).toEqual(HOSTILE);
-
-        const raw = testIo({ stdoutTTY: true });
-        expect(await run(['get', '--raw', link], raw)).toBe(0);
-        expect(raw.outBytes()).toEqual(HOSTILE);
-    });
-
-    it('accepts --raw only for get and lists it under the get options', async () => {
-        const created = await putText('x');
-        const put = testIo({ stdin: 'x' });
-        expect(await run(['put', '-s', SERVER, '--raw'], put)).toBe(2);
-        expect(put.err()).toContain('--raw does not apply to "put"');
-        expect(await run(['delete', '--raw', created.delete_url], testIo())).toBe(2);
-        expect(server.pastes.size).toBe(1);
-
-        const help = testIo();
-        expect(await run(['--help'], help)).toBe(0);
-        const getSection = help.out().split('get options:')[1]!.split('delete options:')[0]!;
-        expect(getSection).toContain('--raw');
-    });
 
     /** Every line of `stderr` is free of control characters but its trailing newline. */
     function expectEscapedLines(stderr: string) {

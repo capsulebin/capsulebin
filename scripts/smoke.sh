@@ -482,10 +482,12 @@ if [ -n "${CAPSULEBIN_CLI:-}" ]; then
 
   # Burn: exactly one retrieval. Afterwards the server answers like for any
   # unavailable capsule, so the CLI exits with 3 (not available).
+  # `get` writes items to files, never to stdout; stdin becomes the item "stdin".
   BURN_URL="$(printf 'once' | cli put --burn)" || fail "cli put --burn failed"
-  [ "$(cli get "${BURN_URL}" --yes 2>/dev/null)" = "once" ] || fail "cli could not retrieve a burn capsule"
+  cli get "${BURN_URL}" --yes -o "${CLI_DIR}/burn" >/dev/null 2>&1 || fail "cli could not retrieve a burn capsule"
+  [ "$(cat "${CLI_DIR}/burn/stdin")" = "once" ] || fail "cli retrieved a different burn capsule"
   set +e
-  cli get "${BURN_URL}" --yes >/dev/null 2>&1
+  cli get "${BURN_URL}" --yes -o "${CLI_DIR}/unexpected" >/dev/null 2>&1
   CODE=$?
   set -e
   [ "${CODE}" = "3" ] || fail "a consumed burn capsule gave exit code ${CODE} instead of 3"
@@ -493,7 +495,7 @@ if [ -n "${CAPSULEBIN_CLI:-}" ]; then
 
   cli delete "${DELETE_URL}" 2>/dev/null || fail "cli delete failed"
   set +e
-  cli get "${SHARE_URL}" >/dev/null 2>&1
+  cli get "${SHARE_URL}" -o "${CLI_DIR}/unexpected" >/dev/null 2>&1
   CODE=$?
   set -e
   [ "${CODE}" = "3" ] || fail "a deleted capsule gave exit code ${CODE} instead of 3"
@@ -508,8 +510,9 @@ if [ -n "${CAPSULEBIN_CLI:-}" ]; then
     fail "cli put --delete-link-file failed: $(cat "${PRIVATE_DIR}/put.err")"
   [ "$(stat -c '%a' "${LINK_FILE}")" = "600" ] || fail "the delete link file is not mode 600"
   grep -q '/manage/.*#v1\.' "${LINK_FILE}" || fail "the delete link file holds no management link"
-  [ "$(printf '%s\n' "${PRIVATE_URL}" | cli get - 2>"${PRIVATE_DIR}/get.err")" = "private" ] ||
+  printf '%s\n' "${PRIVATE_URL}" | cli get - -o "${PRIVATE_DIR}/out" >/dev/null 2>"${PRIVATE_DIR}/get.err" ||
     fail "cli get - failed: $(cat "${PRIVATE_DIR}/get.err")"
+  [ "$(cat "${PRIVATE_DIR}/out/stdin")" = "private" ] || fail "cli get - retrieved a different capsule"
   cli delete --link-file "${LINK_FILE}" 2>"${PRIVATE_DIR}/delete.err" ||
     fail "cli delete --link-file failed: $(cat "${PRIVATE_DIR}/delete.err")"
   for log in put get delete; do
@@ -518,7 +521,7 @@ if [ -n "${CAPSULEBIN_CLI:-}" ]; then
     fi
   done
   set +e
-  cli get "${PRIVATE_URL}" >/dev/null 2>&1
+  cli get "${PRIVATE_URL}" -o "${CLI_DIR}/unexpected" >/dev/null 2>&1
   CODE=$?
   set -e
   [ "${CODE}" = "3" ] || fail "a capsule deleted via --link-file gave exit code ${CODE} instead of 3"

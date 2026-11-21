@@ -9,7 +9,7 @@ import { Writable } from 'node:stream';
 import { promptStopped } from './exit';
 
 export interface Io {
-    stdout: { write(chunk: string | Uint8Array): unknown; isTTY?: boolean };
+    stdout: { write(chunk: string | Uint8Array): unknown };
     stderr: { write(chunk: string): unknown };
     /** Reads all of stdin. Only called when stdin is the content source. */
     readStdin(): Promise<Uint8Array>;

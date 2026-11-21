@@ -9,13 +9,13 @@
  * - the password, if the capsule needs one.
  *
  * After retrieval nothing may fail for a reason the user could have avoided:
- * output never refuses because of an existing file (it picks a free name
- * unless `--force`), and a multi-item capsule without `-o` lands in the
- * current directory instead of being rejected.
+ * an existing entry does not stop the output (it tries up to 1000 names,
+ * `name`, `name (1)`, …, before failing with `no_free_name`), and a
+ * multi-item capsule without `-o` lands in a new directory instead of being
+ * rejected. Item content only ever goes to files, never to stdout.
  */
 
-import { randomUUID } from 'node:crypto';
-import { link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, rmdir, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
     type CapsuleItem,
@@ -28,7 +28,7 @@ import {
 import { alreadyRetrieved, CliError, ExitCode, fromApiError, toCliError, usage } from '../exit';
 import type { Io } from '../io';
 import { existingPassword } from '../secrets';
-import { escapeContent, escapeDiagnostic, jsonLine } from '../terminal';
+import { escapeDiagnostic, jsonLine } from '../terminal';
 import { checkTransport } from '../transport';
 
 export interface GetOptions {
@@ -38,11 +38,10 @@ export interface GetOptions {
     /** Plain HTTP to a host other than loopback was opted into. */
     allowHttp: boolean;
     output: string | undefined;
+    /** Write several items directly to the current directory, not to a new one. */
+    here: boolean;
     passwordFile: string | undefined;
     yes: boolean;
-    force: boolean;
-    /** Write a single item to a terminal unchanged instead of escaping its control characters. */
-    raw: boolean;
     json: boolean;
 }
 
@@ -109,41 +108,36 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
     }
 
     const { capsule } = outcome;
-    const toStdout = !options.output && !options.json && capsule.items.length === 1;
+    const output = await outputDirectory(io.cwd, link.id, capsule.items.length, options);
+    let paths;
+    try {
+        paths = await writeItems(capsule.items, output.dir);
+    } catch (err) {
+        // Only an empty directory is removed: it holds nothing but what this run created.
+        if (output.created) await rmdir(output.dir).catch(() => {});
+        throw err;
+    }
 
-    if (toStdout) {
-        const item = capsule.items[0]!;
-        if (item.presentation === 'download' && io.stdout.isTTY) {
-            // Already retrieved — write it to a file rather than lose it.
-            const [path] = await writeItems(capsule.items, io.cwd, options.force);
-            io.stderr.write(`binary file written to ${escapeDiagnostic(path!)}\n`);
-        } else {
-            io.stdout.write(
-                io.stdout.isTTY && !options.raw ? escapeContent(item.bytes) : item.bytes,
-            );
-        }
+    if (options.json) {
+        io.stdout.write(
+            jsonLine({
+                title: capsule.title,
+                expires_at: outcome.expiresAt,
+                burn_after_retrieval: outcome.burnAfterRetrieval,
+                directory: output.dir,
+                items: capsule.items.map((item, i) => ({
+                    name: item.name,
+                    size: item.size,
+                    media_type: item.mediaType,
+                    presentation: item.presentation,
+                    language: item.language ?? null,
+                    path: paths[i],
+                })),
+            }),
+        );
     } else {
-        const dir = resolve(io.cwd, options.output ?? '.');
-        const paths = await writeItems(capsule.items, dir, options.force);
-        if (options.json) {
-            io.stdout.write(
-                jsonLine({
-                    title: capsule.title,
-                    expires_at: outcome.expiresAt,
-                    burn_after_retrieval: outcome.burnAfterRetrieval,
-                    items: capsule.items.map((item, i) => ({
-                        name: item.name,
-                        size: item.size,
-                        media_type: item.mediaType,
-                        presentation: item.presentation,
-                        language: item.language ?? null,
-                        path: paths[i],
-                    })),
-                }),
-            );
-        } else {
-            for (const path of paths) io.stderr.write(`wrote ${escapeDiagnostic(path)}\n`);
-        }
+        if (output.created) io.stderr.write(`created ${escapeDiagnostic(output.dir)}\n`);
+        for (const path of paths) io.stderr.write(`wrote ${escapeDiagnostic(path)}\n`);
     }
 
     if (outcome.burnAfterRetrieval) {
@@ -182,52 +176,100 @@ export function safeFileName(name: string, index: number): string {
     return cleaned;
 }
 
-/**
- * Writes each item to `dir`, owner-only (`0600`). Existing entries are never
- * overwritten unless `force`: a free name is chosen instead (`name (1).ext`),
- * because the content may not be retrievable a second time.
- *
- * Each item is first written to a fresh, exclusively created temporary file
- * in `dir` and then put in place, so an existing entry (a symlink above all)
- * is never written through and a failed write leaves nothing behind. With
- * `force` the entry is replaced by `rename`; a directory under the name still
- * gets a free name, since it cannot be replaced by a file.
- */
-async function writeItems(
-    items: readonly CapsuleItem[],
-    dir: string,
-    force: boolean,
-): Promise<string[]> {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const paths: string[] = [];
-    const used = new Set<string>();
+/** Attempts at a free name (`name`, `name (1)`, …) before giving up. */
+const MAX_NAME_ATTEMPTS = 1000;
 
-    for (const [index, item] of items.entries()) {
-        const name = safeFileName(item.name, index);
-        const temp = await writeTemp(dir, item.bytes);
-        try {
-            for (let n = 0; ; n++) {
-                const candidate = n === 0 ? name : withSuffix(name, n);
-                if (used.has(candidate)) continue;
-                const path = join(dir, candidate);
-                if (!(await place(temp, item.bytes, path, force && n === 0))) continue;
-                used.add(candidate);
-                paths.push(path);
-                break;
-            }
-        } finally {
-            // Gone after a rename; otherwise the placed copy is a hard link or a copy.
-            await unlink(temp).catch(() => {});
+/**
+ * The directory the items go to: `-o DIR` (created `0700` with its parents
+ * if missing), the current directory for a single item or with `--here`,
+ * else a new `0700` directory `capsule-<local date>-<id prefix>` in the
+ * current directory. `created` is set only for that new directory.
+ */
+async function outputDirectory(
+    cwd: string,
+    id: string,
+    itemCount: number,
+    options: Pick<GetOptions, 'output' | 'here'>,
+): Promise<{ dir: string; created: boolean }> {
+    if (options.output !== undefined) {
+        const dir = resolve(cwd, options.output);
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        return { dir, created: false };
+    }
+    if (itemCount === 1 || options.here) return { dir: cwd, created: false };
+
+    const name = `capsule-${localDate(new Date())}-${id.slice(0, 8)}`;
+    const dir = await createUnderFreeName(
+        cwd,
+        name,
+        (n) => `${name} (${n})`,
+        (path) => mkdir(path, { mode: 0o700 }).then(() => {}),
+        `the capsule's directory ${name}`,
+    );
+    return { dir, created: true };
+}
+
+/** `YYYY-MM-DD` in local time. */
+function localDate(date: Date): string {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * Writes each item to a new owner-only (`0600`) file in `dir`. An existing
+ * entry of any kind (file, symlink – dangling or not –, directory) is never
+ * opened, followed or replaced: the item gets the next free name
+ * (`name (1).ext`), because the content may not be retrievable a second time.
+ * If a write fails, the files written so far are removed again.
+ */
+async function writeItems(items: readonly CapsuleItem[], dir: string): Promise<string[]> {
+    const paths: string[] = [];
+    try {
+        for (const [index, item] of items.entries()) {
+            const name = safeFileName(item.name, index);
+            paths.push(
+                await createUnderFreeName(
+                    dir,
+                    name,
+                    (n) => withSuffix(name, n),
+                    (path) => writeNew(path, item.bytes),
+                    `item ${index + 1} (${name})`,
+                ),
+            );
         }
+    } catch (err) {
+        for (const path of paths) await unlink(path).catch(() => {});
+        throw err;
     }
     return paths;
 }
 
-/** Writes `bytes` to a new `0600` file in `dir` and returns its path. */
-async function writeTemp(dir: string, bytes: Uint8Array): Promise<string> {
-    const temp = join(dir, `.capsulebin-${randomUUID()}.tmp`);
-    await writeNew(temp, bytes);
-    return temp;
+/**
+ * Creates an entry in `dir` with `create`, which must fail with `EEXIST` when
+ * the name is taken, under `name` or else the first free `suffixed(n)`.
+ * Returns its path; fails naming `what` when no name is free.
+ */
+async function createUnderFreeName(
+    dir: string,
+    name: string,
+    suffixed: (n: number) => string,
+    create: (path: string) => Promise<void>,
+    what: string,
+): Promise<string> {
+    for (let n = 0; n < MAX_NAME_ATTEMPTS; n++) {
+        const path = join(dir, n === 0 ? name : suffixed(n));
+        try {
+            await create(path);
+            return path;
+        } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        }
+    }
+    throw new CliError(
+        `no free name for ${what} in ${dir} after ${MAX_NAME_ATTEMPTS} attempts`,
+        ExitCode.Failure,
+        'no_free_name',
+    );
 }
 
 /**
@@ -245,46 +287,6 @@ async function writeNew(path: string, bytes: Uint8Array): Promise<void> {
         }
     } catch (err) {
         await unlink(path).catch(() => {});
-        throw err;
-    }
-}
-
-/** `link` errors of file systems without hard links (vfat, exFAT, many FUSE and network mounts). */
-const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'EMLINK', 'ENOSYS']);
-
-/**
- * Puts the file `temp` (holding `bytes`) at `path`: replacing whatever entry
- * is there if `replace` (except a directory), else only if the name is free.
- * Where the file system has no hard links, a free name gets a fresh copy of
- * `bytes` instead. Returns false if the name is taken.
- */
-async function place(
-    temp: string,
-    bytes: Uint8Array,
-    path: string,
-    replace: boolean,
-): Promise<boolean> {
-    try {
-        await (replace ? rename(temp, path) : link(temp, path));
-        return true;
-    } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'EEXIST') return false;
-        if (replace && (await lstat(path).catch(() => undefined))?.isDirectory()) return false;
-        if (!replace && code !== undefined && NO_HARD_LINKS.has(code)) {
-            return await writeCopy(path, bytes);
-        }
-        throw err;
-    }
-}
-
-/** Writes `bytes` to `path` only if the name is free. Returns false if it is taken. */
-async function writeCopy(path: string, bytes: Uint8Array): Promise<boolean> {
-    try {
-        await writeNew(path, bytes);
-        return true;
-    } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
         throw err;
     }
 }

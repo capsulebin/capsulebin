@@ -2,12 +2,11 @@
  * The bundled CLI on a real pseudo-terminal: the hidden password prompt and
  * the burn confirmation work, Ctrl-C and EOF stop the command with exit code 8
  * before the request the prompt guards, and the terminal is left with echo
- * and canonical mode on, whichever way the prompt ended. Escape sequences in
- * a text item reach the terminal only as visible escapes, unless `--raw`.
+ * and canonical mode on, whichever way the prompt ended.
  */
 
 import { randomBytes } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startHarness, type Harness, type TerminalRun } from './pty';
@@ -32,6 +31,18 @@ async function put(text: string, options: { password?: string; burn?: boolean } 
     const result = await harness.cli(args);
     expect(result.exitCode, result.stderr).toBe(0);
     return (JSON.parse(result.stdout) as { share_url: string }).share_url;
+}
+
+/** A fresh, not yet existing output directory for `get -o`. */
+async function outputDir(): Promise<string> {
+    return join(await mkdtemp(join(harness.dir, 'out-')), 'out');
+}
+
+/** The content of the one file `get` wrote into `dir`. */
+async function writtenFile(dir: string): Promise<string> {
+    const names = await readdir(dir);
+    expect(names).toHaveLength(1);
+    return readFile(join(dir, names[0]!), 'utf8');
 }
 
 function retrieves(run: TerminalRun) {
@@ -75,14 +86,16 @@ describe.skipIf(process.platform === 'win32')('prompts on a terminal', () => {
         async () => {
             const marker = `pw-${randomBytes(8).toString('hex')}`;
             const link = await put('protected plaintext\n', { password: marker });
+            const out = await outputDir();
 
             const run = await harness.terminal(
-                ['get', link],
+                ['get', link, '-o', out],
                 [{ expect: 'Password: ', send: `${marker}\r` }],
             );
 
             expect(run.exitCode, run.text).toBe(0);
-            expect(run.text).toContain('protected plaintext\n');
+            expect(await writtenFile(out)).toBe('protected plaintext\n');
+            expect(run.text).not.toContain('protected plaintext');
             expect(run.output.includes(marker)).toBe(false);
             expect(retrieves(run)).toHaveLength(1);
             expectRestored(run);
@@ -94,11 +107,15 @@ describe.skipIf(process.platform === 'win32')('prompts on a terminal', () => {
         'retrieves a burn capsule after the confirmation is answered y',
         async () => {
             const link = await put('burn plaintext\n', { burn: true });
+            const out = await outputDir();
 
-            const run = await harness.terminal(['get', link], [{ expect: CONFIRM, send: 'y\r' }]);
+            const run = await harness.terminal(
+                ['get', link, '-o', out],
+                [{ expect: CONFIRM, send: 'y\r' }],
+            );
 
             expect(run.exitCode, run.text).toBe(0);
-            expect(run.text).toContain('burn plaintext\n');
+            expect(await writtenFile(out)).toBe('burn plaintext\n');
             expect(retrieves(run)).toHaveLength(1);
             expectRestored(run);
         },
@@ -113,16 +130,17 @@ describe.skipIf(process.platform === 'win32')('prompts on a terminal', () => {
         'stops before retrieving a burn capsule on $what at the confirmation',
         async ({ answer, reason: expected }) => {
             const link = await put('kept plaintext\n', { burn: true });
+            const out = await outputDir();
 
             const run = await harness.terminal(
-                ['get', '--json', link],
+                ['get', '--json', link, '-o', out],
                 [{ expect: CONFIRM, send: answer }],
             );
 
             expect(run.exitCode, run.text).toBe(8);
             expect(reason(run)).toBe(expected);
             expect(retrieves(run)).toEqual([]);
-            expect(run.text).not.toContain('kept plaintext');
+            await expect(access(out)).rejects.toThrow();
             expectRestored(run);
         },
         TIMEOUT,
@@ -185,24 +203,6 @@ describe.skipIf(process.platform === 'win32')('prompts on a terminal', () => {
             expect(run.output.includes(marker)).toBe(false);
             expect(creates(run)).toHaveLength(1);
             expectRestored(run);
-        },
-        TIMEOUT,
-    );
-
-    it(
-        'shows the escape sequences of a text item as literal escapes, raw only with --raw',
-        async () => {
-            const link = await put('title \x1b]0;MARK\x07 clear \x1b[2J end\n');
-
-            const shown = await harness.terminal(['get', link], []);
-            expect(shown.exitCode, shown.text).toBe(0);
-            expect(shown.text).toContain('title \\x1b]0;MARK\\x07 clear \\x1b[2J end\n');
-            expect(shown.output.includes(0x1b)).toBe(false);
-            expect(shown.output.includes(0x07)).toBe(false);
-
-            const raw = await harness.terminal(['get', '--raw', link], []);
-            expect(raw.exitCode, raw.text).toBe(0);
-            expect(raw.output.includes('\x1b]0;MARK\x07 clear \x1b[2J')).toBe(true);
         },
         TIMEOUT,
     );
