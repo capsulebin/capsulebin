@@ -36,7 +36,8 @@ cargo test --workspace --locked
 npm run format:check
 npm run check -w @capsulebin/core && npm test -w @capsulebin/core
 npm run check -w @capsulebin/web  && npm test -w @capsulebin/web
-npm run check -w @capsulebin/cli  && npm test -w @capsulebin/cli
+npm run check -w @capsulebin/cli  && npm test -w @capsulebin/cli   # needs python3 on PATH
+./scripts/reproducible-web.sh   # two web builds, byte-identical
 ```
 
 and, for changes to the server or the assets, the acceptance check and the browser tests against a

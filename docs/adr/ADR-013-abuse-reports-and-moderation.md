@@ -45,12 +45,13 @@ optional `contact`.
   `check_text` on the server), so the page never sends a text the server would refuse for a key.
   A bare key without `#` is not detected on either side. The page refuses rather than cutting the
   key out: removing text from free text is guesswork, and the reporter would not see what was sent.
-- Text with control characters is refused, so a report shown in the operator's terminal cannot carry
-  escape sequences.
+- Control characters are refused (in the description all but line breaks and tabs, in the contact
+  all), so a report shown in the operator's terminal cannot carry escape sequences.
 - Reports have their own rate-limit class (`rate_limits.report`, which may be set per hour).
 - `GET /api/v1/reports` describes the policy (enabled, contact, reason codes, limits) for the page.
-- `abuse.enabled = false` turns the endpoint off (`404 reports_disabled`, answered before the body
-  is read); moderation keeps working.
+- `abuse.enabled = false` turns report submission off (`POST` answers `404 reports_disabled` before
+  the body is read; `GET` still describes the policy with `enabled: false`); moderation keeps
+  working.
 - The request body is limited to 32 KiB: a report holds at most 4000 bytes of description and 254
   of contact, below 26 KB even with every character escaped as `\uXXXX`, so no valid report is
   refused.

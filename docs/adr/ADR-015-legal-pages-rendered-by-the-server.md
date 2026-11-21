@@ -14,10 +14,10 @@ Most of a privacy notice for CapsuleBin is fixed by the software: what the serve
 it stores, how long, and that it sets no cookies. An operator who has to write that themselves will
 get it wrong or out of date, for example when a retention period in the configuration changes.
 
-Until now every byte the server put into a page came from the binary: the HTML shells, scripts and
-styles are embedded at build time, and the server inserts nothing (ADR-004). That is part of the
-answer to "can the server change what runs in my browser?" (ADR-001): only by shipping a different
-binary.
+Without legal pages every byte the server puts into a page comes from the binary: the HTML shells,
+scripts and styles are embedded at build time, and the server inserts nothing (ADR-004). That is
+part of the answer to "can the server change what runs in my browser?" (ADR-001): only by shipping a
+different binary.
 
 ## Decision
 
@@ -32,11 +32,14 @@ binary.
   stays true when the configuration changes. `extra` adds what the software cannot know (the
   reverse proxy's logs, backups); `text`, `file` or `url` replace a text entirely.
 - Built-in texts need an operator: a privacy notice without a controller is worse than none.
-  Without `[legal.operator]` there are no legal pages and no footer links.
+  Without `[legal.operator]` the built-in texts are not served (an `extra` is a startup error); a
+  privacy notice or terms the operator writes in full (`text`/`file`) or links (`url`) still
+  appear. With no legal section at all there are no legal pages and no footer links.
 
 **The server renders the texts, at startup.** Files are read and Markdown is rendered once
-(`legal.rs`, `pulldown-cmark`); a request copies the finished HTML into the `legal.html` shell at
-HTML-comment markers, and the footer links into every shell. The rendered Markdown contains **no
+(`legal.rs`, `pulldown-cmark`); the finished HTML is put into the `legal.html` shell at
+HTML-comment markers, and the footer links into every shell, once when the routes are built (per
+request only with `server.asset_dir`). The rendered Markdown contains **no
 raw HTML** (it is shown as text) and **no images** (they become links), and links only to `http(s)`,
 `mailto`, `tel`, paths on this host and fragments. `url` values are limited to absolute `http(s)`
 URLs and single-slash paths. Startup fails on a missing file, an empty or oversized text, or a
@@ -47,7 +50,7 @@ script, stylesheet or shell; the CSP (`script-src 'self'`, Trusted Types) would 
 script even if one got through. The shells still do not depend on the path id, and capsule content
 is never rendered by the server.
 
-**Amendment (ADR-016, legal texts per language):** every legal page exists in every interface
+**Per language (ADR-016):** every legal page exists in every interface
 language, at `/imprint`, `/privacy`, `/terms` for the default language and under `/{lang}/` for
 every other ([i18n.md](../i18n.md#legal-pages) has the rules in detail):
 
@@ -71,7 +74,7 @@ every other ([i18n.md](../i18n.md#legal-pages) has the rules in detail):
 
 ## Rejected
 
-- **Links only (`imprint_url`, `privacy_url`, `terms_url`).** The first version. Forces every
+- **Links only (`imprint_url`, `privacy_url`, `terms_url`).**  Forces every
   operator to host the pages elsewhere, and leaves the privacy notice - most of which the software
   determines - to each operator.
 - **Rendering in the browser with the existing Markdown pipeline.** No new dependency, but the
@@ -85,10 +88,10 @@ every other ([i18n.md](../i18n.md#legal-pages) has the rules in detail):
 
 ## Consequences
 
-- The server now inserts content into a page. It is the operator's, rendered with a restricted
+- The server inserts content into a page. It is the operator's, rendered with a restricted
   Markdown subset, and covered by tests (raw HTML, unsafe links, images, escaping) and by the
   browser tests under the CSP guard.
-- `pulldown-cmark` is a new server dependency, used for nothing else.
+- `pulldown-cmark` is a server dependency used for nothing else.
 - The built-in texts are part of the product: a change to what the server stores or logs must
   update them in every language (`legal/defaults/{en,de}.rs`) and
   [privacy-notice.md](../privacy-notice.md). They are a careful

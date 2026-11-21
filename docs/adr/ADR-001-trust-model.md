@@ -90,7 +90,8 @@ their tokens are 256 bits with no password to guess.
   lets anyone holding the descriptor do the same, entirely offline and unbounded by any rate limit.
   A password guess is instead only ever checked by deriving a reveal token with it and attempting
   retrieval: wrong password, wrong link secret and an expired or already-burned paste all fail
-  identically.
+  identically (only the loser of two concurrent retrievals of a burn paste, holding valid tokens,
+  gets `410 already_retrieved`).
 - **Counting every failed request per paste id.** One request a second with a made-up token would
   keep the bucket empty, and the real recipient would get `429` for as long as that went on —
   blocking a capsule would need nothing but its id.
@@ -98,10 +99,10 @@ their tokens are 256 bits with no password to guess.
   with only the id could no longer drain it, but would see the `429` while a link holder guesses —
   an existence oracle for that id.
 - **Taking the per-paste key from the raw request URI in the middleware** and handing the limit to
-  the handler as an optional request extension. The middleware parsed the percent-encoded path, the
-  handler looked the paste up by the decoded one: a percent-encoded spelling of a real id found the
-  capsule with no limit attached, so a leaked link allowed unlimited password guesses. One id,
-  parsed once, by the code that looks the paste up, closes that gap.
+  the handler as an optional request extension. The middleware would parse the percent-encoded path,
+  the handler look the paste up by the decoded one: a percent-encoded spelling of a real id would
+  find the capsule with no limit attached, so a leaked link would allow unlimited password guesses.
+  One id, parsed once, by the code that looks the paste up, closes that gap.
 - **Preventive content moderation.** Impossible under zero knowledge. Instead there is
   notice-and-action on paste ids: a reported capsule can be disabled or deleted without decrypting
   it ([ADR-013](ADR-013-abuse-reports-and-moderation.md)).

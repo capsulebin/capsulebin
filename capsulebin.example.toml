@@ -71,7 +71,7 @@ allow_permanent = false
 max_plaintext_size = "10MiB"
 
 # Limit on the opaque public header a client may store. This is the one
-# client-supplied blob returned on an unauthenticated descriptor request, so it is
+# client-supplied blob returned on every describe request, so it is
 # kept small; 4KiB is the highest accepted value.
 max_public_header_size = "2KiB"
 
@@ -103,7 +103,7 @@ inactive_after = "90d"
 retrieval_timestamp_granularity = "1h"
 
 # Rows removed per rule per statement. The job keeps going until a pass removes
-# nothing, so this bounds a single write, not the total.
+# nothing, so this bounds a single write, not the total. Between 1 and 10000.
 batch_size = 500
 
 [creation]
@@ -117,7 +117,9 @@ batch_size = 500
 # not an open write target.
 mode = "token"
 
-# SHA-256 of each accepted token, base64url without padding. The plain token is
+# Entries "sha256:<base64url>": the domain-separated SHA-256 of each accepted
+# token, base64url without padding. With mode = "token" at least one entry is
+# required; the server refuses to start with an empty list. The plain token is
 # never stored here, so this file does not need to be treated as a secret store.
 #
 # Generate a token and its entry with:
@@ -153,7 +155,8 @@ burst = 0
 # maximum-size uploads cannot hide behind the request rate. While set, a create
 # without Content-Length is refused with 411. Off unless set.
 # bytes_per_day = "100MiB"
-# Create requests in flight per client IP (e.g. 2).
+# Create requests in flight per client IP (e.g. 2). 0 (the default) means no
+# limit.
 max_concurrent = 0
 
 [rate_limits.descriptor]
@@ -264,8 +267,8 @@ hide_name = false
 # symbol.
 # favicon = "/etc/capsulebin/branding/favicon.png"
 
-# Every page links "Powered by CapsuleBin" to the source code of the software
-# the instance runs (AGPL-3.0, section 13); the link opens in a new tab. It
+# Every page ends with "Powered by CapsuleBin", "CapsuleBin" linked to the source
+# code of the software the instance runs (AGPL-3.0, section 13); the link opens in a new tab. It
 # cannot be switched off; if you run a modified version, point it to your
 # source code. An absolute http(s) URL without user name or password.
 source_url = "https://github.com/capsulebin/capsulebin"

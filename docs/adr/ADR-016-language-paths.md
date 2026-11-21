@@ -112,6 +112,4 @@ language lives under `/<lang>/`:** with the default `en`, `/p/{id}` is the Engli
   report, cannot change language in place; the choice applies from the next page.
 - An instance cannot use a `public_url` whose path ends in `/en` or `/de` (or any later language
   code), also not through dot segments (`/team/de/.`), nor one with a query or fragment; such an
-  instance has to move to another base, for the web interface a host of its own at `/`. Links
-  issued under such a base by an earlier version are read by the CLI as carrying a language
-  segment (see the upgrade note in `docs/operations.md`).
+  instance has to move to another base, for the web interface a host of its own at `/`.

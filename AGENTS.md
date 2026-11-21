@@ -10,14 +10,14 @@ and lifecycle metadata and **never sees capsule plaintext, keys, or link secrets
 > The server never sees the link secret, the password, or the AES key. The only plaintext it
 > receives is an abuse report's description and optional contact (personal data, ADR-013).
 
-Version 1.0 (protocol v1 frozen, see ADR-003 and `CHANGELOG.md`). A multi-item encrypted capsule works end-to-end:
-create, describe, retrieve, delete, burn-after-retrieval, password protection, Markdown/code
-rendering, file items, retention/pruning, rate limiting, idempotent create, the CLI
-(`put`/`get`/`delete`), abuse reports and the operator moderation commands are all implemented.
-The web interface is in English and German: the default language without a path prefix, the other
-under its prefix (`/de/`). Operators can set the instance's name, tagline, logo, favicon and theme
-colours (`[branding]`); every page says "Powered by CapsuleBin", with "CapsuleBin" linked to the
-source code.
+Version 1.0.0, not yet released (protocol v1 fixed by ADR-003, see `CHANGELOG.md`). A multi-item
+encrypted capsule works end-to-end: create, describe, retrieve, delete, burn-after-retrieval,
+password protection, Markdown/code rendering, file items, retention/pruning, rate limiting,
+idempotent create, the CLI (`put`/`get`/`delete`), abuse reports and the operator moderation
+commands are all implemented. The web interface is in English and German: the default language
+without a path prefix, the other under its prefix (`/de/`). Operators can set the instance's name,
+tagline, logo, favicon and theme colours (`[branding]`); every page says "Powered by CapsuleBin",
+with "CapsuleBin" linked to the source code.
 
 ## Repository layout
 
@@ -27,7 +27,7 @@ capsulebin/
 │   ├── server/         Rust crate `capsulebin-server` — Axum server, config, DB, HTTP layer
 │   │   ├── src/        Rust source
 │   │   ├── web/        @capsulebin/web — browser client (Vite/Lit), embedded into server binary
-│   │   └── build.rs    Embeds src/server/web/dist at compile time via rust-embed
+│   │   └── build.rs    Creates src/server/web/dist if missing; rust-embed embeds it at compile time
 │   ├── cli/            @capsulebin/cli — standalone command-line client (esbuild, Node.js)
 │   └── core/           @capsulebin/core — platform-neutral capsule format, crypto, API client
 │                         (no DOM, no build step; shared by web client and CLI)
@@ -80,7 +80,8 @@ These are hard constraints — never relax them without an ADR:
 2. **The link secret lives in the URL fragment** (`#`), which browsers never transmit in
    HTTP requests.
 3. **Capability verifiers, not secrets.** The server stores only SHA-256 hashes of
-   reveal/delete/create tokens. Comparisons use constant-time (`subtle` crate), never `==`.
+   describe/reveal/delete/creation tokens. Comparisons use constant-time (`subtle` crate), never
+   `==`.
 4. **Independent delete secret.** Not derived from the link secret — otherwise every
    recipient could delete the capsule.
 5. **Indistinguishable responses.** Unknown, expired, disabled, deleted, and wrong-capability
@@ -128,7 +129,8 @@ Byte 10..14  Manifest length (u32, BE)
 Byte 14..    Manifest (UTF-8 JSON) + items (concatenated bytes, no delimiters)
 ```
 
-- Max 16 items, max 10 MiB plaintext per capsule, max 64 KiB manifest.
+- Max 16 items, max 10 MiB per encoded capsule (`MAX_CAPSULE_BYTES`: header + manifest + items;
+  items together at most `MAX_ITEM_BYTES`), max 64 KiB manifest.
 - Padded with `0x00` to the PADMÉ length (capped at 10 MiB); decoders reject non-zero padding and
   refuse input above `MAX_CAPSULE_BYTES` before scanning it.
 - Reference implementation: `src/core/src/capsule.ts`.
@@ -330,7 +332,7 @@ most once a minute (table and ceiling, no address or id). The clock is injectabl
 ```sh
 npm install          # resolves src/{core,cli,server/web} workspaces
 # python3 must be on PATH for the CLI's pseudo-terminal tests
-npm run build -w @capsulebin/web   # build frontend (required before cargo build)
+npm run build -w @capsulebin/web   # build frontend (else no pages are served)
 ```
 
 ### Development server
@@ -402,13 +404,17 @@ npm run e2e -w @capsulebin/web
 | `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables); dry-run counts them and changes nothing. |
 | `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
 | `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`. |
-| `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; the migration starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired. Fails on an edited released migration. |
+| `src/server/tests/upgrade.rs` | A database at schema 3 (migrations 0001–0003, `tests/fixtures/capsulebin-1.0.sql`, never regenerated) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; migration 0004 starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired. Fails when an existing migration is edited (sqlx checksum). |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
+| `src/server/tests/http.rs` | Security headers on every response; `/p/{id}` and `/<lang>/p/{id}` answer byte-identically for every id, whichever language is the default. |
+| `src/server/tests/language_paths_acceptance.rs`, `legal_languages.rs` | Edge cases of the language paths; legal pages per language (`[legal.<lang>.*]`, fallback per section, `lang` marking, titles from the shell). |
 | `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
 | `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`); 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
 | `src/core/tests/limits.test.ts`, `limits.acceptance.test.ts` | Core API client against a fake `fetch`: oversized bodies (every endpoint, error statuses, without/wrong/correct `Content-Length`) cancelled after at most the limit plus one chunk; a capsule at `MAX_CAPSULE_BYTES` still opens; total and idle deadlines with fake timers abort the signal. `limits.acceptance.test.ts`: the edges (an error body of exactly 64 KiB read, one byte more cut off; a create still waiting after 30 s; a describe or error body stalled for 30 s times out). Shared fakes (`endlessBody`, `stallingBody`, `observe`, `sealedPaste`) in `limits-support.ts`. |
+| `src/core/tests/redirect.test.ts` | The API client follows no redirect, against two real HTTP servers. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
+| `src/server/web/tests/xss.test.ts`, `trusted-html-usage.test.ts` | XSS vectors through the marked + DOMPurify pipeline; no bare `innerHTML` assignment in the sources (jsdom does not enforce Trusted Types). |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
 | `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; the tagline markers wrap the create page's slogan only. |
 | `src/server/tests/branding.rs` | `/branding/` files served byte-identical with MIME type, immutable caching and security headers, every other `/branding/` path the generic `404`; name, tagline (per language, empty, escaped), logo, `hide_name`, dark logo, favicon and attribution on every page in `en`/`de` (own test shells), operator values escaped and never read as tokens or markers. |
@@ -459,15 +465,16 @@ npm run e2e -w @capsulebin/web
 | `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
 | `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with id carry-over (`carry_ids`) and rollback, `restore_dry_run` (tests in `backup/tests.rs`) |
-| `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
+| `src/domain.rs` | Domain module root; re-exports `PasteId` (`domain/id.rs`: 128 bits, 22-char base64url), `Verifier`, `Clock`/`SystemClock` (`domain/clock.rs`, also `FixedClock` for tests), `Availability`/`NewPaste`/`Paste`, `PurgePolicy`/`PurgeOutcome` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |
 | `src/domain/purge.rs` | Retention rule evaluation |
 | `src/domain/abuse.rs` | Report validation, reason/resolution/action codes (ADR-013) |
-| `src/repository.rs` | `PasteRepository` trait |
+| `src/repository.rs` | `PasteRepository` and `AbuseRepository` traits, `ReportCeilings`, `ReportEntry`, `SubmitOutcome`, `AbusePurgeOutcome` |
 | `src/repository/sqlite.rs` | SQLite implementation (SQLx queries) |
 | `src/repository/sqlite/abuse.rs` | `AbuseRepository`: reports (capped by the open report ceilings), moderation, audit trail, retention |
 | `src/api.rs` | API module root |
+| `src/api/pastes.rs` | Paste router; per-route 4 KiB `PROOF_BODY_LIMIT` for describe, retrieve and delete |
 | `src/api/pastes/handlers.rs` | Route handlers: create, describe, retrieve, delete |
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
@@ -495,6 +502,7 @@ npm run e2e -w @capsulebin/web
 | `src/api.ts` | HTTP API client (optional creation token; `ApiError` with `code`/`retryAfter`); follows no redirect (`ApiError` code `redirect_refused`, exported as `REDIRECT_REFUSED`, `Location` not passed on); `MalformedHeaderError` for a describe header the parser refuses; every body (errors too) read as a counted stream, cancelled above 64 KiB, a successful retrieve above base64url of `MAX_CIPHERTEXT_BYTES` (`MAX_CAPSULE_BYTES` + 16) + 1 KiB → code `response_too_large` (`RESPONSE_TOO_LARGE`); total deadline 30 s describe/delete, 10 min create/retrieve, 30 s idle per body → code `timeout` (`TIMEOUT`); both status `0`, fixed, not configurable |
 | `src/open.ts` | Recipient flow `openPaste()`: descriptor → reveal → decrypt → decode (web + CLI); a ciphertext above `MAX_CIPHERTEXT_BYTES` is `invalid_capsule` before decrypting |
 | `src/links.ts` | Share/management link and fragment parsing (accepts a language segment before `p`/`manage`); `trailingLanguage()`: the language code a base URL ends in; `hasQueryOrFragment()`: a base URL with a `?` or `#` |
+| `src/index.ts` | Package entry, re-exports the public modules |
 | `src/languages.ts` | `KNOWN_LANGUAGES` — interface language codes |
 | `src/public_header.ts` | Protocol constants (incl. `MIN_PBKDF2_ITERATIONS`, `MAX_PBKDF2_ITERATIONS`, `PASSWORD_SALT_BYTES`), public header type, its parser (password parameter bounds) and canonical serialization |
 | `src/helpers/bytes.ts` | Byte array utilities (base64url, hex, concatenation) |
@@ -526,6 +534,7 @@ npm run e2e -w @capsulebin/web
 | `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
 | `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix, default language, name, favicon and source link (after escaping, `{name}` in a catalogue text becomes the name token, `{project}` the `CapsuleBin` link to the source token, opened in a new tab); `fillServerTokens()` fills them with the defaults for the dev server |
 | `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
+| `public/theme-init.js` | Head script: applies the stored theme and sets the `color-scheme` meta before the paint |
 | `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
 | `src/styles/tokens.css` | Design tokens |

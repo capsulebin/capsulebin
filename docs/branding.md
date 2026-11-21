@@ -1,18 +1,18 @@
 # Operator branding
 
 An operator can present a CapsuleBin instance under their own identity without a rebuild. The
-`[branding]` table sets the name shown in place of "CapsuleBin" in the web pages, the slogan next
-to the logo on the create page (per language if needed, or none), a logo that replaces the
-built-in symbol in the header (optionally a second one for the dark theme), a favicon, and the
-colours of the light and the dark theme (`[branding.colors]`). The server reads the image files
-once at startup, generates a small stylesheet from the colours, serves both same-origin under
-content-derived URLs and fills everything into the shells, as it does for the legal pages
-(ADR-015). The system preference and the theme toggle keep working with the operator's colours; a
-colour pair below the contrast the built-in theme holds is a warning, not an error. Every page of
-every instance, branded or not, carries a fixed "Powered by CapsuleBin" attribution in the footer,
-in which "CapsuleBin" links to the source code (AGPL-3.0 §13) in a new tab; only the link target
-is configurable. An instance without `[branding]` looks as before, plus that attribution and a
-built-in favicon. See [ADR-017](adr/ADR-017-operator-branding.md).
+`[branding]` table sets the name shown in place of "CapsuleBin" in the web pages, the slogan next to
+the logo on the create page (per language if needed, or none), a logo that replaces the built-in
+symbol in the header (optionally a second one for the dark theme), a favicon, and the colours of the
+light and the dark theme (`[branding.colors]`). The server reads the image files once at startup,
+generates a small stylesheet from the colours, serves both same-origin under content-derived URLs
+and fills everything into the shells, as it does for the legal pages (ADR-015). The system
+preference and the theme toggle keep working with the operator's colours; a colour pair below the
+contrast the built-in theme holds is a warning, not an error. Every page of every instance, branded
+or not, carries a fixed "Powered by CapsuleBin" attribution in the footer, in which "CapsuleBin"
+links to the source code (AGPL-3.0 §13) in a new tab; only the link target is configurable. An
+instance without `[branding]` shows the built-in name, symbol, slogan and colours, plus that
+attribution and the built-in favicon. See [ADR-017](adr/ADR-017-operator-branding.md).
 
 ## Rules
 
@@ -169,8 +169,8 @@ Every page of the five shells (create, view, manage, report, and the three legal
   no key removes it. Only the word "CapsuleBin" is the link; "Powered by" / "Betrieben mit" is
   text outside it. The link opens in a new tab (`target="_blank"`, `rel="noopener noreferrer"`), so
   the current page — possibly an opened capsule or a draft — stays in place.
-- **The other pages keep their page title next to the logo** (`.cb-claim` without markers); the
-  tagline replaces only the create page's slogan.
+- **The manage, report and legal pages keep their page title next to the logo** (`.cb-claim`
+  without markers); the view page has none. The tagline replaces only the create page's slogan.
 - **Operator values are escaped and never interpreted.** `name`, `tagline`, `source_url` and the
   favicon URL are HTML-escaped (`&`, `<`, `>`, `"`, `'`). A name or tagline that contains a server
   token (`%%capsulebin:prefix%%`) or a marker (`<!--capsulebin:legal-link:…-->`) appears literally.
@@ -194,7 +194,7 @@ Every page of the five shells (create, view, manage, report, and the three legal
 | `src/server/src/commands/serve.rs`, `check.rs` | Contrast warnings: `tracing::warn!` at startup, `warning: …` on stderr |
 | `src/server/src/lib.rs` | `AppState.branding: Arc<Branding>`; `router()` merges `api::branding::routes` before the asset routes |
 | `src/server/src/api/branding.rs` | One `GET` route per file in `Branding::files()` (stylesheet included), with its MIME type and the immutable `Cache-Control` |
-| `src/server/src/api/access_log.rs` | `branding` in `STATIC_SEGMENTS`; `is_branding_filename` keeps a branding file name directly below `/branding/` |
+| `src/server/src/api/access_log.rs` | Logs a branding request by its route template, the file's literal `/branding/<16 hex>.<ext>` URL; any other `/branding/` path is `{unmatched}` |
 | `src/server/web/tests/fixtures/contrast-pairs.json` | The contrast pairs and thresholds, by config key; read by `contrast.test.ts`, equal to `CONTRAST_PAIRS` by a Rust test |
 | `src/server/src/api/assets.rs` | `with_stylesheet()` (`HEAD_END`), `NAME_TOKEN`, `FAVICON_TOKEN`, `SOURCE_TOKEN`, the server-internal `TAGLINE_TOKEN`, `LOGO_REGION`, `WORDMARK_REGION`, `TAGLINE_REGION`, `BUILT_IN_FAVICON`; `render()` → `with_stylesheet()` → `with_branding_regions()` (logo, wordmark and tagline regions, the latter per page language; decides the tagline variant once and also returns the escaped value for `TAGLINE_TOKEN`), `fill_tokens()` (all tokens in one pass) |
 | `src/server/web/{index,p,manage,report,legal}.html` | `{{name}}` in `<title>` and the header wordmark, `<link rel="icon" href="{{favicon}}" />` after the `color-scheme` meta and before the head scripts, the logo and wordmark marker regions in the header, `<span>{{shell.poweredBy}}</span>` as the last footer item; `index.html` also the tagline region around its `.cb-claim` |
@@ -278,132 +278,122 @@ real shells are covered by the shell tests and the browser tests.
 - **Configuration, not operator CSS or templates** — named keys keep class names and markup
   internal, values checkable and upgrades safe; an operator stylesheet would turn every class name
   into an unannounced API. See [ADR-017](adr/ADR-017-operator-branding.md).
-  (20261120-branding-identity)
 - **No SVG from the operator: logos PNG/WebP, favicon PNG/ICO, checked by extension and
   signature** — an SVG is an active document; serving one would need a per-response sandbox CSP or
   a change to the security-header layer in `router()`, and SVG sanitising. The cost is lossless
   scaling; a PNG at twice the display height stays sharp. The built-in `/favicon.svg` stays: it
-  comes from the build, not from the operator. (20261120-branding-identity)
+  comes from the build, not from the operator.
 - **Files read once at startup, served from memory under `/branding/<16 hex of SHA-256>.<ext>`
   with immutable caching** — the shells are `no-store`, so a replaced file shows up at once after a
   restart under its new URL, without a stale cache; the URL reveals nothing about the operator's
   paths. 256 KiB per file is generous for a header logo and small in memory. Paths resolve like
-  `database.path`. (20261120-branding-identity)
+  `database.path`.
 - **Every other `/branding/` path falls through to the asset fallback** rather than having its own
-  `404` handler — the answer is then byte-identical to any unknown path. (20261120-branding-identity)
+  `404` handler — the answer is then byte-identical to any unknown path.
 - **File errors are startup errors in `Config::validate`** — so `capsulebin check` reports a
-  missing or wrong file before `serve` does, like the legal texts. (20261120-branding-identity)
-- **One name for every language** — a per-language name was rejected in the exploration; the
-  name is an identity, not interface text. (20261120-branding-identity)
+  missing or wrong file before `serve` does, like the legal texts.
+- **One name for every language** — a per-language name was rejected; the
+  name is an identity, not interface text.
 - **Name limits: trimmed non-empty, at most 64 characters, no control characters** — enough for a
-  `<title>` and a wordmark, short enough to keep the header layout intact. (20261120-branding-identity)
+  `<title>` and a wordmark, short enough to keep the header layout intact.
 - **The tagline per language: `tagline` for all, `[branding.<lang>] tagline` overrides, without
   either the built-in translated slogan** — unlike the name, the slogan is interface text, so an
   operator with a translated slogan needs one per language; one value for every language keeps the
   common case short. Same pattern as `[legal.<lang>]`: a subtable for the default language is
   refused because `tagline` already is its text, so the configuration has one place for it.
-  (20261120-branding-identity, user decision)
 - **An empty tagline removes the slogan element** rather than leaving an empty span or falling back
   to the built-in one — the operator's way to have no slogan, per language too.
-  (20261120-branding-identity, user decision)
 - **Tagline at most 80 characters, no control characters** — one line next to the logo.
-  (20261120-branding-identity)
-- **Only the create page's slogan is replaceable; the other pages keep their page title in that
-  place** — there the `.cb-claim` says which page you are on. (20261120-branding-identity)
+- **Only the create page's slogan is replaceable; the manage, report and legal pages keep their page
+  title in that place** (the view page has none) — there the `.cb-claim` says which page you are on.
 - **The tagline through a region in the shell and a server-internal token** — the region lets the
   server replace or drop the whole span; writing the text as `%%capsulebin:tagline%%` and filling it
   in the one token pass gives it the same "literal, never re-scanned" guarantee as the name.
   Replacing the region with the text directly would put operator text into the shell before the
-  token pass, which would then expand a token-like tagline. (20261120-branding-identity)
+  token pass, which would then expand a token-like tagline.
 - **`hide_name` and `logo_dark` without `logo` are refused, not ignored** — hiding the name
   without a logo would leave the header empty, and a dark variant of no logo is a configuration
-  mistake; in line with "unknown keys are a startup error". (20261120-branding-identity)
+  mistake; in line with "unknown keys are a startup error".
 - **`source_url` an absolute http(s) URL with a host, no user info, no whitespace or control
   characters** — it points to a source repository, so a local path makes no sense; the value is
   used as written, and the URL parser would silently drop whitespace and control characters that
-  then still reach the page. (20261120-branding-identity)
+  then still reach the page.
 - **The attribution cannot be switched off and always says "CapsuleBin"** — it is the AGPL §13
   hint to the source of the running software on every page, legal pages included; `source_url`
   lets the operator of a modified version point to their source. The name in it is the project's
-  (`docs/brand/README.md`). (20261120-branding-identity)
-- **Only "CapsuleBin" is the link, opened in a new tab** — requested by the user after review: the
+  (`docs/brand/README.md`).
+- **Only "CapsuleBin" is the link, opened in a new tab** — the
   linked word is the software's name, and following it leaves the current page in place
   (`noopener noreferrer`: the new tab gets neither a handle on the page nor a referrer). Built as
   the catalogue placeholder `{project}`, replaced by the generator after escaping, so the
   translated text around it stays catalogue text and the link markup is the generator's, never the
-  catalogue's. (20261120-branding-identity)
-- **Default instance: as before, plus the attribution and the built-in favicon** — which also ends
-  the `404` for the browser's favicon request. (20261120-branding-identity)
+  catalogue's.
+- **Default instance: the built-in identity, plus the attribution and the built-in `/favicon.svg`**
+  — so the browser's favicon request is answered.
 - **Tokens and marker regions in the shells, filled by the server** — the reproducible web build
   holds nothing instance-specific; the same mechanism as the language prefix and the legal links.
   The templates use `{{name}}`/`{{favicon}}` and the catalogue `{project}`, which the generator
   turns into tokens, so the shell test's rule "every visible text from the catalogue" still holds
-  and no template contains a literal `CapsuleBin`. (20261120-branding-identity)
+  and no template contains a literal `CapsuleBin`.
 - **All tokens filled in one pass, after the regions and before the legal content** — a single
   pass means no inserted value is scanned again, so an operator value that looks like a token stays
   literal; the legal links and legal text (also operator input) come after and are not scanned for
   tokens either. Filling the tokens one `replace` after another would let a name like
-  `%%capsulebin:prefix%%` be expanded. (20261120-branding-identity)
+  `%%capsulebin:prefix%%` be expanded.
 - **Without a logo the region markers are removed, the symbol and wordmark stay** — no server
-  marker reaches a served page. (20261120-branding-identity)
+  marker reaches a served page.
 - **`alt=""` next to the visible name, `alt` = name with `hide_name`** — the name is read once
-  either way; with `logo_dark` both images carry the same `alt`. (20261120-branding-identity)
+  either way; with `logo_dark` both images carry the same `alt`.
 - **Logo at `1.5rem` height, auto width, max `12rem`, `object-fit: contain`** — keeps wordmark
   logos readable without pushing the header tools off a narrow screen; without `object-fit` a logo
-  wider than the cap would be squashed horizontally. (20261120-branding-identity)
+  wider than the cap would be squashed horizontally.
 - **Dark logo switched by CSS on `data-theme`, not `<picture media>`** — `<picture>` follows only
   the system preference and would ignore the manual toggle; the CSS mirrors the three theme blocks
-  of ADR-005. (20261120-branding-identity)
-- **No change to the privacy notice or the built-in legal texts** — branding adds no third-party
-  request, no cookie and no storage; the attribution is an ordinary outgoing link under
-  `Referrer-Policy: no-referrer`. (20261120-branding-identity)
+  of ADR-005.
+- **Branding is not mentioned in the privacy notice or the built-in legal texts** — it adds no
+  third-party request, no cookie and no storage; the attribution is an ordinary outgoing link under
+  `Referrer-Policy: no-referrer`.
 - **Colours as named token keys, turned into a generated stylesheet** — not operator CSS (see
   above): the server writes the CSS itself from checked values, so the tokens stay the only
-  interface and contrast can be computed. (20261120-branding-colours, user decision)
+  interface and contrast can be computed.
 - **A contrast failure is a warning, not a startup error** — an operator's corporate colours may
   miss a threshold by a little, and refusing to start would be out of proportion; the warning
-  makes it visible in the log and in `check`. (20261120-branding-colours, user decision)
+  makes it visible in the log and in `check`.
 - **Only `#rgb` / `#rrggbb`** — enough to compute contrast exactly, trivial to validate, and the
   value can never leave its CSS declaration. No alpha: the contrast of a translucent colour depends
   on what lies below it. Values are not trimmed; whitespace is refused like any wrong syntax.
-  (20261120-branding-colours, user decision)
 - **`--cb-shadow-card` stays built-in** — not a plain colour and no part of any contrast pair; 18
-  tokens per theme are configurable. (20261120-branding-colours, user decision)
+  tokens per theme are configurable.
 - **`[branding.colors.light]`/`[branding.colors.dark]`, not `[branding.light]`/`[branding.dark]`**
   — `BrandingConfig` collects `[branding.<lang>]` through `flatten`; `colors` as a named field never
   reaches that map, so colours and language tables cannot collide. Keys are the token names in
   snake_case because env keys are lowercased and `__` separates path segments.
-  (20261120-branding-colours, user decision)
 - **`Colors` has its own `Deserialize` instead of `deny_unknown_fields`** — so every error names
   the full key (`branding.colors.light.shadow_card`), from the file or the environment.
-  (20261120-branding-colours)
 - **The light block sits in `@media not all and (prefers-color-scheme: dark)`, not in a plain
   `:root`** — the generated sheet comes after the bundled one, so a plain `:root { light }` would
   override the bundle's dark media block for a dark system preference. With the exact complement of
   the dark query, a token set for one theme never leaks into the other; the `data-theme` blocks
-  follow and win by specificity, so the toggle works both ways. (20261120-branding-colours)
+  follow and win by specificity, so the toggle works both ways.
 - **The link is inserted before `</head>`, not through a shell marker** — Vite appends its own
   stylesheet link at the end of the head, after anything in the template; with equal specificity
   the later sheet wins. Without template changes the web build and its reproducibility are
   untouched, and an instance without colours serves byte-identical pages. It is inserted first in
   `render()`, into the raw shell, before any operator value is put in, so the `</head>` it is placed
-  before is always the shell's own. (20261120-branding-colours)
+  before is always the shell's own.
 - **The stylesheet is a `BrandingFile`** — the same content-hashed URL, in-memory serving,
   immutable caching and generic `404` as the images, through the same route; `style-src 'self'`
-  allows it, so the CSP is unchanged. (20261120-branding-colours)
+  allows it, so the CSP is unchanged.
 - **Contrast pairs in one fixture, the built-in palette copied to Rust and pinned by tests** — the
   web contrast test and the server's warnings cannot drift apart. The pairs are a Rust constant
   that a test keeps equal to `src/server/web/tests/fixtures/contrast-pairs.json`, so production
   code does not depend on a file under `web/tests`; `TOKENS` is kept equal to `tokens.css` the same
-  way. (20261120-branding-colours)
+  way.
 - **Warnings only from `serve` and `check`** — the two commands where an operator looks at the
   configuration; `check` writes them to stderr so its stdout stays one `ok:` line.
-  (20261120-branding-colours)
 - **Branding file URLs reach the access log as route templates** — the log records only the
   template of the matched route, and branding routes are registered under their configured,
-  content-hashed URL, so they stay visible without any filename rule. The earlier shape rule
-  (16 lowercase hex + a branding extension, 20261120-branding-colours) is gone with the path
-  redaction it extended. (20261121-limiter-log-bounds)
+  content-hashed URL, so they stay visible without any filename rule.
 
 ## Limits and open points
 
@@ -415,19 +405,5 @@ real shells are covered by the shell tests and the browser tests.
 - The name and the colours are not used in the CLI, the API's `problem+json`, the logs or the
   binary name.
 - Changing a file or a colour needs a restart; there is no reload.
-- The CSP and the security-header layer were not changed; images load under `img-src 'self'`, the
+- Branding needs no CSP or security-header change; images load under `img-src 'self' data:`, the
   colour stylesheet under `style-src 'self'`.
-
-## History
-
-- 2026-11-20 20261120-branding-identity: `[branding]` with name, logo, dark logo, favicon and
-  `source_url`; files served under `/branding/`; built-in `/favicon.svg`; "Powered by CapsuleBin"
-  footer link on every page.
-- 2026-11-20 20261120-branding-identity: `tagline` and `[branding.<lang>] tagline` for the create
-  page's slogan (empty removes it); only "CapsuleBin" in the attribution is the link, opened in a
-  new tab; wide logos scaled, not squashed.
-- 2026-11-20 20261120-branding-colours: `[branding.colors.light]`/`[branding.colors.dark]` with a
-  generated stylesheet under `/branding/` linked from every page; contrast warnings in `serve` and
-  `check`; branding file URLs logged verbatim in the access log.
-- 2026-11-21 20261121-limiter-log-bounds: branding URLs reach the access log as route templates;
-  any other `/branding/` path is logged as `{unmatched}`.

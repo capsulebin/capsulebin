@@ -54,8 +54,8 @@ Tests opt out; they should fail loudly.
 
 ## Consequences
 
-- `thiserror` is a workspace dependency, used in `domain`, `repository`, `config`, `db`, `backup` and
-  `api::problem`.
+- `thiserror` is a workspace dependency, used in `domain`, `repository`, `config`, `db`, `backup`,
+  `healthcheck` and `api::problem`.
   An unused error variant is not caught by the existing audit gate, so pruning dead variants when a
   code path is removed is a review responsibility.
 - The exhaustive `match` from error variant to problem code is deliberately not defaulted. Adding a
