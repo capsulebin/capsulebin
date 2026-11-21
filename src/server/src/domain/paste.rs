@@ -119,13 +119,13 @@ impl Paste {
             .is_none_or(|last| last <= now.saturating_sub(granularity_secs))
     }
 
-    /// Whether `request` is a re-submission of the create request that produced
-    /// this paste — a client retrying after a timeout or a dropped connection,
-    /// not knowing whether its first attempt landed.
+    /// Whether `request` can still be a re-submission of the create request
+    /// that produced this paste — a client retrying after a timeout or a
+    /// dropped connection, not knowing whether its first attempt landed.
     ///
     /// The client-generated id doubles as the idempotency key (ADR-011). A
     /// replay is answered with the original result instead of `id_conflict`,
-    /// but only when the request proves it comes from the creator: both
+    /// but only when the request proves it comes from the creator: all three
     /// verifiers, the public header and the ciphertext must be identical, and
     /// the lifecycle options must resolve to the same paste. Anything else
     /// stays a conflict, so a replay cannot be used to probe, extend or revive
@@ -136,27 +136,40 @@ impl Paste {
     /// - the requested lifetime (`expires_at - created_at`) must be the
     ///   original one, so a retry does not silently move the expiry.
     ///
-    /// The byte comparisons run in constant time and are all evaluated, so the
-    /// time taken does not reveal which field differed.
+    /// This decides everything but the ciphertext bytes, from the metadata
+    /// alone (a row from `find_metadata` will do): the stored `payload_size`
+    /// stands in for the ciphertext's length. Only when it answers `true` is
+    /// the stored ciphertext worth loading and handing to
+    /// [`NewPaste::carries_ciphertext`]; a request from someone who knows only
+    /// the id never gets that far, so it cannot make the server read a payload.
+    ///
+    /// The byte comparisons run in constant time and every comparison is
+    /// evaluated, so the time taken does not reveal which field differed.
     #[must_use]
-    pub fn is_replayed_by(&self, request: &NewPaste, now: i64) -> bool {
-        let Some(stored_ciphertext) = self.ciphertext.as_deref() else {
-            return false;
-        };
-
+    pub fn may_be_replayed_by(&self, request: &NewPaste, now: i64) -> bool {
         let mut same = subtle::Choice::from(u8::from(self.reveal_verifier.matches(&request.reveal_verifier)));
         same &= subtle::Choice::from(u8::from(self.delete_verifier.matches(&request.delete_verifier)));
         let describe = self.describe_verifier.unwrap_or_else(|| Verifier::for_describe_token(b"absent"));
         same &= subtle::Choice::from(u8::from(describe.matches(&request.describe_verifier)));
         same &= self.public_header.as_slice().ct_eq(request.public_header.as_slice());
-        same &= stored_ciphertext.ct_eq(request.ciphertext.as_slice());
 
         let lifetime = |expires_at: Option<i64>, created_at: i64| expires_at.map(|at| at.saturating_sub(created_at));
-        let same_lifecycle = self.format_version == request.format_version
-            && self.burn_after_retrieval == request.burn_after_retrieval
-            && lifetime(self.expires_at, self.created_at) == lifetime(request.expires_at, request.created_at);
+        let same_size = usize::try_from(self.payload_size).is_ok_and(|size| size == request.ciphertext.len());
+        let same_lifecycle = (self.format_version == request.format_version)
+            & (self.burn_after_retrieval == request.burn_after_retrieval)
+            & (lifetime(self.expires_at, self.created_at) == lifetime(request.expires_at, request.created_at));
 
-        bool::from(same) && same_lifecycle && self.is_retrievable(now)
+        bool::from(same) & same_size & same_lifecycle & self.is_retrievable(now)
+    }
+}
+
+impl NewPaste {
+    /// Whether this request carries exactly `stored`, the ciphertext of the
+    /// paste it collided with. The last step of a replay check, after
+    /// [`Paste::may_be_replayed_by`]; compared in constant time.
+    #[must_use]
+    pub fn carries_ciphertext(&self, stored: &[u8]) -> bool {
+        bool::from(stored.ct_eq(self.ciphertext.as_slice()))
     }
 }
 
@@ -210,53 +223,83 @@ mod tests {
         assert!(!stored.needs_retrieval_timestamp(9_000, 3_600));
     }
 
-    #[test]
-    fn an_identical_request_is_a_replay() {
-        let stored = paste();
-        assert!(stored.is_replayed_by(&replay_of(&stored, 1_500), 1_500));
+    /// The row `find_metadata` returns: the payload replaced by an empty
+    /// marker, its length only in `payload_size`.
+    fn metadata(paste: &Paste) -> Paste {
+        Paste {
+            ciphertext: paste.ciphertext.as_ref().map(|_| Vec::new()),
+            ..paste.clone()
+        }
     }
 
     #[test]
-    fn any_difference_makes_it_a_conflict() {
+    fn an_identical_request_is_a_replay() {
         let stored = paste();
+        let request = replay_of(&stored, 1_500);
+        assert!(metadata(&stored).may_be_replayed_by(&request, 1_500));
+        assert!(request.carries_ciphertext(stored.ciphertext.as_deref().unwrap_or_default()));
+    }
+
+    #[test]
+    fn any_difference_in_the_metadata_makes_it_a_conflict() {
+        let stored = metadata(&paste());
         type Mutation = (&'static str, fn(&mut NewPaste));
-        let mutations: [Mutation; 8] = [
+        let mutations: [Mutation; 10] = [
             ("reveal verifier", |r| r.reveal_verifier = Verifier::for_reveal_token(b"other")),
             ("delete verifier", |r| r.delete_verifier = Verifier::for_delete_secret(b"other")),
             ("describe verifier", |r| {
                 r.describe_verifier = Verifier::for_describe_token(b"other")
             }),
             ("public header", |r| r.public_header.push(0)),
-            ("ciphertext", |r| r.ciphertext[0] ^= 1),
+            ("public header byte", |r| r.public_header[0] ^= 1),
+            ("ciphertext length", |r| r.ciphertext.push(0)),
             ("burn flag", |r| r.burn_after_retrieval = true),
             ("lifetime", |r| r.expires_at = r.expires_at.map(|at| at + 1)),
+            ("permanence", |r| r.expires_at = None),
             ("format version", |r| r.format_version = 2),
         ];
         for (what, mutate) in mutations {
-            let mut request = replay_of(&stored, 1_500);
+            let mut request = replay_of(&paste(), 1_500);
             mutate(&mut request);
             assert!(
-                !stored.is_replayed_by(&request, 1_500),
-                "a different {what} was accepted as a replay"
+                !stored.may_be_replayed_by(&request, 1_500),
+                "a different {what} was accepted as a possible replay"
             );
         }
+    }
+
+    /// Same length, other bytes: only the ciphertext step can tell, and it does.
+    #[test]
+    fn a_different_ciphertext_of_the_same_length_is_a_conflict() {
+        let stored = paste();
+        let mut request = replay_of(&stored, 1_500);
+        request.ciphertext[0] ^= 1;
+
+        assert!(metadata(&stored).may_be_replayed_by(&request, 1_500));
+        assert!(!request.carries_ciphertext(stored.ciphertext.as_deref().unwrap_or_default()));
+        assert!(!request.carries_ciphertext(&[]));
     }
 
     #[test]
     fn a_paste_that_is_no_longer_retrievable_cannot_be_replayed() {
         let request = replay_of(&paste(), 1_500);
 
-        let expired = paste();
-        assert!(!expired.is_replayed_by(&request, 2_000));
+        let expired = metadata(&paste());
+        assert!(!expired.may_be_replayed_by(&request, 2_000));
 
         let mut consumed = paste();
         consumed.consumed_at = Some(1_200);
         consumed.ciphertext = None;
-        assert!(!consumed.is_replayed_by(&request, 1_500));
+        assert!(!metadata(&consumed).may_be_replayed_by(&request, 1_500));
 
-        let mut disabled = paste();
+        let mut disabled = metadata(&paste());
         disabled.availability = Availability::Disabled;
-        assert!(!disabled.is_replayed_by(&request, 1_500));
+        assert!(!disabled.may_be_replayed_by(&request, 1_500));
+
+        let mut deleted = paste();
+        deleted.availability = Availability::Deleted;
+        deleted.ciphertext = None;
+        assert!(!metadata(&deleted).may_be_replayed_by(&request, 1_500));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::api::problem::{ApiError, Problem};
 use crate::api::rate_limit::with_retry_after;
 use crate::api::request_id::RequestId;
 use crate::config::CreationMode;
-use crate::domain::NewPaste;
+use crate::domain::{NewPaste, Paste};
 use crate::repository::{PasteRepository as _, RepositoryError};
 
 /// Checks the creation capability.
@@ -141,10 +141,7 @@ pub(super) async fn create(State(state): State<AppState>, id_extension: Option<E
             // The id is taken. If this is the creator retrying the very same
             // request, answer as the first attempt did (ADR-011); otherwise it
             // stays a conflict.
-            Err(RepositoryError::IdConflict) => match state.pastes_repo.find(&new_paste.id).await? {
-                Some(existing) if existing.is_replayed_by(&new_paste, now) => existing,
-                _ => return Err(ApiError::IdConflict),
-            },
+            Err(RepositoryError::IdConflict) => replayed(&state, &new_paste, now).await?.ok_or(ApiError::IdConflict)?,
             Err(error) => return Err(error.into()),
         };
 
@@ -160,6 +157,26 @@ pub(super) async fn create(State(state): State<AppState>, id_extension: Option<E
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(error) => problem(&state, request_id, error),
     }
+}
+
+/// The stored paste `request` collided with, if the request is an identical
+/// replay of the one that created it (ADR-011); `None` means a conflict.
+///
+/// Decided from the metadata first. The ciphertext, up to the size limit, is
+/// read only when everything else already matches, so a small request with a
+/// taken id cannot make the server load a large payload. A paste burned or
+/// deleted after the metadata read has no ciphertext left and is a conflict.
+async fn replayed(state: &AppState, request: &NewPaste, now: i64) -> Result<Option<Paste>, RepositoryError> {
+    let Some(existing) = state.pastes_repo.find_metadata(&request.id).await? else {
+        return Ok(None);
+    };
+    if !existing.may_be_replayed_by(request, now) {
+        return Ok(None);
+    }
+    let stored = state.pastes_repo.load_ciphertext(&request.id, now).await?;
+    Ok(stored
+        .is_some_and(|ciphertext| request.carries_ciphertext(&ciphertext))
+        .then_some(existing))
 }
 
 pub(super) async fn descriptor(
@@ -373,4 +390,149 @@ fn problem(state: &AppState, request_id: String, error: ApiError) -> Response {
         base_url: state.public_url.clone(),
     }
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+
+    use crate::domain::PasteId;
+    use crate::test_support::{self, DELETE_SECRET, REVEAL_TOKEN, TestServer, b64, create_body};
+
+    fn id(n: u8) -> PasteId {
+        PasteId::from_bytes([n; 16])
+    }
+
+    fn large_ciphertext() -> Vec<u8> {
+        (0..1024 * 1024).map(|n: u32| (n % 253) as u8).collect()
+    }
+
+    async fn delete(server: &TestServer, id: &PasteId) -> StatusCode {
+        let body = serde_json::json!({ "delete_secret": b64(DELETE_SECRET) }).to_string();
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/pastes/{}", id.encode()))
+            .header("content-type", "application/json")
+            .header("content-length", body.len())
+            .body(Body::from(body))
+            .expect("a valid request");
+        server.send(request).await.status
+    }
+
+    /// SEC-023: a create that collides with a stored paste is decided from
+    /// its metadata; the payload is read only for a request that can still be
+    /// an identical replay.
+    #[tokio::test]
+    async fn a_conflict_is_decided_before_the_payload_is_read() {
+        let (state, _clock) = test_support::state("conflict-payload-reads", |_| {}).await;
+        let repo = state.pastes_repo.clone();
+        let server = TestServer::new(state);
+
+        let id = id(0x23);
+        let ciphertext = large_ciphertext();
+        let original = create_body(&id, &ciphertext);
+        let created = server.create(&original).await;
+        assert_eq!(created.status, StatusCode::CREATED);
+
+        let conflict = |answer: &test_support::Answer, what: &str| {
+            assert_eq!(answer.status, StatusCode::CONFLICT, "{what}");
+            assert_eq!(answer.json()["code"], "id_conflict", "{what}");
+        };
+
+        // (a) a small, different ciphertext
+        let before = repo.payload_reads();
+        conflict(&server.create(&create_body(&id, b"small")).await, "other length");
+        assert_eq!(repo.payload_reads() - before, 0, "other length read the payload");
+
+        // (b) same length, another reveal verifier
+        let mut body = original.clone();
+        body["reveal_verifier"] = serde_json::json!(crate::domain::Verifier::for_reveal_token(b"other").encode());
+        let before = repo.payload_reads();
+        conflict(&server.create(&body).await, "other reveal verifier");
+        assert_eq!(repo.payload_reads() - before, 0, "another verifier read the payload");
+
+        // (c) another lifetime
+        let mut body = original.clone();
+        body["expires_in"] = serde_json::json!(3600);
+        let before = repo.payload_reads();
+        conflict(&server.create(&body).await, "other expires_in");
+        assert_eq!(repo.payload_reads() - before, 0, "another lifetime read the payload");
+
+        // (d) the identical request is a replay
+        let before = repo.payload_reads();
+        let replay = server.create(&original).await;
+        assert_eq!(replay.status, StatusCode::CREATED);
+        assert_eq!(replay.body, created.body);
+        assert!(repo.payload_reads() - before <= 1, "a replay read the payload more than once");
+
+        // (e) everything equal but one ciphertext byte
+        let mut changed = ciphertext.clone();
+        changed[ciphertext.len() / 2] ^= 1;
+        let mut body = original.clone();
+        body["ciphertext"] = serde_json::json!(b64(&changed));
+        let before = repo.payload_reads();
+        conflict(&server.create(&body).await, "one byte different");
+        assert!(
+            repo.payload_reads() - before <= 1,
+            "one changed byte read the payload more than once"
+        );
+    }
+
+    /// AC8 edge: an identical replay of a paste that is no longer retrievable
+    /// (deleted, burned, expired) is a `409` decided from the metadata alone,
+    /// without reading any payload.
+    #[tokio::test]
+    async fn replays_of_unretrievable_pastes_read_no_payload() {
+        let (state, clock) = test_support::state("acceptance-unretrievable-replay", |_| {}).await;
+        let repo = state.pastes_repo.clone();
+        let server = TestServer::new(state);
+        let ciphertext = large_ciphertext();
+
+        // Deleted: a tombstone row remains.
+        let deleted = create_body(&id(0x41), &ciphertext);
+        assert_eq!(server.create(&deleted).await.status, StatusCode::CREATED);
+        assert_eq!(delete(&server, &id(0x41)).await, StatusCode::NO_CONTENT);
+
+        // Burned by its one retrieve.
+        let mut burned = create_body(&id(0x42), &ciphertext);
+        burned["burn_after_retrieval"] = serde_json::json!(true);
+        assert_eq!(server.create(&burned).await.status, StatusCode::CREATED);
+        assert_eq!(server.retrieve(&id(0x42), REVEAL_TOKEN).await.status, StatusCode::OK);
+
+        // Expires after an hour.
+        let mut expired = create_body(&id(0x43), &ciphertext);
+        expired["expires_in"] = serde_json::json!(3600);
+        assert_eq!(server.create(&expired).await.status, StatusCode::CREATED);
+        clock.advance(3601);
+
+        for (what, body) in [("deleted", deleted), ("burned", burned), ("expired", expired)] {
+            let before = repo.payload_reads();
+            let answer = server.create(&body).await;
+            assert_eq!(answer.status, StatusCode::CONFLICT, "{what}");
+            assert_eq!(answer.json()["code"], "id_conflict", "{what}");
+            assert_eq!(repo.payload_reads() - before, 0, "a replay of a {what} paste read the payload");
+        }
+    }
+
+    /// AC8 edge: a create with the id of another live paste but every other
+    /// field its own reads no payload either.
+    #[tokio::test]
+    async fn a_foreign_request_on_a_taken_id_reads_no_payload() {
+        let (state, _clock) = test_support::state("acceptance-foreign-conflict", |_| {}).await;
+        let repo = state.pastes_repo.clone();
+        let server = TestServer::new(state);
+        let ciphertext = large_ciphertext();
+        assert_eq!(
+            server.create(&create_body(&id(0x44), &ciphertext)).await.status,
+            StatusCode::CREATED
+        );
+
+        let mut foreign = create_body(&id(0x44), &ciphertext);
+        foreign["delete_verifier"] = serde_json::json!(crate::domain::Verifier::for_delete_secret(b"someone else").encode());
+        let before = repo.payload_reads();
+        let answer = server.create(&foreign).await;
+        assert_eq!(answer.status, StatusCode::CONFLICT);
+        assert_eq!(repo.payload_reads() - before, 0);
+    }
 }
