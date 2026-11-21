@@ -13,10 +13,22 @@
 //!   overwritten with zeros instead of lingering in free pages until they are
 //!   reused. It costs some extra writing on delete; a burn should mean the
 //!   bytes are gone from the database file, not merely unlinked.
-//! - **`journal_size_limit`** (64 MiB) so that the write-ahead log is truncated
-//!   after a checkpoint. Otherwise it stays at its peak size after a burst of
-//!   large uploads, still holding old frames with ciphertext the database has
-//!   long deleted.
+//! - **`journal_size_limit`** (64 MiB) caps the size the write-ahead log is
+//!   truncated to on a WAL reset. Without it the log stays at its peak size
+//!   after a burst of large uploads.
+//!
+//! Removing ciphertext happens in four distinct steps:
+//!
+//! 1. **Logically** it is unavailable at once: the delete, burn or purge
+//!    commits and no request can read it again.
+//! 2. **The database file** has the old pages overwritten by `secure_delete`
+//!    only once a checkpoint has copied the zeroed pages from the WAL into it.
+//! 3. **WAL frames** written before the delete can keep the old ciphertext
+//!    after that checkpoint, until the frames are reused by later writes or
+//!    the WAL is truncated. An ordinary checkpoint does neither.
+//! 4. **Truncation** of the WAL happens only on a `wal_checkpoint(TRUNCATE)`,
+//!    when the last connection closes, or down to `journal_size_limit` when
+//!    the WAL is reset - so up to 64 MiB of old frames can remain.
 //!
 //! Migrations are embedded in the binary, so a deployment is one file and cannot
 //! drift from the schema it expects.
@@ -83,7 +95,8 @@ pub enum DbError {
     SchemaMismatch { found: Option<i64>, expected: i64 },
 }
 
-/// Upper bound in bytes the write-ahead log is truncated to after a checkpoint.
+/// Upper bound in bytes the write-ahead log is truncated to when it is reset;
+/// frames below it are kept and may hold old ciphertext until reused.
 const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
 
 fn list_paths(paths: &[PathBuf]) -> String {

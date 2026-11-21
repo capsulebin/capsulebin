@@ -418,16 +418,28 @@ The server must be stopped. `restore` never opens the input file with SQLite and
 3. It verifies integrity, CapsuleBin schema and that the schema is not newer than the binary on
    that copy, applies pending migrations to it like `serve` would, and checkpoints it so it is one
    self-contained file.
-4. Only then, with `--force`, the current database and its `-wal`/`-shm` move to
+4. If a database is at the configured path, it opens that one read-only (writing nothing to it or
+   its `-wal`/`-shm`) and retires in the copy every id it holds, as a capsule or as an already
+   retired id, that the backup does not hold as a capsule; then it checkpoints the copy again.
+   Paste ids are never used twice: a capsule created after the backup still has its links in
+   circulation, and freeing its id would let a link holder put different content behind them.
+5. Only then, with `--force`, the current database and its `-wal`/`-shm` move to
    `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
+
+`restore` prints how many ids of the previous database it retired. If the current database cannot
+be read (it is corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would
+create), the restore still installs the backup and prints
+`warning: the ids of the replaced database could not be carried over (…)` on stderr, with exit code
+0: those ids can then be used again.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored
 one, never neither. If moving a file back fails as well, the error lists what to move where by hand.
 Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed working.
 
-`--dry-run` runs steps 1 to 3 on a private copy, prints the backup's contents and the schema
-version the migration reached, then removes the copy; nothing else is created or changed. Without
+`--dry-run` runs steps 1 to 4 on a private copy, prints the backup's contents, the schema version
+the migration reached and how many ids would be retired (with the same warning if the current
+database cannot be read), then removes the copy; nothing else is created or changed. Without
 `--force` it also says when the restore would need `--force`.
 
 Restore only backups you made yourself: the bundled SQLite treats a database as trusted input, and
@@ -458,7 +470,8 @@ a killed run is not removed automatically; delete it once no restore or backup i
 Migrations only move forward. To roll back, restore the backup from step 1 with the old binary.
 
 The test suite upgrades a database written by 1.0 on every change: a released migration cannot
-change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable.
+change, and capsules, burn tombstones, reports and moderation decisions from 1.0 stay usable;
+their ids, once purged, are retired like any other.
 
 #### A `public_url` whose path ends in a language code
 
@@ -491,6 +504,11 @@ What to do:
 The purge job runs at start and then daily; `capsulebin prune` applies it once on demand (for
 example after lowering a threshold). It also removes closed abuse reports and moderation records
 older than `abuse.report_retention`.
+
+A purged capsule's id stays in the table `retired_ids`, alone and permanently, so it can never be
+created again ([ADR-011](adr/ADR-011-idempotent-create.md)); no rule, setting or command removes it.
+Reports about it keep showing the capsule as `gone`, and `moderation` answers "no paste … (never existed,
+or already purged)". The table grows by about 40 bytes per purged capsule.
 
 ### Rotating creation tokens
 

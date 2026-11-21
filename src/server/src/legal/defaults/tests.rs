@@ -156,3 +156,19 @@ fn the_formal_address_check_finds_it_mid_sentence_only() {
     assert!(!occurs_mid_sentence("Sie wird gelöscht. Sie bleibt", "Sie"));
     assert!(!occurs_mid_sentence("Wenn Siegel", "Sie"));
 }
+
+#[test]
+fn privacy_says_only_the_identifier_is_kept() {
+    for f in every_facts() {
+        for (language, expected) in [
+            (
+                "en",
+                "only its identifier is kept, so that it can never be used for another capsule",
+            ),
+            ("de", "nur ihre Kennung erhalten, damit sie nie für eine andere Kapsel verwendet"),
+        ] {
+            let text = privacy(&f, language).join(None);
+            assert!(text.contains(expected), "{f:?}, {language}: {text}");
+        }
+    }
+}

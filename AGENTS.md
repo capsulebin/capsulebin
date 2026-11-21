@@ -31,7 +31,7 @@ capsulebin/
 │   ├── cli/            @capsulebin/cli — standalone command-line client (esbuild, Node.js)
 │   └── core/           @capsulebin/core — platform-neutral capsule format, crypto, API client
 │                         (no DOM, no build step; shared by web client and CLI)
-├── migrations/         SQLite migrations (0001–0003), embedded into server binary
+├── migrations/         SQLite migrations (0001–0004), embedded into server binary
 ├── docs/
 │   ├── adr/            17 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
@@ -239,6 +239,20 @@ Three independent rules, each deletes the whole row (metadata + payload):
 Runs at startup and every 24h. `prune` subcommand applies once on demand.
 `purge.enabled = false` disables the scheduled job.
 
+**Ids are never freed** (`migrations/0004_retired_ids.sql`, ADR-011). Delete, burn and moderation
+keep a tombstone row; every `DELETE FROM pastes` puts the id into `retired_ids` (only column `id`,
+`WITHOUT ROWID`) via the `AFTER DELETE` trigger — never move this into the purge code, and never
+delete from `retired_ids` (no retention, no setting, no command). `SqlitePasteRepository::create`
+checks `retired_ids` inside the `INSERT … SELECT … WHERE NOT EXISTS` statement (a separate `SELECT`
+would race a purge); no row inserted → `IdConflict` → the same `409 id_conflict` as an occupied id.
+`restore` and `--dry-run` carry the replaced database's ids (`pastes` and, if present,
+`retired_ids`) missing from the backup into the staged copy's `retired_ids` with `ATTACH` (path as a
+bound read-only `file:` URI, never SQL text) and `INSERT … SELECT`, never through process memory.
+The replaced database is read in one statement into the scratch table `restore_carried_ids` of the
+staged copy (not `TEMP`: in memory, or a temporary file outside the stage), created and dropped in
+the same transaction; only a failure of that read (or of `ATTACH`) is a warning
+(`RestoreOutcome::warnings`) and leaves the copy unchanged, a failure on the copy is an error.
+
 ### Abuse report ceilings
 
 `abuse.max_open_reports_per_paste` (default 10) and `abuse.max_open_reports` (default 1000), integers
@@ -337,7 +351,7 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
 | `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
-| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy only) |
+| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, retire the replaced DB's ids the backup lacks in the copy (read-only `ATTACH`; unreadable → warning), then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy and counts the ids only) |
 
 ### Test commands (CI gates)
 ```sh
@@ -368,16 +382,18 @@ npm run e2e -w @capsulebin/web
 | Test | What it verifies |
 |------|-----------------|
 | `src/server/tests/db_no_plaintext.rs` | Plaintext never appears in any DB column (text, hex, or base64). **Mandatory CI gate.** |
-| `src/server/tests/secure_delete.rs` | Burned and deleted ciphertext is gone from the raw database file and WAL after a checkpoint (`secure_delete`). |
+| `src/server/tests/secure_delete.rs` | Burned and deleted ciphertext is gone from the raw database file and WAL after a `wal_checkpoint(TRUNCATE)` (`secure_delete`); an ordinary checkpoint truncates nothing, so this is not a claim about WAL frames in normal operation. |
+| `src/server/tests/retired_ids.rs` | An id freed by each retention rule cannot be created again (`409` byte-identical to a live collision, also for a replay of the original request; old link stays unknown); a report on a purged paste shows `gone`, moderation answers `NotFound`, a new report is not stored. |
+| `src/server/tests/retired_ids_acceptance.rs` | Against the real binary: after its `prune` removed a reported capsule, `reports list` (text and `--json`) and `reports show` print the paste as `gone`, `moderation disable`/`delete` answer "no paste" and record nothing, re-creating the id is `409 id_conflict`, a new report is answered `202` and not stored. |
 | `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text. **Mandatory CI gate.** |
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
-| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; dry-run changes nothing. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables); dry-run counts them and changes nothing. |
 | `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
-| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema. |
-| `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation. Fails on an edited released migration. |
+| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`. |
+| `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; the migration starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired. Fails on an edited released migration. |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
 | `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
 | `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`); 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
@@ -409,7 +425,7 @@ npm run e2e -w @capsulebin/web
 | 008 | Capsule file format | Bespoke binary container (magic + version + manifest + items + PADMÉ zero padding), not CBOR/protobuf |
 | 009 | TS CLI and core | Single TypeScript implementation shared by web client and CLI; no WASM |
 | 010 | Repository layout | `src/{server,cli,core}` with `web/` nested inside `server/` |
-| 011 | Idempotent create | The paste id is the idempotency key: an identical re-submission returns the original `201`, anything else stays `409` |
+| 011 | Idempotent create | The paste id is the idempotency key: an identical re-submission returns the original `201`, anything else stays `409`; ids are never freed (`retired_ids`), so creation permission can test whether one id is taken or was ever used |
 | 012 | No OpenAPI document | Contract = capsule format, crypto profile, golden vectors; if ever needed, generate from `wire.rs` |
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
@@ -432,7 +448,7 @@ npm run e2e -w @capsulebin/web
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
-| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with rollback and `restore_dry_run` (tests in `backup/tests.rs`) |
+| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with id carry-over (`carry_ids`) and rollback, `restore_dry_run` (tests in `backup/tests.rs`) |
 | `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |

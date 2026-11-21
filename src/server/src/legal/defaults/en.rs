@@ -75,7 +75,8 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
     }
     text.push_str(
         "\nThe encrypted content is overwritten in the database when a capsule is deleted. Its technical \
-         data, without content, remains until one of the rules above removes it.\n\n\
+         data, without content, remains until one of the rules above removes it. Once a capsule is \
+         removed, only its identifier is kept, so that it can never be used for another capsule.\n\n\
          ## IP addresses and server logs\n\n",
     );
     if f.client_ip_limits {

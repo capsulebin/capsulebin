@@ -90,22 +90,67 @@ fn old_database(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// A backup at `path` that has only the first migration and one paste row.
-async fn first_migration_backup(path: &Path) {
+/// A database at `path` migrated only up to `version`, with a paste row for
+/// each of `ids`, closed without sidecars.
+async fn database_at(path: &Path, version: i64, ids: &[&str]) {
     let pool = SqlitePoolOptions::new()
         .connect_with(SqliteConnectOptions::new().filename(path).create_if_missing(true))
         .await
         .unwrap();
-    db::MIGRATOR.run_to(1, &pool).await.unwrap();
-    sqlx::query(
-        "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-         VALUES ('first-migration-paste', 1, x'00', x'00', x'00', 1, 1)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    db::MIGRATOR.run_to(version, &pool).await.unwrap();
+    for id in ids {
+        sqlx::query(
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
+             VALUES (?1, 1, x'00', x'00', x'00', 1, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     pool.close().await;
     assert!(!sidecars(path)[0].exists());
+}
+
+/// A backup at `path` that has only the first migration and one paste row.
+async fn first_migration_backup(path: &Path) {
+    database_at(path, 1, &["first-migration-paste"]).await;
+}
+
+/// Copies the files of the open database `from` (main file, `-wal`, `-shm`) to
+/// `to`, as a crash would leave them.
+fn copy_open_database(from: &Path, to: &Path) {
+    for (from, to) in with_sidecars(from).iter().zip(with_sidecars(to)) {
+        std::fs::copy(from, to).unwrap();
+    }
+}
+
+/// The ids in `table` of the database at `path`.
+async fn ids_in(path: &Path, table: &str) -> BTreeSet<String> {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path).read_only(true))
+        .await
+        .unwrap();
+    let ids = sqlx::query_scalar(AssertSqlSafe(format!("SELECT id FROM {table}")))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    ids.into_iter().collect()
+}
+
+/// The schema of the database at `path`: every entry of `sqlite_master`.
+async fn schema_of(path: &Path) -> BTreeSet<(String, String, Option<String>)> {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path).read_only(true))
+        .await
+        .unwrap();
+    let schema = sqlx::query_as("SELECT type, name, sql FROM sqlite_master")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    schema.into_iter().collect()
 }
 
 fn dir(name: &str) -> PathBuf {
@@ -321,6 +366,8 @@ async fn restores_into_an_empty_place() {
     assert_eq!(outcome.previous, None);
     assert_eq!(outcome.info.pastes, 2);
     assert_eq!(outcome.schema_version, db::expected_version());
+    assert_eq!(outcome.carried_ids, 0, "nothing to carry over");
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
 
     let reopened = db::connect(&target).await.unwrap();
     assert_eq!(db::verify(&reopened).await.unwrap(), db::expected_version());
@@ -391,35 +438,53 @@ async fn restore_failure_at_every_step_keeps_the_old_database() {
     let dir = dir("restore-fail");
     let backup = dir.join("backup.db");
     first_migration_backup(&backup).await;
-    let data = dir.join("data");
-    std::fs::create_dir(&data).unwrap();
-    let target = config(data.join("live.db"));
-    let files = old_database(&target.path);
-    let before = contents(&files);
-    let listed = entries(&data);
 
-    for (step, kind) in [
-        (Step::Copy, ErrorKind::Other),
-        (Step::Copy, ErrorKind::StorageFull),
-        (Step::Verify, ErrorKind::Other),
-        (Step::Migrate, ErrorKind::Other),
-        (Step::Checkpoint, ErrorKind::Other),
-        (Step::MoveDatabase, ErrorKind::Other),
-        (Step::MoveWal, ErrorKind::Other),
-        (Step::MoveShm, ErrorKind::Other),
-        (Step::Install, ErrorKind::Other),
-    ] {
-        let (hook, fired) = fail_at(step, kind);
-        let error = restore(&backup, &target, true, 5_000).await.unwrap_err();
-        drop(hook);
+    // Garbage, and a real database left by a crash (rows in its WAL) whose
+    // ids are carried over.
+    let garbage = dir.join("garbage");
+    std::fs::create_dir(&garbage).unwrap();
+    old_database(&garbage.join("live.db"));
+    let crashed = dir.join("crashed");
+    std::fs::create_dir(&crashed).unwrap();
+    let source = dir.join("source.db");
+    let pool = db::connect(&config(source.clone())).await.unwrap();
+    let repo = SqlitePasteRepository::new(pool.clone());
+    repo.create(&paste(1, b"in the main file")).await.unwrap();
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&pool).await.unwrap();
+    repo.create(&paste(2, b"only in the wal")).await.unwrap();
+    copy_open_database(&source, &crashed.join("live.db"));
+    pool.close().await;
 
-        assert!(*fired.borrow(), "{step:?} was never reached: {error}");
-        assert!(
-            matches!(&error, BackupError::Io { source, .. } if source.kind() == kind),
-            "{step:?}: {error}"
-        );
-        assert_eq!(contents(&files), before, "{step:?} changed the old database");
-        assert_eq!(entries(&data), listed, "{step:?} left entries behind");
+    for data in [garbage, crashed] {
+        let target = config(data.join("live.db"));
+        let files = with_sidecars(&target.path);
+        let before = contents(&files);
+        let listed = entries(&data);
+
+        for (step, kind) in [
+            (Step::Copy, ErrorKind::Other),
+            (Step::Copy, ErrorKind::StorageFull),
+            (Step::Verify, ErrorKind::Other),
+            (Step::Migrate, ErrorKind::Other),
+            (Step::Checkpoint, ErrorKind::Other),
+            (Step::CarryIds, ErrorKind::Other),
+            (Step::MoveDatabase, ErrorKind::Other),
+            (Step::MoveWal, ErrorKind::Other),
+            (Step::MoveShm, ErrorKind::Other),
+            (Step::Install, ErrorKind::Other),
+        ] {
+            let (hook, fired) = fail_at(step, kind);
+            let error = restore(&backup, &target, true, 5_000).await.unwrap_err();
+            drop(hook);
+
+            assert!(*fired.borrow(), "{step:?} was never reached: {error}");
+            assert!(
+                matches!(&error, BackupError::Io { source, .. } if source.kind() == kind),
+                "{step:?}: {error}"
+            );
+            assert_eq!(contents(&files), before, "{step:?} changed the old database");
+            assert_eq!(entries(&data), listed, "{step:?} left entries behind");
+        }
     }
 }
 
@@ -514,9 +579,7 @@ async fn restore_ignores_a_valid_sibling_wal() {
 
     // A copy of the open database: main file, WAL with the second row, SHM.
     let backup = dir.join("backup.db");
-    for (from, to) in with_sidecars(&live).iter().zip(with_sidecars(&backup)) {
-        std::fs::copy(from, to).unwrap();
-    }
+    copy_open_database(&live, &backup);
     pool.close().await;
     let check = dir.join("check.db");
     std::fs::copy(&backup, &check).unwrap();
@@ -638,4 +701,209 @@ async fn backup_publishes_the_staged_snapshot_itself() {
     assert_eq!(mode(&output), 0o600);
     assert_eq!(entries(&out), BTreeSet::from([OsString::from("backup.db")]));
     verify_file(&output).await.unwrap();
+}
+
+/// AC7: ids of the replaced database that the backup does not hold as a row
+/// are retired by the restore, read from its rows, its `retired_ids` and its
+/// WAL, also from a database at schema version 3 (no `retired_ids`).
+#[tokio::test]
+async fn restore_retires_ids_missing_from_the_backup() {
+    let dir = dir("restore-carry");
+    let (a, b, c) = (
+        PasteId::from_bytes([1; 16]),
+        PasteId::from_bytes([2; 16]),
+        PasteId::from_bytes([3; 16]),
+    );
+
+    // A before the backup; B and C after it, C purged (retired). B and C are
+    // only in the WAL of the database a crash left behind.
+    let source = dir.join("source.db");
+    let pool = db::connect(&config(source.clone())).await.unwrap();
+    let repo = SqlitePasteRepository::new(pool.clone());
+    repo.create(&paste(1, b"a")).await.unwrap();
+    let backup = dir.join("backup.db");
+    create(&pool, &backup).await.unwrap();
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&pool).await.unwrap();
+    repo.create(&paste(2, b"b")).await.unwrap();
+    repo.create(&NewPaste {
+        expires_at: Some(1_500),
+        ..paste(3, b"c")
+    })
+    .await
+    .unwrap();
+    let policy = crate::domain::PurgePolicy {
+        never_retrieved_after: 86_400,
+        inactive_after: 86_400,
+    };
+    assert_eq!(repo.purge(2_000, &policy, 100).await.unwrap().expired, 1);
+
+    // `?`, `#` and `%` in the path must stay part of the attached file's name.
+    let data = dir.join("data ?#%");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    copy_open_database(&source, &target.path);
+    pool.close().await;
+    let files = with_sidecars(&target.path);
+    assert!(contents(&files).iter().all(Option::is_some), "not a crashed database");
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(dry_run.carried_ids, 2);
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.carried_ids, 2);
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+
+    assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from([a.encode()]));
+    assert_eq!(ids_in(&target.path, "retired_ids").await, BTreeSet::from([b.encode(), c.encode()]));
+    let repo = SqlitePasteRepository::new(db::connect(&target).await.unwrap());
+    for byte in [2, 3] {
+        let error = repo.create(&paste(byte, b"again")).await.unwrap_err();
+        assert!(matches!(error, crate::repository::RepositoryError::IdConflict), "{byte}: {error}");
+    }
+
+    // A replaced database at schema version 3 has no `retired_ids`: its rows
+    // are carried over.
+    let data = dir.join("version-3");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    database_at(&target.path, 3, &[&a.encode(), "only-in-version-3"]).await;
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.carried_ids, 1);
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from([a.encode()]));
+    assert_eq!(
+        ids_in(&target.path, "retired_ids").await,
+        BTreeSet::from(["only-in-version-3".to_owned()])
+    );
+}
+
+/// AC8: a replaced database that cannot be read does not stop the restore; the
+/// outcome warns that its ids were not carried over, and it is kept unchanged.
+/// The same for a database whose `-wal` could only be read by creating a
+/// `-shm`, and for one whose schema can be read but whose tables cannot.
+/// (`restore_acceptance.rs` checks the `warning:` line on stderr.)
+#[tokio::test]
+async fn restore_with_an_unreadable_old_database_warns() {
+    let dir = dir("restore-unreadable");
+    let source = database_with_pastes(dir.join("source.db")).await;
+    let backup = dir.join("backup.db");
+    create(&source, &backup).await.unwrap();
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&source).await.unwrap();
+    SqlitePasteRepository::new(source.clone())
+        .create(&paste(9, b"only in the wal"))
+        .await
+        .unwrap();
+
+    let garbage = dir.join("garbage");
+    std::fs::create_dir(&garbage).unwrap();
+    std::fs::write(garbage.join("live.db"), b"this is not a database at all, not even close").unwrap();
+    let no_shm = dir.join("no-shm");
+    std::fs::create_dir(&no_shm).unwrap();
+    copy_open_database(&dir.join("source.db"), &no_shm.join("live.db"));
+    std::fs::remove_file(&sidecars(&no_shm.join("live.db"))[1]).unwrap();
+    source.close().await;
+    // A readable schema over unreadable tables: ATTACH and the schema query
+    // succeed, reading the ids fails.
+    let corrupt = dir.join("corrupt");
+    std::fs::create_dir(&corrupt).unwrap();
+    database_at(&corrupt.join("live.db"), 4, &["lost-1", "lost-2"]).await;
+    let mut bytes = std::fs::read(corrupt.join("live.db")).unwrap();
+    let page_size = usize::from(u16::from_be_bytes([bytes[16], bytes[17]]));
+    assert!(bytes.len() > page_size, "the tables live behind the schema page");
+    bytes[page_size..].fill(0xFF);
+    std::fs::write(corrupt.join("live.db"), bytes).unwrap();
+
+    for data in [garbage, no_shm, corrupt] {
+        let target = config(data.join("live.db"));
+        let files = with_sidecars(&target.path);
+        let before = contents(&files);
+        let listed = entries(&data);
+
+        let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+        assert_eq!(dry_run.carried_ids, 0);
+        assert_eq!(dry_run.warnings.len(), 1, "{data:?}: {:?}", dry_run.warnings);
+        assert_eq!(contents(&files), before, "{data:?}: the dry run changed the old database");
+        assert_eq!(entries(&data), listed, "{data:?}: the dry run left an entry");
+
+        let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+        assert_eq!(outcome.carried_ids, 0);
+        assert_eq!(outcome.warnings, dry_run.warnings);
+        assert!(
+            outcome.warnings[0].contains("could not be carried over"),
+            "{data:?}: {:?}",
+            outcome.warnings
+        );
+        assert!(!outcome.warnings[0].contains("not even close"), "file content in the warning");
+        let previous = outcome.previous.unwrap();
+        assert_eq!(previous, data.join("live.db.pre-restore-5000"));
+        assert_eq!(contents(&with_sidecars(&previous)), before, "{data:?}: the old database changed");
+        assert_eq!(
+            verify_file(&target.path).await.unwrap().pastes,
+            2,
+            "{data:?}: not the backup's rows"
+        );
+        assert!(ids_in(&target.path, "retired_ids").await.is_empty());
+    }
+}
+
+/// AC12: ids are carried over inside SQLite, also many of them.
+#[tokio::test]
+async fn restore_carries_many_ids_over() {
+    let dir = dir("restore-many");
+    let source = database_with_pastes(dir.join("source.db")).await;
+    let backup = dir.join("backup.db");
+    create(&source, &backup).await.unwrap();
+    source.close().await;
+
+    // 60 000 rows and 40 000 retired ids, none of them in the backup.
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    let pool = db::connect(&target).await.unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60000)
+         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
+         SELECT 'row-' || i, 1, x'00', x'00', x'00', 1, 1 FROM n",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40000)
+         INSERT INTO retired_ids (id) SELECT 'retired-' || i FROM n",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    pool.close().await;
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(dry_run.carried_ids, 100_000);
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.carried_ids, 100_000);
+    let retired = ids_in(&target.path, "retired_ids").await;
+    assert_eq!(retired.len(), 100_000);
+    assert!(retired.contains("row-60000") && retired.contains("retired-40000"));
+    assert_eq!(verify_file(&target.path).await.unwrap().pastes, 2, "not the backup's rows");
+
+    // The scratch table in the staged copy does not reach the installed
+    // database: its schema is that of a freshly migrated one.
+    let schema = schema_of(&target.path).await;
+    assert!(
+        !schema.iter().any(|(_, name, _)| name.contains("restore_carried_ids")),
+        "{schema:?}"
+    );
+    let fresh = dir.join("fresh.db");
+    db::connect(&config(fresh.clone())).await.unwrap().close().await;
+    assert_eq!(schema, schema_of(&fresh).await);
 }

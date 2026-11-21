@@ -96,7 +96,8 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
     text.push_str(
         "\nDer verschlüsselte Inhalt wird in der Datenbank überschrieben, wenn eine Kapsel gelöscht \
          wird. Die technischen Daten der Kapsel, ohne Inhalt, bleiben erhalten, bis eine der Regeln \
-         oben sie entfernt.\n\n\
+         oben sie entfernt. Ist eine Kapsel entfernt, bleibt nur ihre Kennung erhalten, damit sie nie \
+         für eine andere Kapsel verwendet werden kann.\n\n\
          ## IP-Adressen und Server-Logs\n\n",
     );
     if f.client_ip_limits {

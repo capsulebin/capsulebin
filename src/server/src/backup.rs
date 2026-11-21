@@ -13,7 +13,8 @@
 //! verifies and migrates that copy, and only then moves an existing database
 //! (with its own `-wal`/`-shm`, which may hold committed data) aside and renames
 //! the copy into place. A failure before or during that cutover undoes every
-//! move.
+//! move. Before the cutover, the ids of the replaced database that the backup
+//! lacks are retired in the copy, so a restore never frees an id.
 //!
 //! Backups hold ciphertext, verifiers and abuse reports with contact details.
 //! They are written into a private stage directory with owner-only permissions
@@ -26,7 +27,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row as _, SqlitePool};
+use sqlx::{AssertSqlSafe, Row as _, SqlitePool};
 
 use crate::config::DatabaseConfig;
 use crate::db;
@@ -212,6 +213,12 @@ pub struct RestoreOutcome {
     pub schema_version: i64,
     /// The previous database, if there was one, moved here with its sidecars.
     pub previous: Option<PathBuf>,
+    /// Ids of the previous database the backup does not hold as a row, now
+    /// retired in the restored database so they are never used again.
+    pub carried_ids: i64,
+    /// Problems that did not stop the restore, such as a previous database
+    /// whose ids could not be read.
+    pub warnings: Vec<String>,
 }
 
 /// The result of [`restore_dry_run`].
@@ -224,6 +231,11 @@ pub struct DryRunOutcome {
     /// A database exists at the target, and `replace` was not given: the
     /// restore itself would refuse.
     pub needs_replace: bool,
+    /// The number of ids the restore would carry over, as in
+    /// [`RestoreOutcome::carried_ids`].
+    pub carried_ids: i64,
+    /// The warnings the restore would report.
+    pub warnings: Vec<String>,
 }
 
 /// Replaces the database `target` with the backup at `input`.
@@ -238,6 +250,11 @@ pub struct DryRunOutcome {
 /// the old files move aside and the copy is renamed into place. Any failure
 /// undoes the moves made so far and removes the stage, so the old database and
 /// its sidecars stay exactly as they were.
+///
+/// Before the cutover, every id of the old database that the backup does not
+/// hold as a row is retired in the staged copy, so the
+/// restore frees no id. An old database that cannot be read only adds a
+/// warning: corruption is the typical reason to restore.
 pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<RestoreOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
     if plan.existing && !replace {
@@ -247,19 +264,22 @@ pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: 
 
     let stage = Stage::for_restore(target)?;
     let staged = stage.path.join(file_name(&target.path)?);
-    let (info, schema_version) = stage_copy(input, &staged, target).await?;
+    let copy = stage_copy(input, &staged, target, plan.replaced(), Carry::Insert).await?;
 
     plan.check_collisions()?;
     plan.cutover(&staged)?;
     Ok(RestoreOutcome {
-        info,
-        schema_version,
+        info: copy.info,
+        schema_version: copy.schema_version,
         previous: plan.existing.then_some(plan.aside),
+        carried_ids: copy.carried.count,
+        warnings: copy.carried.warning.into_iter().collect(),
     })
 }
 
-/// Runs [`restore`] up to and including the migration of the staged copy,
-/// then removes the stage. Nothing outside the stage is created or changed.
+/// Runs [`restore`] up to and including the migration of the staged copy and
+/// counts the ids it would carry over, then removes the stage. Nothing outside
+/// the stage is created or changed.
 pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<DryRunOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
     let needs_replace = plan.existing && !replace;
@@ -269,11 +289,13 @@ pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: boo
 
     let stage = Stage::for_restore(target)?;
     let staged = stage.path.join(file_name(&target.path)?);
-    let (info, schema_version) = stage_copy(input, &staged, target).await?;
+    let copy = stage_copy(input, &staged, target, plan.replaced(), Carry::Count).await?;
     Ok(DryRunOutcome {
-        info,
-        schema_version,
+        info: copy.info,
+        schema_version: copy.schema_version,
         needs_replace,
+        carried_ids: copy.carried.count,
+        warnings: copy.carried.warning.into_iter().collect(),
     })
 }
 
@@ -301,6 +323,12 @@ impl Plan {
             aside: target.with_file_name(aside),
             existing: database_present(target),
         })
+    }
+
+    /// The database the restore replaces, whose ids it carries over: the
+    /// target, if a file is there (sidecars alone hold no readable database).
+    fn replaced(&self) -> Option<&Path> {
+        occupied(&self.target).then_some(self.target.as_path())
     }
 
     /// `(from, to)` for the target and each sidecar.
@@ -375,11 +403,26 @@ fn undo(done: Vec<(PathBuf, PathBuf)>, error: BackupError) -> BackupError {
     }
 }
 
-/// Steps 3 to 5 of a restore: copies only the main file of `input` to
+/// The staged copy, ready for the cutover.
+struct StagedCopy {
+    /// The backup as verified, before the migration.
+    info: BackupInfo,
+    /// The schema version the migration reached.
+    schema_version: i64,
+    carried: CarriedIds,
+}
+
+/// Steps 3 to 6 of a restore: copies only the main file of `input` to
 /// `staged`, verifies the copy, migrates it like `serve` would and checkpoints
-/// it, so the staged file is self-contained. Returns the verified contents
-/// and the schema version reached.
-async fn stage_copy(input: &Path, staged: &Path, target: &DatabaseConfig) -> Result<(BackupInfo, i64), BackupError> {
+/// it, so the staged file is self-contained. Then carries the ids of
+/// `replaced` over (see [`carry_ids`]) and checkpoints again.
+async fn stage_copy(
+    input: &Path,
+    staged: &Path,
+    target: &DatabaseConfig,
+    replaced: Option<&Path>,
+    carry: Carry,
+) -> Result<StagedCopy, BackupError> {
     copy_main_file(input, staged)?;
     step(Step::Copy, staged)?;
     let info = verify_file(staged).await?;
@@ -392,21 +435,197 @@ async fn stage_copy(input: &Path, staged: &Path, target: &DatabaseConfig) -> Res
     let pool = db::connect(&config).await?;
     let result = async {
         step(Step::Migrate, staged)?;
-        let version = db::verify(&pool).await?;
-        let busy: i64 = sqlx::query_scalar("PRAGMA wal_checkpoint(TRUNCATE)")
-            .fetch_one(&pool)
-            .await
-            .map_err(BackupError::Database)?;
-        if busy != 0 {
-            return Err(BackupError::CheckpointBusy);
-        }
+        let schema_version = db::verify(&pool).await?;
+        checkpoint(&pool).await?;
         step(Step::Checkpoint, staged)?;
-        Ok(version)
+
+        let carried = match replaced {
+            Some(replaced) => carry_ids(&pool, replaced, carry).await?,
+            None => CarriedIds::default(),
+        };
+        checkpoint(&pool).await?;
+        step(Step::CarryIds, staged)?;
+        Ok(StagedCopy {
+            info,
+            schema_version,
+            carried,
+        })
     }
     .await;
     pool.close().await;
+    result
+}
 
-    Ok((info, result?))
+/// Moves every page of the WAL into the database file and truncates the WAL.
+async fn checkpoint(pool: &SqlitePool) -> Result<(), BackupError> {
+    let busy: i64 = sqlx::query_scalar("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_one(pool)
+        .await
+        .map_err(BackupError::Database)?;
+    if busy != 0 {
+        return Err(BackupError::CheckpointBusy);
+    }
+    Ok(())
+}
+
+/// What [`carry_ids`] does with the ids it finds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carry {
+    /// Count them only (dry run).
+    Count,
+    /// Count them and insert them into the staged copy's `retired_ids`.
+    Insert,
+}
+
+/// The outcome of [`carry_ids`].
+#[derive(Debug, Default)]
+struct CarriedIds {
+    /// The ids carried over (or, for [`Carry::Count`], to carry over).
+    count: i64,
+    /// Why the ids of the replaced database could not be read.
+    warning: Option<String>,
+}
+
+impl CarriedIds {
+    fn unreadable(reason: impl std::fmt::Display) -> Self {
+        Self {
+            count: 0,
+            warning: Some(format!(
+                "the ids of the replaced database could not be carried over ({reason}); its ids that are not in the \
+                 backup can be used again"
+            )),
+        }
+    }
+}
+
+/// The ids of the attached replaced database (`old`): its rows and, from schema
+/// version 4 on, its retired ids. Constant SQL, put into the statements of
+/// [`carry_attached`] with `format!`; nothing from outside goes into them.
+const OLD_IDS: &str = "SELECT id FROM old.pastes";
+const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION SELECT id FROM old.retired_ids";
+
+/// Retires, in the staged copy behind `pool`, every id of `replaced` that the
+/// copy does not hold as a row (`Carry::Count`: only counts them).
+///
+/// Everything stays inside SQLite: `replaced` is attached read-only to one
+/// connection of the copy, so millions of ids never pass through this
+/// process. A replaced database that cannot be attached or read is not an
+/// error: the copy stays unchanged and the result carries a warning. Errors
+/// that concern the copy itself are errors.
+async fn carry_ids(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<CarriedIds, BackupError> {
+    let uri = match read_only_uri(replaced) {
+        Ok(uri) => uri,
+        Err(reason) => return Ok(CarriedIds::unreadable(reason)),
+    };
+    let mut connection = pool.acquire().await.map_err(BackupError::Database)?;
+    // Bound, never formatted into the statement: the path is not SQL.
+    if let Err(error) = sqlx::query("ATTACH DATABASE ?1 AS old").bind(uri).execute(&mut *connection).await {
+        return Ok(CarriedIds::unreadable(error));
+    }
+
+    let carried = carry_attached(&mut connection, carry).await;
+    let detached = sqlx::query("DETACH DATABASE old").execute(&mut *connection).await;
+    let carried = carried?;
+    detached.map_err(BackupError::Database)?;
+    Ok(carried)
+}
+
+/// The scratch table in the staged copy that holds the ids read from `old`.
+/// Created, filled and dropped within one transaction of [`carry_attached`],
+/// so it never reaches the installed database. Not `TEMP`: the bundled SQLite
+/// keeps temporary tables in memory, and a temporary file would lie outside
+/// the private stage.
+const SCRATCH_TABLE: &str = "main.restore_carried_ids";
+
+/// The part of [`carry_ids`] that runs while `old` is attached, in one
+/// transaction.
+///
+/// `old` is read in exactly one statement, which copies its ids into a
+/// scratch table in the copy ([`SCRATCH_TABLE`]); a failure there can only
+/// come from `old` (or the scratch table filled from it), rolls back and
+/// becomes the warning. The count and the insert then read only that table
+/// and the copy, so their failures concern the copy and stay errors.
+async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<CarriedIds, BackupError> {
+    use sqlx::Connection as _;
+
+    let mut transaction = connection.begin().await.map_err(BackupError::Database)?;
+    sqlx::query(AssertSqlSafe(format!(
+        "CREATE TABLE {SCRATCH_TABLE} (id TEXT PRIMARY KEY) WITHOUT ROWID"
+    )))
+    .execute(&mut *transaction)
+    .await
+    .map_err(BackupError::Database)?;
+    let read = async {
+        let has_retired: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = 'retired_ids')")
+                .fetch_one(&mut *transaction)
+                .await?;
+        let old_ids = if has_retired { OLD_IDS_WITH_RETIRED } else { OLD_IDS };
+        sqlx::query(AssertSqlSafe(format!("INSERT OR IGNORE INTO {SCRATCH_TABLE} (id) {old_ids}")))
+            .execute(&mut *transaction)
+            .await?;
+        Ok::<_, sqlx::Error>(())
+    }
+    .await;
+    if let Err(error) = read {
+        // Also drops the scratch table.
+        transaction.rollback().await.map_err(BackupError::Database)?;
+        return Ok(CarriedIds::unreadable(error));
+    }
+
+    let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM {SCRATCH_TABLE} \
+         WHERE id NOT IN (SELECT id FROM main.pastes) AND id NOT IN (SELECT id FROM main.retired_ids)"
+    )))
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(BackupError::Database)?;
+    if carry == Carry::Insert {
+        sqlx::query(AssertSqlSafe(format!(
+            "INSERT OR IGNORE INTO main.retired_ids (id) \
+             SELECT id FROM {SCRATCH_TABLE} WHERE id NOT IN (SELECT id FROM main.pastes)"
+        )))
+        .execute(&mut *transaction)
+        .await
+        .map_err(BackupError::Database)?;
+        sqlx::query(AssertSqlSafe(format!("DROP TABLE {SCRATCH_TABLE}")))
+            .execute(&mut *transaction)
+            .await
+            .map_err(BackupError::Database)?;
+        transaction.commit().await.map_err(BackupError::Database)?;
+    } else {
+        // Also drops the scratch table.
+        transaction.rollback().await.map_err(BackupError::Database)?;
+    }
+    Ok(CarriedIds { count, warning: None })
+}
+
+/// A `file:` URI that opens the database `path` without writing to it, its
+/// `-wal` or its `-shm`, and without creating either sidecar.
+///
+/// `mode=ro` alone is not enough: SQLite would still create a missing `-wal`
+/// and `-shm` and rewrite an existing `-shm` (the WAL index). So:
+/// - without a `-wal`, or with an empty one, the database file holds every
+///   committed page: `immutable=1` reads it with no locks and no sidecar;
+/// - with a non-empty `-wal` and a `-shm`, `readonly_shm=1` opens the `-shm`
+///   read-only and reads the WAL into private memory, so its commits count;
+/// - a non-empty `-wal` without a `-shm` cannot be read without creating one,
+///   so that database is reported as unreadable.
+///
+/// The path is made absolute and percent-encoded by `url`, so `?`, `#` and `%`
+/// in it stay part of the path.
+fn read_only_uri(path: &Path) -> Result<String, &'static str> {
+    let [wal, shm] = db::sidecars(path);
+    let query = match std::fs::metadata(&wal) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "mode=ro&immutable=1",
+        Ok(metadata) if metadata.len() == 0 => "mode=ro&immutable=1",
+        _ if occupied(&shm) => "mode=ro&readonly_shm=1",
+        _ => return Err("its -wal file has no -shm file, which reading it would create"),
+    };
+    let absolute = std::path::absolute(path).map_err(|_| "its path cannot be made absolute")?;
+    let mut uri = url::Url::from_file_path(&absolute).map_err(|()| "its path cannot be written as a URI")?;
+    uri.set_query(Some(query));
+    Ok(uri.into())
 }
 
 /// Copies `input` to the new owner-only file `staged`.
@@ -466,6 +685,8 @@ enum Step {
     Verify,
     Migrate,
     Checkpoint,
+    /// The ids of the replaced database are carried over and checkpointed.
+    CarryIds,
     MoveDatabase,
     MoveWal,
     MoveShm,

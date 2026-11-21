@@ -167,7 +167,7 @@ READY="$(curl -sS "${BASE}/health/ready")"
 grep -q '"database":"ok"' <<<"${READY}" || fail "/health/ready reports the database as unusable: ${READY}"
 grep -q '"assets":"ok"' <<<"${READY}" ||
   fail "/health/ready reports missing assets; run \`npm run build\` in src/server/web/ before cargo build"
-grep -q '"schema_version":3' <<<"${READY}" || fail "unexpected schema version: ${READY}"
+grep -q '"schema_version":4' <<<"${READY}" || fail "unexpected schema version: ${READY}"
 echo "ok  /health/ready (assets embedded, schema applied)"
 
 # The container health check: the binary probes its own endpoints, derived from

@@ -122,12 +122,18 @@ impl PasteRepository for SqlitePasteRepository {
         // can actually measure. The plaintext size stays unknown to it.
         let payload_size = i64::try_from(paste.ciphertext.len()).unwrap_or(i64::MAX);
 
+        // A retired id (`migrations/0004_retired_ids.sql`) is refused in the
+        // same statement as the insert: checked separately, a purge committing in
+        // between could retire the id after the check and before the insert. A
+        // retired id inserts nothing, an occupied one is a unique violation; both
+        // are the same conflict.
         let row = sqlx::query(assembled(format!(
             "INSERT INTO pastes (
                  id, format_version, public_header, ciphertext,
                  reveal_verifier, delete_verifier, describe_verifier, created_at, expires_at,
                  burn_after_retrieval, payload_size
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                WHERE NOT EXISTS (SELECT 1 FROM retired_ids WHERE id = ?1)
              RETURNING {SELECT_COLUMNS}"
         )))
         .bind(paste.id.encode())
@@ -141,9 +147,10 @@ impl PasteRepository for SqlitePasteRepository {
         .bind(paste.expires_at)
         .bind(i64::from(paste.burn_after_retrieval))
         .bind(payload_size)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(map_create_error)?;
+        .map_err(map_create_error)?
+        .ok_or(RepositoryError::IdConflict)?;
 
         row_to_paste(&row)
     }

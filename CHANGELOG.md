@@ -49,6 +49,11 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)).
 - Creation modes `token`, `public` and `disabled` (read-only), defaulting to `token`.
 - Retention rules (expired, never retrieved, inactive) with a scheduled daily purge and `prune`.
+- A paste id is never used twice: a purged capsule leaves only its id behind, and creating a
+  capsule under it answers `409 id_conflict` like an occupied id, so an old link can never open
+  different content and reports or moderation can never reach a later capsule. `restore` retires
+  the ids of the replaced database that the backup lacks (`--dry-run` counts them) and only warns
+  if it cannot read them. The built-in privacy notice says so.
 - Per-client rate limits, a daily byte quota and concurrent-upload limit, with trusted-proxy-aware
   client addresses; a per-paste limit on password attempts (on by default) that only callers
   holding the link can trigger.
