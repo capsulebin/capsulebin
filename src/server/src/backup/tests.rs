@@ -289,6 +289,25 @@ async fn backup_never_replaces_or_follows_an_existing_entry() {
     assert_eq!(std::fs::read(dir.join("file/backup.db")).unwrap(), b"precious");
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"precious");
     assert!(!occupied(&dangling), "the dangling symlink was followed");
+
+    // An entry that appears while the snapshot is written is not replaced either.
+    let out = dir.join("late");
+    std::fs::create_dir(&out).unwrap();
+    let output = out.join("backup.db");
+    {
+        let (planted, dangling) = (output.clone(), dangling.clone());
+        let _hook = on_step(move |step, _| {
+            if step == Step::BackupWritten {
+                std::os::unix::fs::symlink(&dangling, &planted)?;
+            }
+            Ok(())
+        });
+        let error = create(&pool, &output).await.unwrap_err();
+        assert!(matches!(error, BackupError::Exists(ref path) if path == &output), "late: {error}");
+    }
+    assert_eq!(std::fs::read_link(&output).unwrap(), dangling);
+    assert_eq!(entries(&out), BTreeSet::from([OsString::from("backup.db")]), "late: stage left");
+    assert!(!occupied(&dangling), "the late dangling symlink was followed");
 }
 
 #[tokio::test]
@@ -580,4 +599,43 @@ async fn refuses_to_restore_a_file_onto_itself() {
         .await
         .unwrap_err();
     assert!(matches!(error, BackupError::SameFile), "{error}");
+}
+
+/// AC17: the published output is the verified staged snapshot itself, not a
+/// copy of it, and no second name for it is left behind.
+#[cfg(unix)]
+#[tokio::test]
+async fn backup_publishes_the_staged_snapshot_itself() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let dir = dir("backup-rename");
+    let pool = database_with_pastes(dir.join("live.db")).await;
+    let out = dir.join("out");
+    std::fs::create_dir(&out).unwrap();
+    let output = out.join("backup.db");
+
+    let staged_inode = Rc::new(RefCell::new(None));
+    {
+        let staged_inode = staged_inode.clone();
+        let _hook = on_step(move |step, path| {
+            if step == Step::BackupWritten {
+                *staged_inode.borrow_mut() = Some(std::fs::metadata(path)?.ino());
+            }
+            Ok(())
+        });
+        create(&pool, &output).await.unwrap();
+    }
+    // The output carries the staged file's inode, so it is not a copy (a copy
+    // gets a new inode). A link count of 1 means no second name for it is left
+    // behind. Whether a hard link was used on the way is not observable here:
+    // the stage is gone once `create` returns, so a hard link followed by
+    // removing the stage looks the same as a rename (telling them apart would
+    // need a filesystem without hard links).
+    let published = std::fs::symlink_metadata(&output).unwrap();
+    assert!(published.file_type().is_file());
+    assert_eq!(Some(published.ino()), *staged_inode.borrow(), "the output is not the staged file");
+    assert_eq!(published.nlink(), 1, "the output has another name left");
+    assert_eq!(mode(&output), 0o600);
+    assert_eq!(entries(&out), BTreeSet::from([OsString::from("backup.db")]));
+    verify_file(&output).await.unwrap();
 }

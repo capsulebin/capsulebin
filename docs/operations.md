@@ -389,15 +389,15 @@ capsulebin --config /etc/capsulebin.toml backup --output /backups/capsulebin-$(d
 
 Safe while serving. The file is consistent, compacted and `0600`. It is written and verified inside
 a new private directory (`.<name>.backup-<random hex>`, mode `0700`) next to the output, then
-published under the output name with a hard link; the directory is removed afterwards, also on
-failure. `backup` never replaces or follows an existing entry at the output name — a file, a
-directory or a symlink, dangling or not, is refused. Because of the hard link, the output's
-filesystem must support hard links: on FAT/exFAT drives and some SMB/CIFS mounts `backup` fails
-with an I/O error. Back up to the database's volume (or another local filesystem) and copy the file
-to such a destination from there. Store backups as carefully as the
-database: they contain ciphertext, verifiers and abuse reports with contact details. Rotate them —
-an old backup is where deleted capsules survive the longest. Never copy the live database file
-directly.
+renamed to the output name; the directory is removed afterwards, also on failure. An existing
+entry at the output name — a file, a directory or a symlink, dangling or not — is refused, checked
+before the snapshot and again right before the rename. The rename never follows a symlink; only an
+entry created in the output directory between that last check and the rename would be replaced,
+which needs write access to that directory (and whoever has it could replace the backup anyway).
+The rename stays within the output's directory, so any filesystem works as a destination. Store
+backups as carefully as the database: they contain ciphertext, verifiers and abuse reports with
+contact details. Rotate them — an old backup is where deleted capsules survive the longest. Never
+copy the live database file directly.
 
 ### Restore
 

@@ -267,6 +267,11 @@ logs one warning per minute at most, without id, text or contact; the throttle i
   stages removed by a drop guard. The shared file helpers live in `db.rs`: `db::parent_or_current`
   (behind `DatabaseConfig::directory()`, the one source for the database directory, and the backup
   stage's directory) and `db::sidecars` (`-wal`/`-shm` names) — do not re-implement them.
+- **Backup order** (`backup::create`): `occupied(output)` check → stage → `VACUUM INTO` the stage
+  → `verify_file` → `occupied(output)` re-check → `rename` the snapshot to the output. `rename`
+  follows no symlink but replaces an entry created after the re-check; that window is accepted
+  like restore's (planting there needs write access to the output directory, which could replace
+  the backup anyway) — a hard link would make backups fail on filesystems without hard links.
 - **Restore order** (`backup::restore`): collision check (target, or with `--force`
   `<file>.pre-restore-<now>` and its sidecars, via `symlink_metadata`) → stage → copy only the main
   file → `verify_file` on the copy (never on the input: RUSTSEC-2026-0459) → `db::connect` +
@@ -331,7 +336,7 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 | `token`  | Generate a creation token + the hash to configure (domain-separated) |
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
-| `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `hard_link` (never replaces or follows an entry) |
+| `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
 | `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy only) |
 
 ### Test commands (CI gates)
@@ -427,7 +432,7 @@ npm run e2e -w @capsulebin/web
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
-| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by hard link), backup verification, staged restore with rollback and `restore_dry_run` (tests in `backup/tests.rs`) |
+| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with rollback and `restore_dry_run` (tests in `backup/tests.rs`) |
 | `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |

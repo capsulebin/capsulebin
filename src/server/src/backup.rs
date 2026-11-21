@@ -97,9 +97,8 @@ pub struct BackupInfo {
 /// Writes a consistent, compacted snapshot of `pool`'s database to `output`.
 ///
 /// The snapshot is written and verified inside a new private stage directory
-/// next to `output`, then published under `output` with a hard link, which
-/// fails on any existing entry (a dangling symlink included) instead of
-/// replacing or following it. The stage is removed on every path.
+/// next to `output`, then renamed to `output` unless an entry (a dangling
+/// symlink included) exists there. The stage is removed on every path.
 pub async fn create(pool: &SqlitePool, output: &Path) -> Result<BackupInfo, BackupError> {
     if occupied(output) {
         return Err(BackupError::Exists(output.to_path_buf()));
@@ -123,13 +122,16 @@ pub async fn create(pool: &SqlitePool, output: &Path) -> Result<BackupInfo, Back
     step(Step::BackupWritten, &staged)?;
     let info = verify_file(&staged).await?;
 
-    std::fs::hard_link(&staged, output).map_err(|error| match error.kind() {
-        std::io::ErrorKind::AlreadyExists => BackupError::Exists(output.to_path_buf()),
-        _ => BackupError::Io {
-            path: output.to_path_buf(),
-            source: error,
-        },
-    })?;
+    // `rename` would replace an entry at `output`, so check right before it. The
+    // window between the check and the rename is accepted, as in
+    // `Plan::check_collisions`: `rename` follows no symlink at the destination,
+    // and only someone who can write the output's directory could plant an
+    // entry there, who could replace the backup anyway. A rename keeps the
+    // backup usable on filesystems without hard links.
+    if occupied(output) {
+        return Err(BackupError::Exists(output.to_path_buf()));
+    }
+    std::fs::rename(&staged, output).map_err(io(output))?;
     Ok(info)
 }
 

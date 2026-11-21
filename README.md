@@ -264,10 +264,8 @@ capsulebin restore --input /backups/capsulebin-2026-11-17.db --force     # serve
 `backup` uses SQLite's `VACUUM INTO`: a consistent snapshot of the live database without its
 write-ahead log, compacted so that pages freed by deleted or burned capsules are not copied. The
 snapshot is written owner-only into a private directory next to the output, verified (integrity and
-schema) there and only then published under the output name with a hard link; an existing entry
-there — a file or a symlink — is never overwritten or followed. The output's filesystem must
-support hard links (not FAT/exFAT or some SMB/CIFS mounts); to back up to such a destination, back
-up locally and copy the file.
+schema) there and only then renamed to the output name; an existing entry there — a file or a
+symlink — is refused (checked again right before the rename) and never followed.
 
 `restore` copies only the backup's main file — never a `-wal` next to it — into a private directory
 next to the database, verifies and migrates that copy, and only then swaps it in. It refuses to
