@@ -34,20 +34,30 @@ pub(crate) async fn backup(resolved: Resolved, output: PathBuf) -> anyhow::Resul
 /// Puts a verified backup in place of the configured database. The server must
 /// be stopped.
 pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry_run: bool) -> anyhow::Result<()> {
-    let target = resolved.config.database.path.clone();
+    let target = &resolved.config.database;
 
     if dry_run {
-        let info = backup::verify_file(&input)
+        let outcome = backup::restore_dry_run(&input, target, force, SystemClock.now())
             .await
             .with_context(|| format!("{} is not a usable backup", input.display()))?;
-        println!("ok: {} is a usable backup ({})", input.display(), describe(&info));
+        println!("ok: {} is a usable backup ({})", input.display(), describe(&outcome.info));
+        println!(
+            "    A private copy was migrated to schema version {}; nothing was changed.",
+            outcome.schema_version
+        );
+        if outcome.needs_replace {
+            println!(
+                "    {} already exists; the restore needs --force to replace it.",
+                target.path.display()
+            );
+        }
         return Ok(());
     }
 
-    let outcome = backup::restore(&input, &target, force, SystemClock.now())
+    let outcome = backup::restore(&input, target, force, SystemClock.now())
         .await
         .map_err(|error| match error {
-            backup::BackupError::Exists(path) if path == target => anyhow::anyhow!(
+            backup::BackupError::Exists(path) if path == target.path => anyhow::anyhow!(
                 "{} already exists; stop the server and pass --force to replace it (the current database is kept as \
                  <file>.pre-restore-<timestamp>)",
                 path.display()
@@ -55,25 +65,26 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
             other => anyhow::Error::new(other).context(format!("could not restore {}", input.display())),
         })?;
 
-    // Open it the way `serve` does: applies migrations an older backup lacks,
-    // then checks the schema.
-    let pool = db::connect(&resolved.config.database)
-        .await
-        .context("the restored database cannot be opened")?;
-    let version = db::verify(&pool).await.context("the restored database is not usable")?;
+    // Open it the way `serve` does: the staged copy was migrated before the
+    // cutover, so this only confirms the installed file is usable.
+    let pool = db::connect(target).await.context("the restored database cannot be opened")?;
+    db::verify(&pool).await.context("the restored database is not usable")?;
     pool.close().await;
 
     println!(
         "ok: restored {} to {} ({})",
         input.display(),
-        target.display(),
+        target.path.display(),
         describe(&outcome.info)
     );
     if let Some(previous) = outcome.previous {
         println!("    The previous database was moved to {}.", previous.display());
     }
-    if version != outcome.info.schema_version {
-        println!("    Migrated from schema version {} to {version}.", outcome.info.schema_version);
+    if outcome.schema_version != outcome.info.schema_version {
+        println!(
+            "    Migrated from schema version {} to {}.",
+            outcome.info.schema_version, outcome.schema_version
+        );
     }
     Ok(())
 }

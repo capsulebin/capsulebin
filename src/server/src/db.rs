@@ -20,7 +20,16 @@
 //!
 //! Migrations are embedded in the binary, so a deployment is one file and cannot
 //! drift from the schema it expects.
+//!
+//! The database file is created here, not by SQLite: exclusively and owner-only
+//! (`0600` on Unix) whatever the umask, because SQLite gives `-wal` and `-shm`
+//! the mode of the main file, and a `chmod` afterwards could not revoke a
+//! descriptor opened in between. A missing file next to what an interrupted
+//! restore left behind is refused instead of being replaced by an empty one.
 
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -39,6 +48,35 @@ pub enum DbError {
     Migrate(#[source] sqlx::migrate::MigrateError),
     #[error("database query failed: {0}")]
     Query(#[source] sqlx::Error),
+    #[error("could not create the database file {}: {source}", path.display())]
+    Create {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not inspect the database file {}: {source}", path.display())]
+    InspectFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not look for restore leftovers in {}: {source}", directory.display())]
+    Inspect {
+        directory: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The database is missing, but a restore was interrupted next to it.
+    /// Creating an empty database would hide the operator's data behind a
+    /// server that looks healthy.
+    #[error(
+        "the database {} is missing, but an interrupted restore left {} behind; no new database \
+         was created. Run the restore again, or move the old database back to {}",
+        path.display(),
+        list_paths(leftovers),
+        path.display()
+    )]
+    RestoreLeftovers { path: PathBuf, leftovers: Vec<PathBuf> },
     /// The binary expects a newer schema than the file provides. Serving anyway
     /// would risk writing rows the schema cannot represent.
     #[error("schema is at version {found:?} but this build expects {expected}")]
@@ -48,11 +86,25 @@ pub enum DbError {
 /// Upper bound in bytes the write-ahead log is truncated to after a checkpoint.
 const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
 
+fn list_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")
+}
+
 /// Opens the pool and applies pending migrations.
+///
+/// A missing database file is refused if a restore leftover lies next to it
+/// (`<file>.pre-restore-*`, a directory `.<file>.restore-*`), and otherwise created owner-only before SQLite
+/// opens it.
 pub async fn connect(config: &DatabaseConfig) -> Result<SqlitePool, DbError> {
+    let in_memory = config.path == Path::new(IN_MEMORY);
+    if !in_memory {
+        prepare_file(&config.path, config.directory())?;
+    }
+
     let options = SqliteConnectOptions::new()
         .filename(&config.path)
-        .create_if_missing(true)
+        // The file exists by now; SQLite must not create one with its own mode.
+        .create_if_missing(in_memory)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_millis(config.busy_timeout_ms))
         .synchronous(match config.synchronous {
@@ -76,6 +128,178 @@ pub async fn connect(config: &DatabaseConfig) -> Result<SqlitePool, DbError> {
     MIGRATOR.run(&pool).await.map_err(DbError::Migrate)?;
 
     Ok(pool)
+}
+
+/// SQLite's name for a database that lives only in memory, with no file to
+/// create or protect.
+const IN_MEMORY: &str = ":memory:";
+
+/// Refuses a missing database next to restore leftovers, otherwise creates a
+/// missing database file owner-only.
+fn prepare_file(path: &Path, directory: &Path) -> Result<(), DbError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(DbError::InspectFile {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    }
+
+    let leftovers = restore_leftovers(path, directory).map_err(|source| DbError::Inspect {
+        directory: directory.to_owned(),
+        source,
+    })?;
+    if !leftovers.is_empty() {
+        return Err(DbError::RestoreLeftovers {
+            path: path.to_owned(),
+            leftovers,
+        });
+    }
+
+    match create_private_file(path) {
+        Ok(_) => Ok(()),
+        // Created by someone else in between: opened as an existing database.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) => Err(DbError::Create {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+/// Creates a new file that only its owner can read and write (`0600` on Unix,
+/// independent of the umask). Fails if any entry exists at `path`, a symlink
+/// included, so it never opens a file someone else placed there.
+pub fn create_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
+/// `prefix` followed by 16 random hex digits from the operating system: a
+/// scratch name nobody can predict and plant an entry under beforehand.
+pub fn random_name(prefix: &OsStr) -> std::io::Result<OsString> {
+    let mut suffix = [0_u8; 8];
+    getrandom::fill(&mut suffix).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut name = prefix.to_owned();
+    name.push(suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    Ok(name)
+}
+
+/// The directory `path` lies in; `.` for a bare file name.
+pub fn parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// The `-wal` and `-shm` files SQLite keeps next to the database `path`.
+pub fn sidecars(path: &Path) -> [PathBuf; 2] {
+    let with = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    [with("-wal"), with("-shm")]
+}
+
+/// The file name prefix of the entries `restore` moves the old database and
+/// its `-wal`/`-shm` to: `<file>.pre-restore-` for the database `<dir>/<file>`.
+/// The full name appends the time of the restore.
+pub fn pre_restore_prefix(database: &Path) -> OsString {
+    let mut prefix = file_name(database).to_owned();
+    prefix.push(".pre-restore-");
+    prefix
+}
+
+/// The name prefix of the private directories `restore` stages a backup in:
+/// `.<file>.restore-` for the database `<dir>/<file>`. The full name appends a
+/// random suffix.
+pub fn restore_stage_prefix(database: &Path) -> OsString {
+    let mut prefix = OsString::from(".");
+    prefix.push(file_name(database));
+    prefix.push(".restore-");
+    prefix
+}
+
+fn file_name(database: &Path) -> &OsStr {
+    database.file_name().unwrap_or(database.as_os_str())
+}
+
+/// The entries of `directory` an interrupted restore of `database` left
+/// behind: any `<file>.pre-restore-*` and any directory `.<file>.restore-*`,
+/// sorted by path.
+fn restore_leftovers(database: &Path, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let aside = pre_restore_prefix(database);
+    let stage = restore_stage_prefix(database);
+    let mut leftovers = Vec::new();
+
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.as_encoded_bytes();
+        let is_aside = name.starts_with(aside.as_encoded_bytes());
+        let is_stage = name.starts_with(stage.as_encoded_bytes()) && entry.file_type()?.is_dir();
+        if is_aside || is_stage {
+            leftovers.push(entry.path());
+        }
+    }
+
+    leftovers.sort();
+    Ok(leftovers)
+}
+
+/// Warnings about database files other local users can access: the database
+/// and an existing `-wal`/`-shm` with any group or other permission bit, and
+/// the database directory with a group or other write bit. Each names the
+/// path and its octal mode. Only reads metadata; nothing on disk is changed,
+/// and a file that does not exist is skipped. Always empty outside Unix.
+pub fn permission_warnings(config: &DatabaseConfig) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        unix_permission_warnings(&config.path, config.directory())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        Vec::new()
+    }
+}
+
+#[cfg(unix)]
+fn unix_permission_warnings(database: &Path, directory: &Path) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mode = |path: &Path| std::fs::metadata(path).ok().map(|metadata| metadata.permissions().mode() & 0o7777);
+    let [wal, shm] = sidecars(database);
+
+    let mut warnings = Vec::new();
+    for path in [database.to_owned(), wal, shm] {
+        if let Some(mode) = mode(&path).filter(|mode| mode & 0o077 != 0) {
+            let access = match (mode & 0o044 != 0, mode & 0o022 != 0) {
+                (true, true) => "readable and writable",
+                (true, false) => "readable",
+                (false, true) => "writable",
+                (false, false) => "accessible",
+            };
+            warnings.push(format!(
+                "database file {} has mode {mode:04o} and is {access} by other users",
+                path.display()
+            ));
+        }
+    }
+    if let Some(mode) = mode(directory).filter(|mode| mode & 0o022 != 0) {
+        warnings.push(format!(
+            "database directory {} has mode {mode:04o} and is writable by other users",
+            directory.display()
+        ));
+    }
+    warnings
 }
 
 /// Highest migration version this build carries.
@@ -223,6 +447,110 @@ mod tests {
 
         let error = verify(&pool).await.expect_err("must reject");
         assert!(matches!(error, DbError::SchemaMismatch { found: None, .. }));
+    }
+
+    #[test]
+    fn leftover_prefixes_follow_the_file_name() {
+        let database = Path::new("/data/capsulebin.db");
+        assert_eq!(pre_restore_prefix(database), "capsulebin.db.pre-restore-");
+        assert_eq!(restore_stage_prefix(database), ".capsulebin.db.restore-");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn creates_a_missing_database_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let config = config("private");
+        let pool = connect(&config).await.expect("connect");
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = config.path.as_os_str().to_owned();
+            path.push(suffix);
+            let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{suffix}");
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_missing_database_next_to_restore_leftovers() {
+        let aside = config("leftover-aside");
+        std::fs::write(aside.directory().join("capsulebin.db.pre-restore-1700000000"), b"old").expect("aside");
+        let stage = config("leftover-stage");
+        std::fs::create_dir(stage.directory().join(".capsulebin.db.restore-0123")).expect("stage");
+
+        for (config, leftover) in [
+            (&aside, "capsulebin.db.pre-restore-1700000000"),
+            (&stage, ".capsulebin.db.restore-0123"),
+        ] {
+            let error = connect(config).await.expect_err("must refuse");
+            assert!(matches!(error, DbError::RestoreLeftovers { .. }), "{error}");
+            assert!(error.to_string().contains(leftover), "{error}");
+            assert!(!config.path.exists(), "database created next to {leftover}");
+        }
+
+        // With the database present, the leftovers do not matter.
+        std::fs::remove_dir(stage.directory().join(".capsulebin.db.restore-0123")).expect("remove stage");
+        connect(&stage).await.expect("connect without leftovers").close().await;
+        std::fs::create_dir(stage.directory().join(".capsulebin.db.restore-0123")).expect("stage");
+        connect(&stage).await.expect("connect next to leftovers").close().await;
+    }
+
+    /// A regular file with the stage prefix is not a stage directory.
+    #[tokio::test]
+    async fn a_file_named_like_a_stage_is_no_leftover() {
+        let config = config("stage-file");
+        std::fs::write(config.directory().join(".capsulebin.db.restore-file"), b"").expect("file");
+        connect(&config).await.expect("connect").close().await;
+    }
+
+    #[tokio::test]
+    async fn connects_to_an_in_memory_database() {
+        let config = DatabaseConfig {
+            path: PathBuf::from(IN_MEMORY),
+            busy_timeout_ms: 5_000,
+            synchronous: Synchronous::Full,
+        };
+        connect(&config).await.expect("connect").close().await;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_warnings_name_path_and_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let config = config("permissions");
+        let directory = config.directory().to_owned();
+        let set = |path: &Path, mode: u32| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        let wal = directory.join("capsulebin.db-wal");
+        std::fs::write(&config.path, b"").expect("db");
+        std::fs::write(&wal, b"").expect("wal");
+
+        for mode in [0o700, 0o755] {
+            set(&directory, mode);
+            set(&config.path, 0o600);
+            set(&wal, 0o600);
+            assert!(permission_warnings(&config).is_empty(), "{mode:o}");
+        }
+
+        set(&directory, 0o770);
+        set(&config.path, 0o640);
+        set(&wal, 0o602);
+        assert_eq!(
+            permission_warnings(&config),
+            [
+                format!(
+                    "database file {} has mode 0640 and is readable by other users",
+                    config.path.display()
+                ),
+                format!("database file {} has mode 0602 and is writable by other users", wal.display()),
+                format!(
+                    "database directory {} has mode 0770 and is writable by other users",
+                    directory.display()
+                ),
+            ]
+        );
+        set(&directory, 0o700);
     }
 
     #[tokio::test]

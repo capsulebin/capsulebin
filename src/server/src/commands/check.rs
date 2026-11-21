@@ -13,6 +13,9 @@ pub(crate) async fn check(resolved: Resolved) -> anyhow::Result<()> {
     for warning in resolved.branding.colors.contrast_warnings() {
         eprintln!("warning: {warning}");
     }
+    for warning in db::permission_warnings(&resolved.config.database) {
+        eprintln!("warning: {warning}");
+    }
 
     let version = db::verify(&state.pool).await.context("database is not ready")?;
 

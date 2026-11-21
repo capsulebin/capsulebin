@@ -563,6 +563,54 @@ fn rejects_missing_database_directory() {
     assert!(error(&config).contains("does not exist"));
 }
 
+/// The write probe uses a fresh random name and removes it again: an entry
+/// planted under the old fixed name is neither followed nor removed, and the
+/// directory holds nothing new afterwards.
+#[cfg(unix)]
+#[test]
+fn write_probe_leaves_the_directory_as_it_was() {
+    let dir = tempdir("write-probe");
+    let sentinel = tempdir("write-probe-sentinel").join("sentinel");
+    std::fs::write(&sentinel, b"sentinel").expect("write sentinel");
+    std::os::unix::fs::symlink(&sentinel, dir.join(".capsulebin-write-probe")).expect("plant symlink");
+    let entries = |dir: &Path| {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = entries(&dir);
+
+    assert!(valid(&dir).validate().is_ok());
+
+    assert_eq!(entries(&dir), before);
+    assert_eq!(std::fs::read(&sentinel).expect("read sentinel"), b"sentinel");
+}
+
+/// An unwritable database directory stays a startup error.
+#[cfg(unix)]
+#[test]
+fn rejects_an_unwritable_database_directory() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempdir("unwritable-db");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    // Root writes regardless of the mode bits; nothing to check then.
+    let writable = std::fs::File::create(dir.join("root-check")).is_ok();
+    let result = valid(&dir).validate();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+    if writable {
+        return;
+    }
+
+    match result {
+        Err(error) => assert!(error.to_string().contains("is not writable"), "{error}"),
+        Ok(_) => panic!("an unwritable directory was accepted"),
+    }
+}
+
 #[test]
 fn rejects_zero_busy_timeout() {
     let dir = tempdir("busy");

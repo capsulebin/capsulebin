@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use capsulebin_server::config::Resolved;
+use capsulebin_server::db;
 use capsulebin_server::domain::{Clock as _, PurgeOutcome, SystemClock};
 use capsulebin_server::repository::sqlite::SqlitePasteRepository;
 use capsulebin_server::repository::sqlite::abuse::SqliteAbuseRepository;
@@ -23,6 +24,11 @@ pub(crate) async fn serve(resolved: Resolved, bind_override: Option<String>) -> 
     // Below the contrast of the built-in theme: worth knowing, not worth
     // refusing to start.
     for warning in resolved.branding.colors.contrast_warnings() {
+        tracing::warn!("{warning}");
+    }
+    // Files other users can read: reported, never changed (the operator
+    // decides whether that access is intended).
+    for warning in db::permission_warnings(&resolved.config.database) {
         tracing::warn!("{warning}");
     }
 

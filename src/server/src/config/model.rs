@@ -252,24 +252,29 @@ impl Default for DatabaseConfig {
 }
 
 impl DatabaseConfig {
+    /// The directory holding the database file and its `-wal`/`-shm`.
+    pub fn directory(&self) -> &Path {
+        crate::db::parent_or_current(&self.path)
+    }
+
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         let invalid = |message: String| ConfigError::Invalid(message);
 
-        let directory = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+        let directory = self.directory();
 
         if !directory.is_dir() {
             return Err(invalid(format!("database directory {} does not exist", directory.display())));
         }
 
         // Checked by writing, not by reading permission bits: those lie under
-        // containers, on read-only mounts and with unusual ownership.
-        let probe = directory.join(".capsulebin-write-probe");
-        match std::fs::write(&probe, b"") {
-            Ok(()) => {
+        // containers, on read-only mounts and with unusual ownership. The name
+        // is random and the file created exclusively, so an entry planted
+        // under a predictable name is never followed or written to.
+        let name = crate::db::random_name(".capsulebin-write-probe-".as_ref())
+            .map_err(|error| invalid(format!("could not read random bytes for the write probe: {error}")))?;
+        let probe = directory.join(name);
+        match crate::db::create_private_file(&probe) {
+            Ok(_) => {
                 let _ = std::fs::remove_file(&probe);
             }
             Err(source) => {
