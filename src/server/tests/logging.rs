@@ -646,14 +646,22 @@ async fn embedded_fallback_misses_are_unmatched() {
 }
 
 /// AC10 with the embedded asset source: a file the build put into `dist` is
-/// logged by its path once the fallback served it.
+/// logged by its path once the fallback served it. Without a web build in the
+/// binary (`dist` empty, as in the `Rust` CI job) the same paths are misses
+/// and log `{unmatched}`.
 #[tokio::test]
 async fn embedded_served_assets_are_named() {
     let (capture, _guard) = Capture::local();
     let h = harness_with_embedded_assets("logging-acceptance-embedded-served").await;
+    let built = h.get("/health/ready").await.json()["assets"] == "ok";
     for asset in ["/favicon.svg", "/theme-init.js", "/language-init.js"] {
         let logged = logged(&h, &capture, get(asset)).await;
-        assert_eq!(logged.answer.status, StatusCode::OK, "for {asset}");
-        assert_eq!(logged.path(), asset);
+        if built {
+            assert_eq!(logged.answer.status, StatusCode::OK, "for {asset}");
+            assert_eq!(logged.path(), asset);
+        } else {
+            assert_eq!(logged.answer.status, StatusCode::NOT_FOUND, "for {asset}");
+            assert_eq!(logged.path(), UNMATCHED, "for {asset}");
+        }
     }
 }
