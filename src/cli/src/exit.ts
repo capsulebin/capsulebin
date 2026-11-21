@@ -35,6 +35,12 @@ export const ExitCode = {
 
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode];
 
+/**
+ * Where the delete link of a capsule that may exist is: in a file `put` wrote,
+ * or nowhere but here.
+ */
+export type DeleteLink = { file: string } | { url: string };
+
 /** A failure with a message for stderr and the exit code to end with. */
 export class CliError extends Error {
     constructor(
@@ -42,6 +48,11 @@ export class CliError extends Error {
         public readonly exitCode: ExitCode,
         /** Machine-readable reason for `--json` output. */
         public readonly reason: string,
+        /**
+         * Set when `put` failed after a create request went out: the capsule
+         * may exist, so its delete link must not be lost with the failure.
+         */
+        public readonly deleteLink?: DeleteLink,
     ) {
         super(message);
         this.name = 'CliError';
@@ -134,6 +145,12 @@ const REJECTION_HINTS: Record<string, string> = {
     permanent_not_allowed: 'this server does not allow capsules that never expire',
     rate_limited: 'too many requests — try again later',
 };
+
+/** The same failure, carrying the delete link of the capsule it may have left behind. */
+export function withDeleteLink(err: unknown, deleteLink: DeleteLink): CliError {
+    const error = toCliError(err);
+    return new CliError(error.message, error.exitCode, error.reason, deleteLink);
+}
 
 /** Turns anything thrown into a CliError. */
 export function toCliError(err: unknown): CliError {

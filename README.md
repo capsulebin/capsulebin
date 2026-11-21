@@ -151,7 +151,7 @@ node src/cli/dist/cli.js put notes.md main.rs logo.png --expires 7d
 # From stdin, burn after the first retrieval, password from the environment
 echo "db password: hunter2" | CAPSULEBIN_PASSWORD=... node src/cli/dist/cli.js put --burn --password
 
-node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…'            # one item → ./, several → ./capsule-DATE-ID/
+node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…'            # all items → ./capsule-DATE-ID/
 node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…' --here     # all items → ./
 node src/cli/dist/cli.js get 'http://127.0.0.1:8081/p/…#v1.…' -o out/    # all items → out/
 node src/cli/dist/cli.js delete 'http://127.0.0.1:8081/manage/…#v1.…'
@@ -167,13 +167,36 @@ node src/cli/dist/cli.js delete --link-file notes.link
   or a hidden prompt; creation tokens from `--token-file` or `CAPSULEBIN_TOKEN`. A password from a
   file or the variable is used exactly as given, surrounding spaces included; one made only of
   whitespace makes `put` stop with exit code `2` instead of creating an unprotected capsule.
+- **Files, stdin and empty paths.** A link (`-`, `--link-file`), a token (`--token-file`) or a
+  password (`--password-file`) is the first line of its source: read up to the first `\n` (a `\r`
+  before it is dropped) or the end of the input, nothing after it, so a pipe that stays open does
+  not block. That line may hold at most 16 384 bytes; a longer one (or a source without a line
+  ending such as `/dev/zero`) is a usage error (exit code `2`, before any request) that names the
+  source but not its content. A path option given but empty (`--password-file ""`,
+  `--token-file ""`, `--link-file ""`, `--delete-link-file ""`, `-o ""`, e.g. from an unset script
+  variable) is a usage error too, never read as "not given": it would otherwise skip a password or
+  fall back to `CAPSULEBIN_TOKEN`, `CAPSULEBIN_PASSWORD` or the current directory.
+- **`CAPSULEBIN_TOKEN` belongs to `CAPSULEBIN_SERVER`.** When both are set, `put` sends the token
+  only if the server in use equals `CAPSULEBIN_SERVER` (scheme, host, port and path, compared
+  without trailing slashes); for another `--server`, or when `CAPSULEBIN_SERVER` is not a usable
+  URL, it leaves the token out and says so on stderr, and a server that needs it answers with exit
+  code `6`. Without `CAPSULEBIN_SERVER` the token goes to whichever server is used. `--token-file`
+  is sent to any server.
 - **Links can stay off the command line.** A link passed as an argument is visible to other local
   users (`ps`) and lands in the shell history; it works, but the alternatives below keep it private.
   `get` and `delete` also take `-` (the first line of stdin) or `--link-file PATH` (the first line
   of the file). `put --delete-link-file PATH` writes the management link to a new file with mode
   `0600` instead of stderr (and the JSON output names the file as `delete_link_file` instead of
-  `delete_url`); an existing file or symlink is refused before anything is uploaded, and the file is
-  removed again if the create fails.
+  `delete_url`); an existing file or symlink is refused before anything is uploaded.
+- **A failed `put` never loses the delete link.** Once the create request has gone out, the
+  capsule may exist even if `put` fails (a lost response, a timeout, a proxy's error). The file of
+  `--delete-link-file` is then kept, whatever the failure, and stderr names it; without that option
+  the delete link is printed on stderr. Both lines say the capsule may exist, and with `--json` the
+  error object carries `delete_link_file` or `delete_url` next to `reason` and `message`. A link to
+  a capsule that was never created is harmless (`delete` answers exit code `3`). The file is
+  removed only when writing it failed, before any request. A script that retries `put` with the
+  same `--delete-link-file` must remove the file first: an existing one stops `put` before the
+  upload.
 - **`CAPSULEBIN_PASSWORD` only goes to the server you name.** `get` uses it only when the link's
   server equals `get --server` (else `CAPSULEBIN_SERVER`): same scheme, host and port and the
   same path, compared without trailing slashes and the language segment. A given `get --server`
@@ -190,7 +213,8 @@ node src/cli/dist/cli.js delete --link-file notes.link
   Redirects are never followed: a `3xx` answer to an API request ends with exit code `7` (reason
   `redirect_refused`) without retrying and without showing where it pointed.
 - **`--json`** prints a single JSON object on stdout — the links on `put`, item metadata and
-  written paths on `get`, `{"error": {"reason", "message"}}` on failure. DEL and U+0080–U+009F
+  written paths on `get`, `{"error": {"reason", "message"}}` on failure (plus `delete_url` or
+  `delete_link_file` after a failed `put` that sent its create request). DEL and U+0080–U+009F
   are written as `\u007f`/`\u00NN` escapes (the parsed value is unchanged), so no control
   character reaches a terminal showing the output.
 - **Capsule content never goes to stdout.** `get` writes every item to a file, whatever its kind
@@ -201,21 +225,22 @@ node src/cli/dist/cli.js delete --link-file notes.link
   every control character shown as a visible escape — C0 and DEL as `\x1b`, C1 (U+0080–U+009F) as
   `\u009b` — newlines included, whether or not stderr is a terminal. Backslashes are not doubled:
   the escapes are for reading, not for decoding back.
-- **Where `get` writes.** A single item goes to the current directory. Several items go to a new
-  directory `capsule-<YYYY-MM-DD>-<first 8 characters of the paste id>` in the current directory
-  (local date; if that name is taken, `… (1)`, `… (2)`, …), named on stderr and as `directory` in
-  the `--json` output. `--here` writes several items directly into the current directory, `-o DIR`
+- **Where `get` writes.** Every capsule, a single item included, goes to a new directory
+  `capsule-<YYYY-MM-DD>-<first 8 characters of the paste id>` in the current directory (local date;
+  if that name is taken, `… (1)`, `… (2)`, …), named on stderr and as `directory` in the `--json`
+  output. So a sender cannot place a file such as `.envrc`, `Makefile` or `conftest.py` in the
+  directory `get` runs in. `--here` writes the items directly into the current directory, `-o DIR`
   into `DIR`, created with its parents if missing; `--here` and `-o` together are a usage error
   (exit code `2`). Only the last path component of an item's name is used; characters in it that
   are controls (C0, DEL, C1) or not allowed on common file systems become `_`.
 - **Decrypted files are private and never overwrite anything.** Every file is created new with
-  mode `0600`; the directory for several items and a directory created for `-o` (parents too) get
+  mode `0600`; the new `capsule-…` directory and a directory created for `-o` (parents too) get
   `0700`, an existing `-o` directory keeps its mode. A name that is taken by anything — a file, a
   directory, a symlink, even a dangling one — is never opened, followed or replaced: the item gets
   the next free name (`name (1).ext`, `name (2).ext`, …), so two items of the same name give two
   files. After 1000 taken names `get` stops (exit code `1`, reason `no_free_name`) naming the
-  item. If a write fails, the files this run created are removed again, and so is the directory it
-  created for several items.
+  item. If a write fails, the files this run created are removed again, and so is the new
+  `capsule-…` directory.
 - **Prompts work on a terminal and give it back.** The hidden password prompt and the burn
   confirmation restore the terminal (echo, line mode) on an answer, Ctrl-C and EOF; Ctrl-C ends
   with exit code `8` (reason `interrupted`), EOF (Ctrl-D on an empty line) with `8` (reason

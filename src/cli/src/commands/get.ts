@@ -10,9 +10,10 @@
  *
  * After retrieval nothing may fail for a reason the user could have avoided:
  * an existing entry does not stop the output (it tries up to 1000 names,
- * `name`, `name (1)`, …, before failing with `no_free_name`), and a
- * multi-item capsule without `-o` lands in a new directory instead of being
- * rejected. Item content only ever goes to files, never to stdout.
+ * `name`, `name (1)`, …, before failing with `no_free_name`). Without `-o`
+ * or `--here` every capsule, a single item included, lands in a new private
+ * directory, so a sender cannot place a file such as `.envrc` in the current
+ * directory. Item content only ever goes to files, never to stdout.
  */
 
 import { mkdir, open, rmdir, unlink } from 'node:fs/promises';
@@ -38,7 +39,7 @@ export interface GetOptions {
     /** Plain HTTP to a host other than loopback was opted into. */
     allowHttp: boolean;
     output: string | undefined;
-    /** Write several items directly to the current directory, not to a new one. */
+    /** Write the items directly into the current directory, not into a new one. */
     here: boolean;
     passwordFile: string | undefined;
     yes: boolean;
@@ -108,7 +109,7 @@ export async function get(io: Io, options: GetOptions): Promise<void> {
     }
 
     const { capsule } = outcome;
-    const output = await outputDirectory(io.cwd, link.id, capsule.items.length, options);
+    const output = await outputDirectory(io.cwd, link.id, options);
     let paths;
     try {
         paths = await writeItems(capsule.items, output.dir);
@@ -181,14 +182,13 @@ const MAX_NAME_ATTEMPTS = 1000;
 
 /**
  * The directory the items go to: `-o DIR` (created `0700` with its parents
- * if missing), the current directory for a single item or with `--here`,
- * else a new `0700` directory `capsule-<local date>-<id prefix>` in the
- * current directory. `created` is set only for that new directory.
+ * if missing), the current directory with `--here`, else a new `0700`
+ * directory `capsule-<local date>-<id prefix>` in the current directory, also
+ * for a single item. `created` is set only for that new directory.
  */
 async function outputDirectory(
     cwd: string,
     id: string,
-    itemCount: number,
     options: Pick<GetOptions, 'output' | 'here'>,
 ): Promise<{ dir: string; created: boolean }> {
     if (options.output !== undefined) {
@@ -196,7 +196,7 @@ async function outputDirectory(
         await mkdir(dir, { recursive: true, mode: 0o700 });
         return { dir, created: false };
     }
-    if (itemCount === 1 || options.here) return { dir: cwd, created: false };
+    if (options.here) return { dir: cwd, created: false };
 
     const name = `capsule-${localDate(new Date())}-${id.slice(0, 8)}`;
     const dir = await createUnderFreeName(

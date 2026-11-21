@@ -13,10 +13,16 @@ export interface Io {
     stderr: { write(chunk: string): unknown };
     /**
      * Reads stdin to its end, or stops after more than `limit` bytes (then
-     * returns `limit + 1` of them and reads no further). Without a limit, all
-     * of it. Only called when stdin is the content source or carries a link.
+     * returns `limit + 1` of them and reads no further). Only called when
+     * stdin is the content source.
      */
-    readStdin(limit?: number): Promise<Uint8Array>;
+    readStdin(limit: number): Promise<Uint8Array>;
+    /**
+     * The first line of stdin (see {@link readFirstLine}), or `null` when it
+     * is longer than `limit` bytes. Does not wait for the end of stdin. Only
+     * called when stdin carries a link.
+     */
+    readStdinLine(limit: number): Promise<Uint8Array | null>;
     /** Whether an interactive prompt is possible (stdin and stderr are a terminal). */
     interactive: boolean;
     /** Asks a question on the terminal; `hidden` suppresses the echo (passwords). */
@@ -32,6 +38,7 @@ export function processIo(): Io {
         stdout: process.stdout,
         stderr: process.stderr,
         readStdin: (limit) => readBounded(process.stdin, limit),
+        readStdinLine: (limit) => readFirstLine(process.stdin, limit),
         interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
         prompt: terminalPrompt,
         env: process.env,
@@ -48,7 +55,7 @@ export function processIo(): Io {
  */
 export async function readBounded(
     chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
-    limit = Infinity,
+    limit: number,
 ): Promise<Uint8Array> {
     const parts: Uint8Array[] = [];
     let total = 0;
@@ -59,6 +66,35 @@ export async function readBounded(
     }
     const bytes = new Uint8Array(Buffer.concat(parts));
     return total > limit ? bytes.subarray(0, limit + 1) : bytes;
+}
+
+/**
+ * The first line of `chunks` without its line ending: `\n`, a preceding `\r`
+ * stripped; the end of the input ends the line as well. `null` when the line
+ * is longer than `limit` bytes. The iteration is left at the line ending, or
+ * as soon as the line is too long, which destroys a Node stream: a source
+ * that stays open does not block, and never more than the limit plus one
+ * chunk is read.
+ */
+export async function readFirstLine(
+    chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    limit: number,
+): Promise<Uint8Array | null> {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    let terminated = false;
+    for await (const chunk of chunks) {
+        const newline = chunk.indexOf(0x0a);
+        terminated = newline !== -1;
+        const part = terminated ? chunk.subarray(0, newline) : chunk;
+        parts.push(part);
+        total += part.length;
+        // One byte above the limit may still be the `\r` of a line ending.
+        if (terminated || total > limit + 1) break;
+    }
+    const bytes = new Uint8Array(Buffer.concat(parts));
+    const line = terminated && bytes.at(-1) === 0x0d ? bytes.subarray(0, -1) : bytes;
+    return line.length > limit ? null : line;
 }
 
 /**

@@ -41,7 +41,8 @@ put options:
   -b, --burn               Delete the capsule after its first retrieval
   -p, --password           Protect with a password (CAPSULEBIN_PASSWORD, or prompt)
       --password-file PATH Read the password from the first line of PATH
-      --token-file PATH    Creation token for servers that require one (or CAPSULEBIN_TOKEN)
+      --token-file PATH    Creation token for servers that require one (or CAPSULEBIN_TOKEN,
+                           sent only to CAPSULEBIN_SERVER when that is set)
       --as KIND            text | code | markdown | file (default: inferred per input)
       --lang LANG          Highlighting language for code (implies --as code)
       --name NAME          Item name for stdin or a single input
@@ -54,11 +55,11 @@ put options:
 get options:
   -s, --server URL         The server you trust with CAPSULEBIN_PASSWORD (or CAPSULEBIN_SERVER):
                            the variable is only used for links to this server
-  -o, --output DIR         Write the items to DIR, created if missing (default: a single
-                           item goes to the current directory, several items to a new
-                           directory capsule-DATE-ID in it); existing files are never
-                           overwritten, an item gets a free name such as "name (1).txt"
-      --here               Write several items directly to the current directory
+  -o, --output DIR         Write the items to DIR, created if missing (default: every
+                           capsule, one item included, goes to a new directory
+                           capsule-DATE-ID in the current directory); existing files are
+                           never overwritten, an item gets a free name such as "name (1).txt"
+      --here               Write the items directly into the current directory
       --password-file PATH Read the password from the first line of PATH (or
                            CAPSULEBIN_PASSWORD for links to --server, or prompt)
   -y, --yes                Retrieve a burn-after-retrieval capsule without asking
@@ -132,6 +133,15 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
 };
 const COMMON_OPTIONS: (keyof typeof OPTIONS)[] = ['allow-http', 'json', 'help', 'version'];
 
+/** Options that take a path. Given but empty, each is a usage error. */
+const PATH_OPTIONS = [
+    'password-file',
+    'token-file',
+    'delete-link-file',
+    'link-file',
+    'output',
+] as const satisfies (keyof typeof OPTIONS)[];
+
 const UNITS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86_400, w: 604_800 };
 
 /** `30m`, `12h`, `7d`, `2w`, `90s` → seconds; `never` → `null`. */
@@ -174,6 +184,11 @@ function checkOptions(command: string, values: Values): void {
         if (!allowed.has(key as keyof typeof OPTIONS)) {
             throw usage(`--${key} does not apply to "${command}"`);
         }
+    }
+    // An empty path, e.g. from an unset script variable, must not read as
+    // "option not given": the protection or source asked for would be skipped.
+    for (const key of PATH_OPTIONS) {
+        if (values[key] === '') throw usage(`--${key} needs a path, not an empty value`);
     }
 }
 
@@ -268,7 +283,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
                 if (values.lang !== undefined && as !== undefined && as !== 'code') {
                     throw usage('--lang only applies to code');
                 }
-                if (values.password && values['password-file']) {
+                if (values.password && values['password-file'] !== undefined) {
                     throw usage('use either --password or --password-file');
                 }
 
@@ -317,10 +332,31 @@ export async function run(argv: string[], io: Io): Promise<number> {
         return ExitCode.Usage;
     } catch (err) {
         const error = toCliError(err);
+        const link = error.deleteLink;
         if (json) {
-            io.stdout.write(jsonLine({ error: { reason: error.reason, message: error.message } }));
+            io.stdout.write(
+                jsonLine({
+                    error: {
+                        reason: error.reason,
+                        message: error.message,
+                        ...(link === undefined
+                            ? {}
+                            : 'file' in link
+                              ? { delete_link_file: link.file }
+                              : { delete_url: link.url }),
+                    },
+                }),
+            );
         }
         io.stderr.write(`capsulebin: ${escapeDiagnostic(error.message)}\n`);
+        if (link !== undefined) {
+            io.stderr.write(
+                'capsulebin: the capsule may exist on the server; ' +
+                    ('file' in link
+                        ? `its delete link was written to ${escapeDiagnostic(link.file)}\n`
+                        : `delete link (keep it private): ${escapeDiagnostic(link.url)}\n`),
+            );
+        }
         if (error.exitCode === ExitCode.Usage && !json) {
             io.stderr.write('Run "capsulebin --help" for usage.\n');
         }

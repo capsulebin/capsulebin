@@ -135,9 +135,20 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - `capsulebin put`, `get` and `delete`, sharing `@capsulebin/core` with the web client; runs on
   Node.js 24 or newer.
 - Secrets only from files, environment variables or a prompt — never from arguments.
+- A link, token or password from a file or stdin is its first line, at most 16 384 bytes; a longer
+  line, or a source without a line ending such as `/dev/zero`, ends with exit code `2` before any
+  request, and a pipe that stays open after the line does not block.
+- A path option given but empty (`--password-file ""`, `--token-file ""`, `--link-file ""`,
+  `--delete-link-file ""`, `-o ""`) ends with exit code `2` before any request instead of being
+  treated as not given.
+- With `CAPSULEBIN_SERVER` set, `put` sends `CAPSULEBIN_TOKEN` only to that server, not to another
+  `--server`, and says so on stderr; `--token-file` is used for any server.
 - Links can stay off the command line: `get -` and `delete -` read the link from stdin,
   `--link-file` from a file, and `put --delete-link-file` writes the management link to a new
   owner-only file instead of stderr.
+- A failed `put` never loses the delete link once the upload was attempted: the
+  `--delete-link-file` file is kept, otherwise the link is printed on stderr, and the `--json`
+  error carries `delete_link_file` or `delete_url`.
 - `CAPSULEBIN_PASSWORD` is used by `get` only for links to the server named with `--server` (or
   `CAPSULEBIN_SERVER`).
 - Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`
@@ -146,13 +157,13 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - `put` stops reading its inputs at the 10 MiB capsule limit (regular files are checked by size
   before any is read) and ends with exit code `2` without sending anything, instead of reading a
   large file, an endless pipe or `/dev/zero` into memory.
-- `get` writes capsule content only to files, never to stdout: a single item to the current
-  directory, several items to a new directory `capsule-<date>-<id prefix>` (`--here`: the current
-  directory, `-o DIR`: `DIR`).
+- `get` writes capsule content only to files, never to stdout: every capsule, a single item
+  included, to a new directory `capsule-<date>-<id prefix>`, so a sender cannot place a file such as
+  `.envrc` in the current directory (`--here`: the current directory, `-o DIR`: `DIR`).
 - Decrypted files are owner-only (`0600`, new directories `0700`) from the first byte and created
   exclusively: an existing file, directory or symlink at the name is never overwritten or followed,
   the item gets a free name (`name (1).ext`) instead; a failed write removes the files
-  this run created and the directory it created for several items.
+  this run created and the new directory.
 - Control characters from a capsule or a server do not reach the terminal: diagnostics on stderr
   show them as escapes, and `--json` writes DEL and C1 as `\u00NN`.
 - The hidden password prompt and the burn confirmation work on a real terminal and restore it;

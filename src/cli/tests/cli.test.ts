@@ -19,7 +19,7 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     decodeUtf8,
@@ -33,7 +33,7 @@ import {
 } from '@capsulebin/core';
 import { run, parseDuration } from '../src/cli';
 import { safeFileName } from '../src/commands/get';
-import { type Io, readBounded } from '../src/io';
+import { type Io, readBounded, readFirstLine } from '../src/io';
 import { buildItem } from '../src/items';
 import { escapeDiagnostic } from '../src/terminal';
 import { createFakeServer, type FakeServer } from '../../core/tests/fake-server';
@@ -82,6 +82,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 const SERVER = 'https://capsule.test';
+/** A management (delete) link on {@link SERVER}, unanchored. */
+const MANAGE_LINK = new RegExp(`${SERVER}/manage/[A-Za-z0-9_-]{22}#v1\\.[A-Za-z0-9_-]+`);
 
 let server: FakeServer;
 let cwd: string;
@@ -120,16 +122,18 @@ function testIo(
     const answers = [...(options.answers ?? [])];
     const prompts: string[] = [];
     const encoder = new TextEncoder();
+    const stdinChunks = () => {
+        const stdin = options.stdin ?? new Uint8Array();
+        if (typeof stdin === 'string') return [encoder.encode(stdin)];
+        return stdin instanceof Uint8Array ? [stdin] : stdin;
+    };
     return {
         stdout: {
             write: (chunk) => out.push(typeof chunk === 'string' ? encoder.encode(chunk) : chunk),
         },
         stderr: { write: (chunk) => err.push(chunk) },
-        readStdin: async (limit) => {
-            const stdin = options.stdin ?? new Uint8Array();
-            if (typeof stdin === 'string') return readBounded([encoder.encode(stdin)], limit);
-            return readBounded(stdin instanceof Uint8Array ? [stdin] : stdin, limit);
-        },
+        readStdin: (limit) => readBounded(stdinChunks(), limit),
+        readStdinLine: (limit) => readFirstLine(stdinChunks(), limit),
         interactive: options.interactive ?? false,
         prompt: async (question) => {
             prompts.push(question);
@@ -181,7 +185,13 @@ describe('put → get → delete', () => {
         const io = testIo();
         expect(await run(['get', created.share_url], io)).toBe(0);
         expect(await written(io)).toBe('hello from stdin\n');
-        expect(wrotePaths(io)).toEqual([join(cwd, 'stdin')]);
+        const [path] = wrotePaths(io);
+        const dir = dirname(path!);
+        expect(dirname(dir)).toBe(cwd);
+        expect(basename(dir)).toMatch(
+            new RegExp(`^capsule-\\d{4}-\\d{2}-\\d{2}-${created.id.slice(0, 8)}$`),
+        );
+        expect(basename(path!)).toBe('stdin');
     });
 
     it('deletes with the management link, after which get reports not available', async () => {
@@ -301,15 +311,21 @@ describe('link channels', () => {
     });
 });
 
+/** Lets the fake server handle every request, then loses its response. */
+function loseResponses() {
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        await server.fetch(input, init);
+        throw new TypeError('connection reset');
+    });
+}
+
 describe('put --delete-link-file', () => {
     it('writes the management link to a new owner-only file instead of stderr', async () => {
         const path = join(cwd, 'manage-link');
         const io = testIo({ stdin: 'private' });
         expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io), io.err()).toBe(0);
         const deleteUrl = await readFile(path, 'utf8');
-        expect(deleteUrl).toMatch(
-            new RegExp(`^${SERVER}/manage/[A-Za-z0-9_-]{22}#v1\\.[^\\n]+\\n$`),
-        );
+        expect(deleteUrl).toMatch(new RegExp(`^${MANAGE_LINK.source}\\n$`));
         if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
         expect(io.err()).not.toContain('#v1.');
         expect(io.err()).toContain(path);
@@ -346,34 +362,146 @@ describe('put --delete-link-file', () => {
         await expect(access(join(cwd, 'nowhere'))).rejects.toThrow();
     });
 
-    it('removes the file when the create fails', async () => {
-        server.creationToken = 'cbt_secret';
-        const path = join(cwd, 'manage-link');
-        const io = testIo({ stdin: 'x' });
-        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io)).toBe(6);
-        await expect(access(path)).rejects.toThrow();
-    });
-
-    it.each([
-        [
-            'a redirect',
-            async () =>
-                new Response(null, { status: 307, headers: { Location: 'https://x.test/' } }),
-        ],
-        [
-            'a network failure',
-            async () => {
-                throw new TypeError('connection refused');
-            },
-        ],
-    ])('removes the file after %s', async (_, fake) => {
-        vi.stubGlobal('fetch', fake);
+    it('keeps the file when the capsule was stored but every response was lost', async () => {
+        const shareUrl = vi.spyOn(Paste.prototype, 'shareUrl');
+        loseResponses();
         const path = join(cwd, 'manage-link');
         const io = testIo({ stdin: 'x' });
         expect(
-            await run(['put', '-s', SERVER, '--retries', '0', '--delete-link-file', path], io),
+            await run(['put', '-s', SERVER, '--retries', '2', '--delete-link-file', path], io),
         ).toBe(7);
+        expect(server.requests).toHaveLength(3);
+        expect(server.pastes.size).toBe(1);
+        expect(await readFile(path, 'utf8')).toMatch(new RegExp(`^${MANAGE_LINK.source}\\n$`));
+        if (process.platform !== 'win32') expect((await stat(path)).mode & 0o777).toBe(0o600);
+        expect(io.err()).toContain('the capsule may exist');
+        expect(io.err()).toContain(path);
+        expect(io.err()).not.toContain('#v1.');
+        expect(io.out()).toBe('');
+
+        vi.stubGlobal('fetch', server.fetch);
+        const link = shareUrl.mock.results[0]!.value as string;
+        shareUrl.mockRestore();
+        expect(await run(['delete', '--link-file', path], testIo())).toBe(0);
+        expect(await run(['get', link], testIo())).toBe(3);
+    });
+
+    it('keeps the file after a rejected create (401)', async () => {
+        server.creationToken = 'cbt_secret';
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'x', env: { CAPSULEBIN_TOKEN: 'cbt_wrong' } });
+        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io)).toBe(6);
+        expect(server.requests).toHaveLength(1);
+        expect(await readFile(path, 'utf8')).toMatch(MANAGE_LINK);
+        expect(io.err()).toContain('the capsule may exist');
+        expect(io.err()).toContain(path);
+        expect(io.err()).not.toContain('#v1.');
+    });
+
+    it('keeps the file after a refused redirect', async () => {
+        let calls = 0;
+        vi.stubGlobal('fetch', async () => {
+            calls++;
+            return new Response(null, { status: 307, headers: { Location: 'https://x.test/' } });
+        });
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io)).toBe(7);
+        expect(calls).toBe(1);
+        expect(await readFile(path, 'utf8')).toMatch(MANAGE_LINK);
+        expect(io.err()).toContain('the capsule may exist');
+        expect(io.err()).toContain(path);
+        expect(io.err()).not.toContain('#v1.');
+    });
+
+    it('removes the file and sends nothing when the link cannot be written', async () => {
+        fsHooks.failWrites = true;
+        const path = join(cwd, 'manage-link');
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--json', '--delete-link-file', path], io)).toBe(1);
+        expect(server.requests).toHaveLength(0);
         await expect(access(path)).rejects.toThrow();
+        expect(io.err()).not.toContain('may exist');
+        expect(JSON.parse(io.out()).error).not.toHaveProperty('delete_link_file');
+    });
+
+    it('names the file in the JSON error and shows the link nowhere', async () => {
+        loseResponses();
+        const io = testIo({ stdin: 'x' });
+        expect(
+            await run(
+                ['put', '-s', SERVER, '--json', '--retries', '0', '--delete-link-file', 'link'],
+                io,
+            ),
+        ).toBe(7);
+        expect(JSON.parse(io.out())).toEqual({
+            error: {
+                reason: 'network_error',
+                message: 'could not reach the server',
+                delete_link_file: join(cwd, 'link'),
+            },
+        });
+        expect(io.err()).toContain(join(cwd, 'link'));
+        for (const output of [io.out(), io.err()]) {
+            expect(output).not.toContain('#v1.');
+            expect(output).not.toContain('/manage/');
+        }
+    });
+});
+
+describe('put without --delete-link-file, after a failed create', () => {
+    it('prints the delete link of a capsule that may exist on stderr', async () => {
+        loseResponses();
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--retries', '1'], io)).toBe(7);
+        expect(server.pastes.size).toBe(1);
+        expect(io.out()).toBe('');
+        const line = io.err().trimEnd().split('\n').at(-1)!;
+        expect(line).toContain('the capsule may exist');
+        const link = /https:\/\/capsule\.test\/manage\/[A-Za-z0-9_-]{22}#v1\.[A-Za-z0-9_-]+$/.exec(
+            line,
+        );
+        expect(link, io.err()).not.toBeNull();
+
+        vi.stubGlobal('fetch', server.fetch);
+        expect(await run(['delete', link![0]], testIo())).toBe(0);
+        expect(server.pastes.size).toBe(0);
+    });
+
+    it('prints it after a rejected create and puts delete_url into the JSON error', async () => {
+        server.creationToken = 'cbt_secret';
+        const text = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER], text)).toBe(6);
+        expect(text.err()).toContain('the capsule may exist');
+        expect(text.err()).toMatch(/\/manage\/[A-Za-z0-9_-]{22}#v1\./);
+
+        const json = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--json'], json)).toBe(6);
+        const { error } = JSON.parse(json.out());
+        expect(Object.keys(error)).toEqual(['reason', 'message', 'delete_url']);
+        expect(error.reason).toBe('unauthorized');
+        expect(error.delete_url).toMatch(new RegExp(`^${MANAGE_LINK.source}$`));
+        expect(json.err()).toContain(error.delete_url);
+    });
+
+    it.each([
+        ['a usage error', ['--retries', 'many']],
+        ['an unreadable input', ['missing.txt']],
+        ['an empty password file', ['--password-file', 'empty']],
+    ])('prints no delete link after %s, before any request', async (_, args) => {
+        await writeFile(join(cwd, 'empty'), '');
+        for (const extra of [[], ['--json'], ['--json', '--delete-link-file', 'link']]) {
+            const io = testIo({ stdin: 'x' });
+            expect(await run(['put', '-s', SERVER, ...args, ...extra], io)).toBe(2);
+            expect(io.err()).not.toContain('may exist');
+            expect(io.err()).not.toContain('/manage/');
+            expect(io.out()).not.toContain('/manage/');
+            if (extra.length > 0) {
+                expect(Object.keys(JSON.parse(io.out()).error)).toEqual(['reason', 'message']);
+            }
+        }
+        expect(server.requests).toHaveLength(0);
+        await expect(access(join(cwd, 'link'))).rejects.toThrow();
     });
 });
 
@@ -612,9 +740,15 @@ describe('input limit and response bounds, edges', () => {
         const io = testIo({ stdin: 'x' });
         expect(await run(['put', '-s', SERVER, '--retries', '0'], io)).toBe(7);
         const err = io.err();
-        // eslint-disable-next-line no-control-regex
-        expect(err.replace(/\n$/, '')).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-        expect(err).not.toContain('yyyy');
+        // The message and the delete link of the capsule that may exist.
+        const lines = err.replace(/\n$/, '').split('\n');
+        expect(lines).toHaveLength(2);
+        for (const line of lines) {
+            // eslint-disable-next-line no-control-regex
+            expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        }
+        // Longer than any run of one letter a random link could plausibly hold.
+        expect(err).not.toContain('y'.repeat(32));
     });
 });
 
@@ -1089,6 +1223,315 @@ describe('new passwords', () => {
     });
 });
 
+describe('empty path options', () => {
+    it('put refuses an empty path before any request, without a fallback', async () => {
+        server.creationToken = 'cbt_from_env';
+        const env = { CAPSULEBIN_TOKEN: 'cbt_from_env', CAPSULEBIN_PASSWORD: 'hunter22' };
+        const cases: [string[], string][] = [
+            [['--password-file', ''], '--password-file'],
+            [['-p', '--password-file', ''], '--password-file'],
+            [['--token-file', ''], '--token-file'],
+            [['--delete-link-file', ''], '--delete-link-file'],
+        ];
+        for (const [args, option] of cases) {
+            const io = testIo({ stdin: 'x', env, interactive: true });
+            expect(await run(['put', '-s', SERVER, ...args], io), args.join(' ')).toBe(2);
+            expect(io.err()).toContain(`${option} needs a path`);
+            expect(io.out()).toBe('');
+            expect(io.prompts).toEqual([]);
+        }
+        expect(server.requests).toHaveLength(0);
+        expect(await readdir(cwd)).toEqual([]);
+    });
+
+    it('get and delete refuse an empty path before any request, without a fallback', async () => {
+        await writeFile(join(cwd, 'pw'), 'hunter22\n');
+        const created = await putText('secret note', '--password-file', 'pw');
+        const before = server.requests.length;
+        const entries = await readdir(cwd);
+
+        const env = { CAPSULEBIN_PASSWORD: 'hunter22', CAPSULEBIN_SERVER: SERVER };
+        const cases: [string[], string][] = [
+            [['get', '--password-file', '', created.share_url], '--password-file'],
+            [['get', '-o', '', created.share_url], '--output'],
+            [['get', '--link-file', ''], '--link-file'],
+            [['delete', '--link-file', ''], '--link-file'],
+        ];
+        for (const [argv, option] of cases) {
+            const io = testIo({ env, interactive: true });
+            expect(await run(argv, io), argv.join(' ')).toBe(2);
+            expect(io.err()).toContain(`${option} needs a path`);
+            expect(io.out()).toBe('');
+            expect(io.prompts).toEqual([]);
+        }
+        expect(server.requests).toHaveLength(before);
+        expect(await readdir(cwd)).toEqual(entries);
+        expect(server.pastes.has(created.id)).toBe(true);
+    });
+});
+
+describe('first line of a link, token or password source', () => {
+    const LIMIT = 16_384;
+
+    /** `link` with a query that brings it to exactly `length` bytes. */
+    function paddedLink(link: string, length: number): string {
+        const [path, fragment] = link.split('#') as [string, string];
+        const padded = `${path}?${'q'.repeat(length - link.length - 1)}#${fragment}`;
+        expect(padded).toHaveLength(length);
+        return padded;
+    }
+
+    /** Ends a refused command: usage exit, the source named, none of the line shown. */
+    function expectTooLong(io: TestIo, code: number, source: string, content: string): void {
+        expect(code, io.err()).toBe(2);
+        expect(io.err()).toContain(`the first line of the ${source} exceeds ${LIMIT} bytes`);
+        expect(io.err()).not.toContain(content);
+        expect(io.out()).toBe('');
+    }
+
+    it('reads the link from a stdin that stays open after its first line', async () => {
+        const created = await putText('from an open pipe');
+        async function* open(): AsyncGenerator<Uint8Array> {
+            yield new TextEncoder().encode(created.share_url + '\n');
+            await new Promise(() => {});
+        }
+
+        const io = testIo({ stdin: open() });
+        expect(await run(['get', '-'], io), io.err()).toBe(0);
+        expect(await written(io)).toBe('from an open pipe');
+    });
+
+    it('reads a link split over several chunks of stdin', async () => {
+        const created = await putText('in pieces');
+        const bytes = new TextEncoder().encode(created.share_url + '\r\nignored\n');
+        async function* pieces(): AsyncGenerator<Uint8Array> {
+            yield bytes.subarray(0, 20);
+            yield bytes.subarray(20);
+        }
+        const io = testIo({ stdin: pieces() });
+        expect(await run(['get', '-'], io), io.err()).toBe(0);
+        expect(await written(io)).toBe('in pieces');
+    });
+
+    it.each([
+        ['\\n', '\n'],
+        ['\\r\\n', '\r\nsecond line\n'],
+        ['no line ending', ''],
+    ])('accepts a link of 16384 bytes and refuses one of 16385 (%s)', async (_, ending) => {
+        const created = await putText('long link');
+        const before = server.requests.length;
+
+        await writeFile(join(cwd, 'long'), paddedLink(created.share_url, LIMIT + 1) + ending);
+        const long = testIo();
+        expectTooLong(
+            long,
+            await run(['get', '--link-file', 'long'], long),
+            'link from file long',
+            'qqqq',
+        );
+        const piped = testIo({ stdin: paddedLink(created.delete_url, LIMIT + 1) + ending });
+        expectTooLong(piped, await run(['delete', '-'], piped), 'link from stdin', 'qqqq');
+        for (const io of [long, piped]) {
+            expect(io.err()).not.toContain('#v1.');
+            expect(io.err()).not.toContain(created.id);
+        }
+        expect(server.requests).toHaveLength(before);
+
+        await writeFile(join(cwd, 'fits'), paddedLink(created.share_url, LIMIT) + ending);
+        const fits = testIo();
+        expect(await run(['get', '--link-file', 'fits'], fits), fits.err()).toBe(0);
+        expect(await written(fits)).toBe('long link');
+        const del = testIo({ stdin: paddedLink(created.delete_url, LIMIT) + ending });
+        expect(await run(['delete', '-'], del), del.err()).toBe(0);
+        expect(server.pastes.has(created.id)).toBe(false);
+    });
+
+    it.each([
+        ['\\n', '\n'],
+        ['\\r\\n', '\r\nsecond line\n'],
+        ['no line ending', ''],
+    ])('accepts a token of 16384 bytes and refuses one of 16385 (%s)', async (_, ending) => {
+        const token = 't'.repeat(LIMIT);
+        server.creationToken = token;
+        await writeFile(join(cwd, 'long'), token + 't' + ending);
+        await writeFile(join(cwd, 'fits'), token + ending);
+
+        const long = testIo({ stdin: 'x', env: { CAPSULEBIN_TOKEN: token } });
+        expectTooLong(
+            long,
+            await run(['put', '-s', SERVER, '--token-file', 'long'], long),
+            'token from file long',
+            'tttt',
+        );
+        expect(server.requests).toHaveLength(0);
+
+        const fits = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--token-file', 'fits'], fits), fits.err()).toBe(0);
+        expect(server.requests[0]!.headers.get('Authorization')).toBe(`Bearer ${token}`);
+    });
+
+    it.each([
+        ['\\n', '\n'],
+        ['\\r\\n', '\r\nsecond line\n'],
+        ['no line ending', ''],
+    ])('accepts a password of 16384 bytes and refuses one of 16385 (%s)', async (_, ending) => {
+        const password = 'p'.repeat(LIMIT);
+        await writeFile(join(cwd, 'long'), password + 'p' + ending);
+        await writeFile(join(cwd, 'fits'), password + ending);
+        await writeFile(join(cwd, 'exact'), password);
+
+        const long = testIo({ stdin: 'x' });
+        expectTooLong(
+            long,
+            await run(['put', '-s', SERVER, '--password-file', 'long'], long),
+            'password from file long',
+            'pppp',
+        );
+        expect(server.requests).toHaveLength(0);
+
+        const put = testIo({ stdin: 'long password' });
+        expect(await run(['put', '-s', SERVER, '--password-file', 'fits'], put), put.err()).toBe(0);
+        const shareUrl = put.out().trim();
+        const before = server.requests.length;
+
+        const refused = testIo({ env: { CAPSULEBIN_PASSWORD: password }, interactive: true });
+        expectTooLong(
+            refused,
+            await run(['get', '-s', SERVER, '--password-file', 'long', shareUrl], refused),
+            'password from file long',
+            'pppp',
+        );
+        expect(refused.prompts).toEqual([]);
+        expect(server.requests.slice(before).filter((r) => r.url.endsWith('/retrieve'))).toEqual(
+            [],
+        );
+
+        // The line ending is not part of the password: the bare file opens it.
+        const get = testIo();
+        expect(await run(['get', '--password-file', 'exact', shareUrl], get), get.err()).toBe(0);
+        expect(await written(get)).toBe('long password');
+    });
+
+    it.skipIf(process.platform === 'win32')(
+        'stops at the limit of an endless special file',
+        async () => {
+            const created = await putText('x');
+            const before = server.requests.length;
+
+            const put = testIo({ stdin: 'x' });
+            expectTooLong(
+                put,
+                await run(['put', '-s', SERVER, '--password-file', '/dev/zero'], put),
+                'password from file /dev/zero',
+                '\u0000',
+            );
+            const get = testIo();
+            expectTooLong(
+                get,
+                await run(['get', '--link-file', '/dev/zero'], get),
+                'link from file /dev/zero',
+                '\u0000',
+            );
+            expect(server.requests).toHaveLength(before);
+            expect(server.pastes.has(created.id)).toBe(true);
+        },
+    );
+
+    it('reads no more than the limit plus one chunk', async () => {
+        const CHUNK = 64 * 1024;
+        let consumed = 0;
+        async function* endless(): AsyncGenerator<Uint8Array> {
+            for (;;) {
+                consumed += CHUNK;
+                yield new Uint8Array(CHUNK).fill(0x61);
+            }
+        }
+        expect(await readFirstLine(endless(), LIMIT)).toBeNull();
+        expect(consumed).toBe(CHUNK);
+
+        consumed = 0;
+        const io = testIo({ stdin: endless() });
+        expectTooLong(io, await run(['get', '-'], io), 'link from stdin', 'aaaa');
+        expect(consumed).toBe(CHUNK);
+    });
+});
+
+describe('CAPSULEBIN_TOKEN and CAPSULEBIN_SERVER', () => {
+    const A = SERVER;
+    const B = 'https://other.test';
+    const TOKEN = 'cbt_for_a';
+
+    /** Runs a put and returns its io and the one create request it sent. */
+    async function create(env: Record<string, string>, ...args: string[]) {
+        const before = server.requests.length;
+        const io = testIo({ stdin: 'x', env: { CAPSULEBIN_TOKEN: TOKEN, ...env } });
+        expect(await run(['put', ...args], io), io.err()).toBe(0);
+        const sent = server.requests.slice(before);
+        expect(sent).toHaveLength(1);
+        return { io, request: sent[0]! };
+    }
+
+    it.each([[[] as string[]], [['--json']]])(
+        'withholds the token from a --server other than CAPSULEBIN_SERVER (%j)',
+        async (mode) => {
+            const { io, request } = await create({ CAPSULEBIN_SERVER: A }, '--server', B, ...mode);
+            expect(request.url).toBe(`${B}/api/v1/pastes`);
+            expect(request.headers.get('Authorization')).toBeNull();
+            expect(io.err()).toContain('CAPSULEBIN_TOKEN');
+            expect(io.err()).toContain(A);
+            expect(io.err()).toContain(B);
+            expect(io.err()).not.toContain(TOKEN);
+            expect(io.out()).not.toContain('CAPSULEBIN_TOKEN');
+        },
+    );
+
+    it.each([
+        ['without --server', []],
+        ['with the same --server and a trailing slash', ['--server', `${A}/`]],
+    ])('sends the token to CAPSULEBIN_SERVER (%s)', async (_, args) => {
+        const { io, request } = await create({ CAPSULEBIN_SERVER: A }, ...args);
+        expect(request.url).toBe(`${A}/api/v1/pastes`);
+        expect(request.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        expect(io.err()).not.toContain('CAPSULEBIN_TOKEN');
+    });
+
+    it('sends the token to any --server without CAPSULEBIN_SERVER', async () => {
+        const { io, request } = await create({}, '--server', B);
+        expect(request.url).toBe(`${B}/api/v1/pastes`);
+        expect(request.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        expect(io.err()).not.toContain('CAPSULEBIN_TOKEN');
+    });
+
+    it('sends the token of --token-file to any server', async () => {
+        await writeFile(join(cwd, 'token'), 'cbt_for_b\n');
+        const { io, request } = await create(
+            { CAPSULEBIN_SERVER: A },
+            ...['--server', B, '--token-file', 'token'],
+        );
+        expect(request.url).toBe(`${B}/api/v1/pastes`);
+        expect(request.headers.get('Authorization')).toBe('Bearer cbt_for_b');
+        expect(io.err()).not.toContain('CAPSULEBIN_TOKEN');
+    });
+
+    it('withholds the token when CAPSULEBIN_SERVER is no usable URL', async () => {
+        const { io, request } = await create({ CAPSULEBIN_SERVER: 'not a url' }, '--server', B);
+        expect(request.headers.get('Authorization')).toBeNull();
+        expect(io.err()).toContain('CAPSULEBIN_TOKEN');
+        expect(io.err()).toContain(B);
+        expect(io.err()).not.toContain(TOKEN);
+    });
+
+    it('ends with exit 6 when the server needs the withheld token', async () => {
+        server.creationToken = TOKEN;
+        const io = testIo({
+            stdin: 'x',
+            env: { CAPSULEBIN_TOKEN: TOKEN, CAPSULEBIN_SERVER: A },
+        });
+        expect(await run(['put', '--server', B], io)).toBe(6);
+        expect(io.err()).toContain('CAPSULEBIN_TOKEN');
+    });
+});
+
 describe('parseDuration', () => {
     it.each([
         ['90s', 90],
@@ -1187,7 +1630,7 @@ describe('file output', () => {
         return io.out().trim();
     }
 
-    /** The directory a multi-item capsule gets without `-o`/`--here`, on 2026-01-05. */
+    /** The directory a capsule gets without `-o`/`--here`, on 2026-01-05. */
     function capsuleDir(link: string): string {
         const id = /\/p\/([A-Za-z0-9_-]{22})#/.exec(link)![1]!;
         return `capsule-2026-01-05-${id.slice(0, 8)}`;
@@ -1370,18 +1813,62 @@ describe('file output', () => {
         ]);
     });
 
+    it('writes a single item into a new owner-only directory, not into cwd', async () => {
+        const link = await putFiles([['.capsulebin-probe', 'probe']]);
+        const name = capsuleDir(link);
+        const dir = join(cwd, name);
+
+        const io = testIo();
+        expect(await run(['get', link], io), io.err()).toBe(0);
+        expect(io.out()).toBe('');
+        expect(io.err()).toContain(`created ${dir}\n`);
+        expect(wrotePaths(io)).toEqual([join(dir, '.capsulebin-probe')]);
+        expect(await readdir(cwd)).toEqual([name]);
+        expect(await readdir(dir)).toEqual(['.capsulebin-probe']);
+        expect(await readFile(join(dir, '.capsulebin-probe'), 'utf8')).toBe('probe');
+        if (posix) {
+            expect(await mode(dir)).toBe(0o700);
+            expect(await mode(join(dir, '.capsulebin-probe'))).toBe(0o600);
+        }
+
+        const json = testIo();
+        expect(await run(['get', link, '--json'], json), json.err()).toBe(0);
+        const result = JSON.parse(json.out());
+        const next = join(cwd, `${name} (1)`);
+        expect(result.directory).toBe(next);
+        expect(result.items.map((i: { path: string }) => i.path)).toEqual([
+            join(next, '.capsulebin-probe'),
+        ]);
+        expect((await readdir(cwd)).sort()).toEqual([name, `${name} (1)`]);
+    });
+
     it('writes items directly into the current directory with --here, or into -o DIR', async () => {
         const link = await putFiles([
             ['a.txt', 'a'],
             ['b.txt', 'b'],
         ]);
+        const single = await putFiles([['.capsulebin-probe', 'probe']]);
         await writeFile(join(cwd, 'a.txt'), 'kept');
 
         const here = testIo();
         expect(await run(['get', link, '--here'], here), here.err()).toBe(0);
+        expect(here.err()).not.toContain('created ');
         expect(wrotePaths(here)).toEqual([join(cwd, 'a (1).txt'), join(cwd, 'b.txt')]);
         expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('kept');
         expect(await readFile(join(cwd, 'a (1).txt'), 'utf8')).toBe('a');
+
+        const one = testIo();
+        expect(await run(['get', single, '--here', '--json'], one), one.err()).toBe(0);
+        const result = JSON.parse(one.out());
+        expect(result.directory).toBe(cwd);
+        expect(result.items[0].path).toBe(join(cwd, '.capsulebin-probe'));
+        expect(await readFile(join(cwd, '.capsulebin-probe'), 'utf8')).toBe('probe');
+        expect((await readdir(cwd)).sort()).toEqual([
+            '.capsulebin-probe',
+            'a (1).txt',
+            'a.txt',
+            'b.txt',
+        ]);
 
         const out = testIo();
         expect(await run(['get', link, '-o', 'out'], out), out.err()).toBe(0);
@@ -1397,7 +1884,12 @@ describe('file output', () => {
         const help = testIo();
         expect(await run(['--help'], help)).toBe(0);
         const getSection = help.out().split('get options:')[1]!.split('delete options:')[0]!;
-        expect(getSection).toContain('--here');
+        const text = getSection.replace(/\s+/g, ' ');
+        expect(text).toContain(
+            'default: every capsule, one item included, goes to a new directory capsule-DATE-ID',
+        );
+        expect(text).toContain('--here Write the items directly into the current directory');
+        expect(text).not.toContain('single item goes to the current directory');
     });
 
     it.each([
@@ -1411,16 +1903,18 @@ describe('file output', () => {
         const io = testIo();
         expect(await run(['get', link], io), io.err()).toBe(0);
         expect(io.out()).toBe('');
-        expect(wrotePaths(io)).toEqual([join(cwd, name)]);
-        expect(new Uint8Array(await readFile(join(cwd, name)))).toEqual(
+        const dir = join(cwd, capsuleDir(link));
+        expect(wrotePaths(io)).toEqual([join(dir, name)]);
+        expect(new Uint8Array(await readFile(join(dir, name)))).toEqual(
             typeof content === 'string' ? encodeUtf8(content) : content,
         );
 
         const json = testIo();
         expect(await run(['get', link, '--json'], json), json.err()).toBe(0);
         const result = JSON.parse(json.out());
-        expect(result.directory).toBe(cwd);
-        expect(result.items[0].path).toBe(join(cwd, name.replace(/(\.\w+)$/, ' (1)$1')));
+        const next = join(cwd, `${capsuleDir(link)} (1)`);
+        expect(result.directory).toBe(next);
+        expect(result.items[0].path).toBe(join(next, name));
     });
 
     // Acceptance (AC17): the capsule's directory is created non-recursively, so an
@@ -1451,14 +1945,15 @@ describe('file output', () => {
             (io.stdout as { isTTY?: boolean }).isTTY = true;
             expect(await run(['get', link, ...args], io), io.err()).toBe(0);
             expect(io.out()).toBe('');
-            const dir = args.length ? join(cwd, 'out') : cwd;
+            const dir = join(cwd, args.length ? 'out' : capsuleDir(link));
             expect(wrotePaths(io)).toEqual([join(dir, 'note.txt')]);
             expect(await readFile(join(dir, 'note.txt'), 'utf8')).toBe('on a tty \x1b[31m\n');
         }
     });
 
-    // Acceptance (AC4): a failed write of a single item into the current directory.
-    it('leaves the current directory as it was when a single item write fails', async () => {
+    // Acceptance (AC4): a failed write of a single item removes the new
+    // `capsule-…` directory it was written into.
+    it('removes the new capsule directory when a single item write fails', async () => {
         const single = await putFiles([['note.txt', 'lost']]);
         const before = (await readdir(cwd)).sort();
         fsHooks.failWrites = true;
@@ -1557,6 +2052,27 @@ describe('terminal output', () => {
         expectEscapedLines(io.err());
     });
 
+    it('escapes the delete link file in the lines that name it', async () => {
+        const path = join(cwd, 'link\u001b[2J');
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--delete-link-file', path], io), io.err()).toBe(0);
+        expect(io.err()).toBe(`delete link written to ${escapeDiagnostic(path)}\n`);
+        expectEscapedLines(io.err());
+        await access(path);
+
+        vi.stubGlobal('fetch', async () => {
+            throw new TypeError('connection refused');
+        });
+        const kept = join(cwd, 'kept\u001b[2J');
+        const failed = testIo({ stdin: 'x' });
+        expect(
+            await run(['put', '-s', SERVER, '--retries', '0', '--delete-link-file', kept], failed),
+        ).toBe(7);
+        expect(failed.err()).toContain(escapeDiagnostic(kept));
+        expectEscapedLines(failed.err());
+        await access(kept);
+    });
+
     it('escapes every control character for the last-resort message', () => {
         expect(escapeDiagnostic('a\x1b[2J\n\tb\x7f\u009bc ü')).toBe(
             'a\\x1b[2J\\x0a\\x09b\\x7f\\u009bc ü',
@@ -1602,5 +2118,100 @@ describe('terminal output', () => {
         expect(await run(['get', '--json', link], failed)).toBe(6);
         expect(failed.out()).toContain(shown);
         expect(jsonOutput(failed)).toEqual({ error: { reason: hostile, message: hostile } });
+    });
+});
+
+describe('acceptance edges of the hardened sources and delete link', () => {
+    // AC1/AC2: the `--option=` form is as empty as `--option ""`.
+    it('refuses an empty path given in the --option= form, without a fallback', async () => {
+        await writeFile(join(cwd, 'pw'), 'hunter22\n');
+        const created = await putText('x', '--password-file', 'pw');
+        server.creationToken = 'cbt_from_env';
+        const before = server.requests.length;
+        const entries = (await readdir(cwd)).sort();
+        const env = {
+            CAPSULEBIN_TOKEN: 'cbt_from_env',
+            CAPSULEBIN_PASSWORD: 'hunter22',
+            CAPSULEBIN_SERVER: SERVER,
+        };
+        const cases: string[][] = [
+            ['put', '-s', SERVER, '--password-file='],
+            ['put', '-s', SERVER, '--token-file='],
+            ['put', '-s', SERVER, '--delete-link-file='],
+            ['get', '--password-file=', created.share_url],
+            ['get', '--output=', created.share_url],
+            ['get', '--link-file='],
+            ['delete', '--link-file='],
+        ];
+        for (const argv of cases) {
+            const io = testIo({ stdin: 'x', env, interactive: true });
+            expect(await run(argv, io), argv.join(' ')).toBe(2);
+            expect(io.err()).toContain('needs a path');
+            expect(io.prompts).toEqual([]);
+        }
+        expect(server.requests).toHaveLength(before);
+        expect((await readdir(cwd)).sort()).toEqual(entries);
+    });
+
+    // AC8: a link file whose directory is missing cannot be written: nothing is sent.
+    it('sends nothing when the delete link file directory is missing', async () => {
+        for (const extra of [[], ['--json']]) {
+            const io = testIo({ stdin: 'x' });
+            const code = await run(
+                ['put', '-s', SERVER, ...extra, '--delete-link-file', join(cwd, 'no', 'link')],
+                io,
+            );
+            expect(code).not.toBe(0);
+            expect(io.err()).not.toContain('may exist');
+            expect(io.err()).not.toContain('/manage/');
+            expect(io.out()).not.toContain('/manage/');
+        }
+        expect(server.requests).toHaveLength(0);
+        expect(server.pastes.size).toBe(0);
+        expect(await readdir(cwd)).toEqual([]);
+    });
+
+    // AC12: the other first-line sources on an endless special file.
+    it.skipIf(process.platform === 'win32')(
+        'ends get --password-file and put --token-file on /dev/zero with exit 2',
+        async () => {
+            await writeFile(join(cwd, 'pw'), 'hunter22\n');
+            const created = await putText('x', '--password-file', 'pw');
+            const before = server.requests.length;
+
+            const token = testIo({ stdin: 'x' });
+            expect(
+                await run(['put', '-s', SERVER, '--token-file', '/dev/zero'], token),
+                token.err(),
+            ).toBe(2);
+            expect(token.err()).toContain('token from file /dev/zero');
+
+            const get = testIo({ interactive: true });
+            expect(
+                await run(['get', '--password-file', '/dev/zero', created.share_url], get),
+                get.err(),
+            ).toBe(2);
+            expect(get.err()).toContain('password from file /dev/zero');
+            expect(get.prompts).toEqual([]);
+            expect(
+                server.requests.slice(before).filter((r) => r.url.endsWith('/retrieve')),
+            ).toEqual([]);
+            expect(server.pastes.has(created.id)).toBe(true);
+        },
+    );
+
+    // AC9: a failure after the create request, with JSON and a link file: the
+    // JSON error carries delete_link_file and no delete_url, the link appears nowhere.
+    it('puts delete_link_file, not delete_url, into the JSON error after a rejected create', async () => {
+        server.creationToken = 'cbt_secret';
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--json', '--delete-link-file', 'link'], io)).toBe(
+            6,
+        );
+        const { error } = JSON.parse(io.out());
+        expect(Object.keys(error)).toEqual(['reason', 'message', 'delete_link_file']);
+        expect(error.delete_link_file).toBe(join(cwd, 'link'));
+        for (const output of [io.out(), io.err()]) expect(output).not.toContain('#v1.');
+        expect(await readFile(join(cwd, 'link'), 'utf8')).toMatch(/\/manage\/.+#v1\./);
     });
 });

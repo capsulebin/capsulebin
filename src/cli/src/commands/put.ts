@@ -23,11 +23,11 @@ import {
     type SealedPaste,
     TIMEOUT,
 } from '@capsulebin/core';
-import { type CliError, usage } from '../exit';
+import { type CliError, usage, withDeleteLink } from '../exit';
 import { type Io, readBounded } from '../io';
 import { buildItem, type ItemInput, type Presentation } from '../items';
 import { creationToken, newPassword } from '../secrets';
-import { jsonLine } from '../terminal';
+import { escapeDiagnostic, jsonLine } from '../terminal';
 
 export interface PutOptions {
     inputs: string[];
@@ -57,7 +57,7 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
 
     const inputs = await readInputs(io, options);
     const password = await newPassword(io, options);
-    const token = await creationToken(io, options.tokenFile);
+    const token = await creationToken(io, options.tokenFile, options.server);
 
     // `expiresIn: undefined` omits `expires_in`, so the server applies its default.
     const paste = new Paste({
@@ -77,12 +77,15 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
     const api = new PasteApi(options.server, { creationToken: token });
     const linkFile =
         options.deleteLinkFile === undefined ? undefined : resolve(io.cwd, options.deleteLinkFile);
-    const created =
-        linkFile === undefined
-            ? await createWithRetry(io, api, sealed, options.retries)
-            : await createWithLinkFile(linkFile, deleteUrl, () =>
-                  createWithRetry(io, api, sealed, options.retries),
-              );
+    if (linkFile !== undefined) await writeLinkFile(linkFile, deleteUrl);
+    let created: CreateResponse;
+    try {
+        created = await createWithRetry(io, api, sealed, options.retries);
+    } catch (err) {
+        // The capsule may exist whatever the failure says (a lost response, a
+        // proxy's answer): from here on the delete link is never dropped.
+        throw withDeleteLink(err, linkFile === undefined ? { url: deleteUrl } : { file: linkFile });
+    }
 
     if (options.json) {
         io.stdout.write(
@@ -101,22 +104,19 @@ export async function put(io: Io, options: PutOptions): Promise<void> {
         io.stderr.write(
             linkFile === undefined
                 ? `delete link (keep it private): ${deleteUrl}\n`
-                : `delete link written to ${linkFile}\n`,
+                : `delete link written to ${escapeDiagnostic(linkFile)}\n`,
         );
     }
 }
 
 /**
- * Runs `create` with the management link in a new owner-only file. The file
- * is created exclusively (an existing file or symlink is refused) and written
- * before the upload, so no capsule exists whose link could not be stored; if
- * anything fails, the file is removed again.
+ * Writes the management link to a new owner-only file. The file is created
+ * exclusively (an existing file or symlink is refused) and written before the
+ * upload, so no capsule exists whose link could not be stored. If the write
+ * fails, the file is removed again: no request went out yet. After that it is
+ * never removed, whatever becomes of the upload.
  */
-async function createWithLinkFile(
-    path: string,
-    deleteUrl: string,
-    create: () => Promise<CreateResponse>,
-): Promise<CreateResponse> {
+async function writeLinkFile(path: string, deleteUrl: string): Promise<void> {
     let file: FileHandle;
     try {
         file = await open(path, 'wx', 0o600);
@@ -131,7 +131,6 @@ async function createWithLinkFile(
     try {
         await file.writeFile(deleteUrl + '\n');
         await file.close();
-        return await create();
     } catch (err) {
         await file.close().catch(() => {});
         await unlink(path).catch(() => {});
