@@ -501,17 +501,20 @@ impl CarriedIds {
 /// The ids of the attached replaced database (`old`): its rows and, from schema
 /// version 4 on, its retired ids. Constant SQL, put into the statements of
 /// [`carry_attached`] with `format!`; nothing from outside goes into them.
+/// `UNION ALL`: the scratch table's primary key with `INSERT OR IGNORE`
+/// already removes duplicates.
 const OLD_IDS: &str = "SELECT id FROM old.pastes";
-const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION SELECT id FROM old.retired_ids";
+const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION ALL SELECT id FROM old.retired_ids";
 
 /// Retires, in the staged copy behind `pool`, every id of `replaced` that the
 /// copy does not hold as a row (`Carry::Count`: only counts them).
 ///
 /// Everything stays inside SQLite: `replaced` is attached read-only to one
 /// connection of the copy, so millions of ids never pass through this
-/// process. A replaced database that cannot be attached or read is not an
-/// error: the copy stays unchanged and the result carries a warning. Errors
-/// that concern the copy itself are errors.
+/// process. A replaced database that cannot be attached, or that the read
+/// probe of [`carry_attached`] cannot read, is not an error: the copy stays
+/// unchanged and the result carries a warning. Every failure after the probe
+/// is an error that stops the restore before the cutover.
 async fn carry_ids(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<CarriedIds, BackupError> {
     let uri = match read_only_uri(replaced) {
         Ok(uri) => uri,
@@ -537,16 +540,35 @@ async fn carry_ids(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<C
 /// the private stage.
 const SCRATCH_TABLE: &str = "main.restore_carried_ids";
 
-/// The part of [`carry_ids`] that runs while `old` is attached, in one
-/// transaction.
+/// The part of [`carry_ids`] that runs while `old` is attached.
 ///
-/// `old` is read in exactly one statement, which copies its ids into a
-/// scratch table in the copy ([`SCRATCH_TABLE`]); a failure there can only
-/// come from `old` (or the scratch table filled from it), rolls back and
-/// becomes the warning. The count and the insert then read only that table
-/// and the copy, so their failures concern the copy and stay errors.
+/// First a read probe: whether `old` has `retired_ids`, and a count over the
+/// same ids the insert reads. It writes nothing into the copy, so its failure
+/// can only come from `old`; it is the only failure here that becomes the
+/// warning. Then, in one transaction, the ids are copied into a scratch table
+/// in the copy ([`SCRATCH_TABLE`]), counted and inserted. Any failure there
+/// is an error (the transaction rolls back), also a read failure of `old`
+/// that shows up only then: it cannot be told apart from a failure writing
+/// the copy, and installing the backup without the ids would free them.
 async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<CarriedIds, BackupError> {
     use sqlx::Connection as _;
+
+    let probe = async {
+        let has_retired: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = 'retired_ids')")
+                .fetch_one(&mut *connection)
+                .await?;
+        let old_ids = if has_retired { OLD_IDS_WITH_RETIRED } else { OLD_IDS };
+        sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM ({old_ids})")))
+            .fetch_one(&mut *connection)
+            .await?;
+        Ok::<_, sqlx::Error>(old_ids)
+    }
+    .await;
+    let old_ids = match probe {
+        Ok(old_ids) => old_ids,
+        Err(error) => return Ok(CarriedIds::unreadable(error)),
+    };
 
     let mut transaction = connection.begin().await.map_err(BackupError::Database)?;
     sqlx::query(AssertSqlSafe(format!(
@@ -555,23 +577,19 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
     .execute(&mut *transaction)
     .await
     .map_err(BackupError::Database)?;
-    let read = async {
-        let has_retired: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = 'retired_ids')")
-                .fetch_one(&mut *transaction)
-                .await?;
-        let old_ids = if has_retired { OLD_IDS_WITH_RETIRED } else { OLD_IDS };
-        sqlx::query(AssertSqlSafe(format!("INSERT OR IGNORE INTO {SCRATCH_TABLE} (id) {old_ids}")))
+    // Tests can let the copy grow no further, so that the insert below fails
+    // writing it (`SQLITE_FULL`).
+    #[cfg(test)]
+    if let Some(pages) = tests::carry_page_limit() {
+        sqlx::query(AssertSqlSafe(format!("PRAGMA main.max_page_count = {pages}")))
             .execute(&mut *transaction)
-            .await?;
-        Ok::<_, sqlx::Error>(())
+            .await
+            .map_err(BackupError::Database)?;
     }
-    .await;
-    if let Err(error) = read {
-        // Also drops the scratch table.
-        transaction.rollback().await.map_err(BackupError::Database)?;
-        return Ok(CarriedIds::unreadable(error));
-    }
+    sqlx::query(AssertSqlSafe(format!("INSERT OR IGNORE INTO {SCRATCH_TABLE} (id) {old_ids}")))
+        .execute(&mut *transaction)
+        .await
+        .map_err(BackupError::Database)?;
 
     let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT COUNT(*) FROM {SCRATCH_TABLE} \
