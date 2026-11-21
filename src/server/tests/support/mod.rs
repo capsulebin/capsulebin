@@ -418,6 +418,121 @@ impl Harness {
     }
 }
 
+/// How a request body is framed: with a declared `Content-Length`, or
+/// streamed without one, so that only reading it can find its size.
+#[derive(Clone, Copy, Debug)]
+pub enum Framing {
+    Declared,
+    Streamed,
+}
+
+impl Harness {
+    /// `method path` with a JSON `body` framed as `framing`, in process. Without
+    /// `Content-Length` the body limit layer cannot refuse the request up front
+    /// and only reading the body runs into the limit.
+    pub async fn send_framed(&self, method: &str, path: &str, body: Vec<u8>, framing: Framing, token: Option<&str>) -> Answer {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json");
+        if let Framing::Declared = framing {
+            builder = builder.header("content-length", body.len());
+        }
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        self.send(builder.body(Body::from(body)).unwrap()).await
+    }
+
+    /// `POST path` with a JSON `body` over a real loopback socket, and whether
+    /// the server ever polled the body.
+    ///
+    /// The request asks with `Expect: 100-continue`, and hyper sends `100
+    /// Continue` only when the body is first polled - so the interim answer
+    /// records the poll, and the body is sent only after it. A server that
+    /// answers without it never asked for a single body byte.
+    pub async fn post_expecting_continue(&self, path: &str, body: &[u8], framing: Framing, token: Option<&str>) -> (bool, Answer) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = self.app.clone().into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut head = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nExpect: 100-continue\r\n"
+        );
+        head.push_str(&match framing {
+            Framing::Declared => format!("Content-Length: {}\r\n", body.len()),
+            Framing::Streamed => "Transfer-Encoding: chunked\r\n".to_owned(),
+        });
+        if let Some(token) = token {
+            head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        head.push_str("\r\n");
+        stream.write_all(head.as_bytes()).await.unwrap();
+
+        let timeout = std::time::Duration::from_secs(10);
+        let mut received = Vec::new();
+        let head_end = loop {
+            if let Some(end) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end + 4;
+            }
+            let mut chunk = [0_u8; 4096];
+            let read = tokio::time::timeout(timeout, stream.read(&mut chunk))
+                .await
+                .expect("the server must answer without the body or ask for it")
+                .unwrap();
+            assert!(read > 0, "connection closed before an answer");
+            received.extend_from_slice(&chunk[..read]);
+        };
+
+        let polled = received.starts_with(b"HTTP/1.1 100 ");
+        if polled {
+            received.drain(..head_end);
+            match framing {
+                Framing::Declared => stream.write_all(body).await.unwrap(),
+                Framing::Streamed => {
+                    stream.write_all(format!("{:x}\r\n", body.len()).as_bytes()).await.unwrap();
+                    stream.write_all(body).await.unwrap();
+                    stream.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+                }
+            }
+        }
+        tokio::time::timeout(timeout, stream.read_to_end(&mut received))
+            .await
+            .expect("the server must close the connection after the answer")
+            .unwrap();
+        server.abort();
+
+        (polled, parse_answer(&received))
+    }
+}
+
+/// An HTTP/1.1 answer with a `Content-Length` body, as read from a socket.
+fn parse_answer(raw: &[u8]) -> Answer {
+    let head_end = raw.windows(4).position(|window| window == b"\r\n\r\n").expect("an answer head") + 4;
+    let head = std::str::from_utf8(&raw[..head_end]).unwrap();
+    let mut lines = head.split("\r\n");
+    let status = lines.next().unwrap().split(' ').nth(1).unwrap().parse::<u16>().unwrap();
+
+    let mut headers = axum::http::HeaderMap::new();
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line.split_once(':').unwrap();
+        headers.append(
+            axum::http::HeaderName::try_from(name.trim()).unwrap(),
+            axum::http::HeaderValue::try_from(value.trim()).unwrap(),
+        );
+    }
+
+    Answer {
+        status: StatusCode::from_u16(status).unwrap(),
+        headers,
+        body: raw[head_end..].to_vec(),
+    }
+}
+
 /// Server-side retrieval bookkeeping. Never part of a response; see
 /// `descriptor_never_exposes_the_retrieval_bookkeeping`.
 #[derive(Debug, PartialEq, Eq)]

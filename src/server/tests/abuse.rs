@@ -35,6 +35,95 @@ async fn stored_reports(h: &Harness) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
+async fn disabled_reports_never_read_the_body() {
+    let h = harness_with("report-off-body", |config| config.abuse.enabled = false).await;
+
+    for framing in [Framing::Declared, Framing::Streamed] {
+        let body = report_body(&id(1).encode()).to_string();
+        let (polled, answer) = h.post_expecting_continue("/api/v1/reports", body.as_bytes(), framing, None).await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{framing:?}");
+        assert_eq!(answer.code(), "reports_disabled");
+        assert_eq!(answer.header("content-type"), Some("application/problem+json"));
+        assert!(!polled, "the body was read ({framing:?})");
+    }
+}
+
+#[tokio::test]
+async fn reports_have_a_small_body_limit() {
+    let h = harness("report-body-limit").await;
+    h.post_with_token("/api/v1/pastes", create_body(&id(1)), Some(TOKEN)).await;
+
+    // A report padded with JSON whitespace to one byte above the limit - well
+    // below the global limit, which was the only one before.
+    let mut oversized = report_body(&id(1).encode()).to_string().into_bytes();
+    oversized.resize(32 * 1024 + 1, b' ');
+    for framing in [Framing::Declared, Framing::Streamed] {
+        let answer = h.send_framed("POST", "/api/v1/reports", oversized.clone(), framing, None).await;
+        assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE, "{framing:?}");
+        assert_eq!(answer.code(), "payload_too_large", "{framing:?}");
+        assert_eq!(answer.header("content-type"), Some("application/problem+json"));
+        assert!(answer.header("x-request-id").is_some());
+    }
+    assert!(stored_reports(&h).await.is_empty());
+
+    // The largest valid report, every character of its text escaped.
+    let escaped = |text: &str| text.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect::<String>();
+    let description = "x".repeat(4_000);
+    let contact = format!("{}@example.org", "r".repeat(242));
+    assert_eq!(contact.len(), 254);
+    let body = format!(
+        r#"{{"paste_id":"{}","reason":"{}","description":"{}","contact":"{}"}}"#,
+        escaped(&id(1).encode()),
+        escaped("phishing"),
+        escaped(&description),
+        escaped(&contact),
+    );
+    assert!(body.len() < 32 * 1024, "{}", body.len());
+    let (polled, answer) = h
+        .post_expecting_continue("/api/v1/reports", body.as_bytes(), Framing::Declared, None)
+        .await;
+    assert_eq!(answer.status, StatusCode::ACCEPTED, "{}", answer.text());
+    assert!(polled);
+    assert_eq!(stored_reports(&h).await, [(id(1).encode(), description)]);
+}
+
+#[tokio::test]
+async fn dropped_reports_answer_like_stored_ones() {
+    let h = harness_with("report-ceilings", |config| {
+        config.abuse.max_open_reports_per_paste = 1;
+        config.abuse.max_open_reports = 2;
+    })
+    .await;
+    for byte in 1..=3 {
+        h.post_with_token("/api/v1/pastes", create_body(&id(byte)), Some(TOKEN)).await;
+    }
+
+    let stored = h.post("/api/v1/reports", report_body(&id(1).encode())).await;
+    let per_paste = h.post("/api/v1/reports", report_body(&id(1).encode())).await;
+    let second = h.post("/api/v1/reports", report_body(&id(2).encode())).await;
+    let global = h.post("/api/v1/reports", report_body(&id(3).encode())).await;
+    let unknown = h.post("/api/v1/reports", report_body(&id(9).encode())).await;
+
+    assert_eq!(stored.status, StatusCode::ACCEPTED, "{}", stored.text());
+    for (label, answer) in [
+        ("per paste", &per_paste),
+        ("stored", &second),
+        ("global", &global),
+        ("unknown", &unknown),
+    ] {
+        assert_eq!(answer.status, stored.status, "{label}");
+        assert_eq!(answer.body, stored.body, "{label}");
+        assert_eq!(stable_headers(answer), stable_headers(&stored), "{label}");
+    }
+
+    let description = "Imitates a bank login page.".to_owned();
+    assert_eq!(
+        stored_reports(&h).await,
+        [(id(1).encode(), description.clone()), (id(2).encode(), description)]
+    );
+}
+
+#[tokio::test]
 async fn existing_and_unknown_ids_get_the_same_answer_but_only_one_is_stored() {
     let h = harness("report-oracle").await;
     h.post_with_token("/api/v1/pastes", create_body(&id(1)), Some(TOKEN)).await;

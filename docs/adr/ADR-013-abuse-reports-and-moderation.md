@@ -25,6 +25,18 @@ optional `contact`.
 - Every well-formed report gets the same `202 {"status":"received"}`, whether or not the paste
   exists. Only reports about a paste that currently exists — active and not expired or consumed, or
   disabled — are stored. Existence check and insert are one SQL statement.
+- Open reports (status `open` or `reviewing`) are capped: a report is stored only while its paste
+  has fewer than `abuse.max_open_reports_per_paste` (default 10) and the instance fewer than
+  `abuse.max_open_reports` (default 1000) open reports. Existence check, both counts and insert
+  are one statement; SQLite serializes writers, so the ceilings hold under concurrency. A report
+  above a ceiling is dropped and gets the same `202`. Closing a report frees its place. Both
+  ceilings are integers of at least 1: `0` would drop every report while the form still says
+  "received"; `abuse.enabled = false` is the way to stop reports. The ceilings are not published
+  in `GET /api/v1/reports`.
+- The operator sees a full queue: the server logs `report not stored: open report limit reached`
+  at most once a minute (a flood must not flood the log), without paste id, text or contact; and
+  `capsulebin reports list` starts with the number of open reports and both ceilings, and says when
+  new reports are not stored. `--json` stays a plain array for scripts.
 - A report never carries a key: the report page strips the fragment from a pasted link in the id
   field, and it refuses a description or contact containing `#v1.` before anything is sent — no
   request, a message, focus on the first field concerned, the text left for the reporter to edit.
@@ -37,7 +49,11 @@ optional `contact`.
   escape sequences.
 - Reports have their own rate-limit class (`rate_limits.report`, which may be set per hour).
 - `GET /api/v1/reports` describes the policy (enabled, contact, reason codes, limits) for the page.
-- `abuse.enabled = false` turns the endpoint off (`404 reports_disabled`); moderation keeps working.
+- `abuse.enabled = false` turns the endpoint off (`404 reports_disabled`, answered before the body
+  is read); moderation keeps working.
+- The request body is limited to 32 KiB: a report holds at most 4000 bytes of description and 254
+  of contact, below 26 KB even with every character escaped as `\uXXXX`, so no valid report is
+  refused.
 
 **Moderation.** There is no admin web interface. The operator works with the binary:
 
@@ -58,7 +74,13 @@ operator closes them. Report content is never logged.
 - **A tombstone notice for moderated capsules.** It would tell anyone holding a link — or guessing
   one — that a capsule existed and was acted upon, and it breaks the identical answers for a convenience.
 - **Rejecting reports about unknown ids.** Makes the endpoint an existence oracle.
-- **Storing every report.** Lets anyone flood the queue with reports about random ids.
+- **Storing every report.** Lets anyone flood the queue with reports about random ids — and, with
+  one known id, grow the queue and the database without bound.
+- **Coalescing reports above the ceiling into a counter.** The first reports per capsule keep their
+  own text and contact as independent evidence; a counter of further ones adds no evidence and
+  would need a schema change. Dropping them needs none.
+- **Telling the reporter that a ceiling was reached.** The answer would differ by whether the id
+  exists, an oracle again.
 - **An admin web UI.** A second authenticated surface on a server that otherwise has no accounts.
 - **Evidence uploads, content hashes, automatic classification.** Incompatible with the trust model
   or trivially bypassed by a different client.
@@ -69,8 +91,11 @@ operator closes them. Report content is never logged.
   detection, by design.
 - A reporter receives no feedback about what happened. `abuse.contact` offers an out-of-band channel
   for follow-up.
+- Once a capsule or the instance has reached its ceiling, further reports — genuine ones included —
+  are lost until an operator closes open ones. Anyone who knows an id can fill that capsule's
+  ceiling with junk; the rate limit and the operator's queue work are the answer, not more storage.
 - The existence check is a tiny timing difference between a stored and an unstored report (one row
-  written or not). The rate limit on the endpoint and the 128-bit id space keep this from being a
-  practical oracle.
+  written, or none and one more read that only decides whether to log the ceiling warning). The
+  rate limit on the endpoint and the 128-bit id space keep this from being a practical oracle.
 - Deleting a capsule through moderation is as final as the creator's own delete; backups may still
   contain the ciphertext (ADR-002).

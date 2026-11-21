@@ -126,16 +126,46 @@ pub struct ReportEntry {
     pub paste_status: Option<String>,
 }
 
+/// The ceilings on open reports (`open` or `reviewing`):
+/// `abuse.max_open_reports_per_paste` and `abuse.max_open_reports`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportCeilings {
+    pub per_paste: i64,
+    pub total: i64,
+}
+
+/// What [`AbuseRepository::submit_report`] did with a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitOutcome {
+    Stored,
+    /// The paste does not exist (any more), or cannot take reports.
+    NoSuchPaste,
+    /// The paste exists, but it or the instance already has as many open
+    /// reports as a ceiling allows.
+    CeilingReached,
+}
+
 /// Abuse reports and moderation (ADR-013).
 pub trait AbuseRepository: Send + Sync {
     /// Stores a report — but only if the paste it names currently exists
-    /// (active and not expired or consumed, or disabled). Returns whether it was
-    /// stored.
+    /// (active and not expired or consumed, or disabled) and neither it nor the
+    /// instance has reached its ceiling of open reports.
     ///
-    /// The caller answers the reporter identically either way, so the endpoint
-    /// is no oracle for paste ids. The existence check and the insert are one
-    /// statement, so both outcomes take the same path through SQLite.
-    fn submit_report(&self, report: &NewReport, now: i64) -> impl Future<Output = Result<bool, RepositoryError>> + Send;
+    /// The caller answers the reporter identically for every outcome, so the
+    /// endpoint is no oracle for paste ids. The existence check, both counts and
+    /// the insert are one statement: SQLite serializes writers, so the ceilings
+    /// hold under concurrency. Only when nothing was stored does a second read
+    /// tell "no such paste" from "ceiling reached"; it races with concurrent
+    /// writes, so it may only inform a log line, never the answer.
+    fn submit_report(
+        &self,
+        report: &NewReport,
+        ceilings: ReportCeilings,
+        now: i64,
+    ) -> impl Future<Output = Result<SubmitOutcome, RepositoryError>> + Send;
+
+    /// The number of open reports (`open` or `reviewing`) on the instance.
+    fn count_open_reports(&self) -> impl Future<Output = Result<i64, RepositoryError>> + Send;
 
     /// Reports, oldest first, optionally filtered by status.
     fn list_reports(

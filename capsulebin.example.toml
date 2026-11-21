@@ -209,6 +209,17 @@ enabled = true
 # stay until they are closed.
 report_retention = "90d"
 
+# Ceilings on open reports (status open or reviewing), so nobody who knows an
+# id can grow the queue and the database without bound. A report above a
+# ceiling is not stored, and the reporter gets the same answer as for a stored
+# one; the server logs a warning (at most once a minute) and
+# `capsulebin reports list` shows the count. Closing a report frees its place.
+# Integers of at least 1; to stop taking reports, set `enabled = false`.
+# Open reports about one capsule:
+max_open_reports_per_paste = 10
+# Open reports on the whole instance:
+max_open_reports = 1000
+
 [i18n]
 # The default interface language, one of "en" and "de". Its pages have no
 # language prefix (/, /p/<id>, /report); every other language is always offered

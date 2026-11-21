@@ -22,13 +22,25 @@ mod wire;
 
 use axum::Router;
 use axum::routing::{delete, post};
+use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::AppState;
 
+/// Body limit of describe, retrieve and delete. Their bodies are one or two
+/// base64url tokens of a few dozen characters; 4 KiB leaves room for any JSON
+/// formatting without letting a proof request carry an upload-sized body.
+/// Create keeps the global limit (`max_body_bytes`).
+const PROOF_BODY_LIMIT: usize = 4 * 1024;
+
 pub fn routes() -> Router<AppState> {
+    // Inside the global limit layer of `router()`, so the smaller one wins;
+    // `body_limit_problem` sits outside both and turns either `413` into
+    // `problem+json`.
+    let proof_limit = || RequestBodyLimitLayer::new(PROOF_BODY_LIMIT);
+
     Router::new()
         .route("/api/v1/pastes", post(handlers::create))
-        .route("/api/v1/pastes/{id}", delete(handlers::remove))
-        .route("/api/v1/pastes/{id}/describe", post(handlers::descriptor))
-        .route("/api/v1/pastes/{id}/retrieve", post(handlers::retrieve))
+        .route("/api/v1/pastes/{id}", delete(handlers::remove).layer(proof_limit()))
+        .route("/api/v1/pastes/{id}/describe", post(handlers::descriptor).layer(proof_limit()))
+        .route("/api/v1/pastes/{id}/retrieve", post(handlers::retrieve).layer(proof_limit()))
 }

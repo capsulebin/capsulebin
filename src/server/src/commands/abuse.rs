@@ -13,7 +13,7 @@ use anyhow::{Context as _, bail};
 use capsulebin_server::config::Resolved;
 use capsulebin_server::domain::abuse::{ModerationAction, ReasonCode, ReportStatus, Resolution};
 use capsulebin_server::domain::{Availability, Clock as _, PasteId, SystemClock};
-use capsulebin_server::repository::{AbuseRepository as _, ModerationOutcome, PasteRepository as _, ReportEntry};
+use capsulebin_server::repository::{AbuseRepository as _, ModerationOutcome, PasteRepository as _, ReportCeilings, ReportEntry};
 
 /// Formats Unix seconds as `YYYY-MM-DD HH:MM UTC`.
 ///
@@ -75,6 +75,19 @@ fn entry_json(entry: &ReportEntry) -> serde_json::Value {
     })
 }
 
+/// The line `reports list` starts with: the open reports against both
+/// ceilings, and whether the instance currently drops new reports.
+fn open_reports_summary(open: i64, ceilings: ReportCeilings) -> String {
+    let mut summary = format!(
+        "open reports: {open} of {} (at most {} per capsule)",
+        ceilings.total, ceilings.per_paste
+    );
+    if open >= ceilings.total {
+        summary.push_str("\nthe limit is reached: new reports are not stored until open ones are closed");
+    }
+    summary
+}
+
 pub(crate) async fn reports_list(resolved: Resolved, status: String, limit: i64, json: bool) -> anyhow::Result<()> {
     let filter = match status.as_str() {
         "all" => None,
@@ -99,6 +112,13 @@ pub(crate) async fn reports_list(resolved: Resolved, status: String, limit: i64,
         println!("{}", serde_json::Value::Array(list));
         return Ok(());
     }
+
+    let open = state
+        .abuse_repo
+        .count_open_reports()
+        .await
+        .context("could not count open reports")?;
+    println!("{}", open_reports_summary(open, state.abuse.report_ceilings()));
 
     if entries.is_empty() {
         println!("no {} reports", status);
@@ -302,6 +322,27 @@ mod tests {
         assert_eq!(format_utc(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(format_utc(1_795_434_240), "2026-11-23 11:44 UTC");
         assert_eq!(format_utc(-60), "1969-12-31 23:59 UTC");
+    }
+
+    #[test]
+    fn the_report_list_starts_with_the_open_reports_and_their_ceilings() {
+        let ceilings = ReportCeilings {
+            per_paste: 10,
+            total: 1_000,
+        };
+        assert_eq!(
+            open_reports_summary(0, ceilings),
+            "open reports: 0 of 1000 (at most 10 per capsule)"
+        );
+        assert_eq!(
+            open_reports_summary(3, ceilings),
+            "open reports: 3 of 1000 (at most 10 per capsule)"
+        );
+        assert!(!open_reports_summary(999, ceilings).contains("new reports are not stored"));
+
+        let full = open_reports_summary(1_000, ceilings);
+        assert!(full.starts_with("open reports: 1000 of 1000 (at most 10 per capsule)\n"), "{full}");
+        assert!(full.contains("new reports are not stored"), "{full}");
     }
 
     #[test]

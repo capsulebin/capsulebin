@@ -54,7 +54,13 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   holding the link can trigger.
 - Strict security headers and CSP on every response; redacted access logs.
 - Abuse reports and operator moderation without decryption
-  ([ADR-013](docs/adr/ADR-013-abuse-reports-and-moderation.md)).
+  ([ADR-013](docs/adr/ADR-013-abuse-reports-and-moderation.md)). Open reports are capped per
+  capsule and per instance (`abuse.max_open_reports_per_paste`, default 10;
+  `abuse.max_open_reports`, default 1000); a report above a ceiling is dropped with the same answer,
+  and `capsulebin reports list` and a rate-limited log warning show the operator a full queue.
+- Request bodies are read only when they may be used: create checks the creation token, and the
+  report endpoint whether reports are enabled, before reading the body. Describe, retrieve and
+  delete accept at most 4 KiB, reports 32 KiB.
 - Subcommands `serve`, `check`, `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`,
   `reports` and `moderation`.
 - A container image: distroless without OpenSSL, non-root, configured by environment variables,

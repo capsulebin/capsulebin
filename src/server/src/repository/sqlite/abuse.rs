@@ -4,7 +4,9 @@ use sqlx::{Row as _, SqlitePool};
 
 use crate::domain::abuse::{ModerationAction, ModerationRecord, NewReport, ReasonCode, Report, ReportStatus, Resolution};
 use crate::domain::{Availability, PasteId};
-use crate::repository::{AbusePurgeOutcome, AbuseRepository, ModerationOutcome, ReportEntry, RepositoryError};
+use crate::repository::{
+    AbusePurgeOutcome, AbuseRepository, ModerationOutcome, ReportCeilings, ReportEntry, RepositoryError, SubmitOutcome,
+};
 
 #[derive(Debug, Clone)]
 pub struct SqliteAbuseRepository {
@@ -20,6 +22,20 @@ impl SqliteAbuseRepository {
 fn db(error: sqlx::Error) -> RepositoryError {
     RepositoryError::Database(error)
 }
+
+/// The paste `?1` exists for reporting at time `?2`: something an operator
+/// could still act on. A disabled paste counts (it may need deleting); an
+/// expired, consumed or deleted one does not — there is nothing left to report.
+const REPORTABLE_PASTE: &str = "SELECT 1 FROM pastes
+         WHERE id = ?1
+           AND ciphertext IS NOT NULL
+           AND (availability_status = 'disabled'
+                OR (availability_status = 'active'
+                    AND consumed_at IS NULL
+                    AND (expires_at IS NULL OR expires_at > ?2)))";
+
+/// A report that is still the operator's work: `open` or `reviewing`.
+const OPEN_REPORT: &str = "status IN ('open', 'reviewing')";
 
 /// The report columns plus the named paste's current status (NULL once purged).
 const REPORT_SELECT: &str = "SELECT r.id, r.paste_id, r.reason_code, r.description, r.reporter_contact, \
@@ -44,35 +60,55 @@ fn row_to_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ReportEntry, Repository
 }
 
 impl AbuseRepository for SqliteAbuseRepository {
-    async fn submit_report(&self, report: &NewReport, now: i64) -> Result<bool, RepositoryError> {
-        // "Exists" means: something an operator could still act on. A disabled
-        // paste counts (it may need deleting); an expired, consumed or deleted one
-        // does not — there is nothing left to report.
-        let result = sqlx::query(
+    async fn submit_report(&self, report: &NewReport, ceilings: ReportCeilings, now: i64) -> Result<SubmitOutcome, RepositoryError> {
+        let paste_id = report.paste_id.encode();
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO abuse_reports (id, paste_id, reason_code, description, reporter_contact, created_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6
-              WHERE EXISTS (
-                SELECT 1 FROM pastes
-                 WHERE id = ?2
-                   AND ciphertext IS NOT NULL
-                   AND (availability_status = 'disabled'
-                        OR (availability_status = 'active'
-                            AND consumed_at IS NULL
-                            AND (expires_at IS NULL OR expires_at > ?7)))
-              )",
-        )
+             SELECT ?3, ?1, ?4, ?5, ?6, ?7
+              WHERE EXISTS ({REPORTABLE_PASTE})
+                AND (SELECT COUNT(*) FROM abuse_reports WHERE paste_id = ?1 AND {OPEN_REPORT}) < ?8
+                AND (SELECT COUNT(*) FROM abuse_reports WHERE {OPEN_REPORT}) < ?9"
+        )))
+        .bind(&paste_id)
+        .bind(now)
         .bind(&report.id)
-        .bind(report.paste_id.encode())
         .bind(report.reason.as_str())
         .bind(&report.description)
         .bind(report.contact.as_deref())
         .bind(report.created_at)
-        .bind(now)
+        .bind(ceilings.per_paste)
+        .bind(ceilings.total)
         .execute(&self.pool)
         .await
         .map_err(db)?;
 
-        Ok(result.rows_affected() == 1)
+        if result.rows_affected() == 1 {
+            return Ok(SubmitOutcome::Stored);
+        }
+
+        // Not part of the statement above, so it may see a later state; it only
+        // decides how the caller logs, never what it answers.
+        let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS ({REPORTABLE_PASTE})")))
+            .bind(&paste_id)
+            .bind(now)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db)?;
+
+        Ok(if exists {
+            SubmitOutcome::CeilingReached
+        } else {
+            SubmitOutcome::NoSuchPaste
+        })
+    }
+
+    async fn count_open_reports(&self) -> Result<i64, RepositoryError> {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM abuse_reports WHERE {OPEN_REPORT}"
+        )))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)
     }
 
     async fn list_reports(&self, status: Option<ReportStatus>, limit: i64) -> Result<Vec<ReportEntry>, RepositoryError> {

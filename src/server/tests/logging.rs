@@ -103,6 +103,31 @@ async fn a_full_request_cycle_logs_no_secrets_but_stays_diagnosable() {
     h.post("/api/v1/reports", report("REPORT-DESCRIPTION-MARKER with a key #v1.c2VjcmV0"))
         .await;
 
+    // --- reports dropped at the open report limit: one warning, no details ---
+    let capped = harness_with("logging-capped", |config| config.abuse.max_open_reports_per_paste = 1).await;
+    let capped_report = |paste_id: String| {
+        serde_json::json!({
+            "paste_id": paste_id,
+            "reason": "spam",
+            "description": "REPORT-DESCRIPTION-MARKER",
+            "contact": "REPORT-CONTACT-MARKER@example.org",
+        })
+    };
+    let limit_warnings = || capture.contents().matches("open report limit").count();
+    capped.post("/api/v1/pastes", create_body(&id(4))).await;
+    capped.post("/api/v1/reports", capped_report(id(9).encode())).await;
+    capped.post("/api/v1/reports", capped_report(id(4).encode())).await;
+    assert_eq!(limit_warnings(), 0, "a report about an unknown id or a stored one logged a warning");
+    for _ in 0..5 {
+        capped.post("/api/v1/reports", capped_report(id(4).encode())).await;
+    }
+    assert_eq!(
+        limit_warnings(),
+        1,
+        "reports dropped within a second must log exactly one warning\n\ncaptured:\n{}",
+        capture.contents()
+    );
+
     // --- the shell routes, which also carry an id in the path ---
     h.get(&format!("/p/{paste}")).await;
     h.get(&format!("/manage/{paste}")).await;
@@ -117,7 +142,7 @@ async fn a_full_request_cycle_logs_no_secrets_but_stays_diagnosable() {
 
     // --- nothing sensitive ---
 
-    let forbidden: [(&str, String); 10] = [
+    let forbidden: [(&str, String); 12] = [
         ("payload marker", String::from_utf8_lossy(MARKER).into_owned()),
         ("base64 ciphertext", b64(&ciphertext())),
         ("reveal token", String::from_utf8_lossy(REVEAL_TOKEN).into_owned()),
@@ -128,6 +153,8 @@ async fn a_full_request_cycle_logs_no_secrets_but_stays_diagnosable() {
         // Shortened forms are permitted, the whole value is not.
         ("full paste id", paste.clone()),
         ("reported paste id", id(3).encode()),
+        ("capped paste id", id(4).encode()),
+        ("unknown reported paste id", id(9).encode()),
         ("report description", "REPORT-DESCRIPTION-MARKER".to_owned()),
         ("report contact", "REPORT-CONTACT-MARKER".to_owned()),
     ];
