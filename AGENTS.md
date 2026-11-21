@@ -249,6 +249,7 @@ In-memory only, resets on restart; full buckets are swept above 10 000 entries.
 ### First-time setup
 ```sh
 npm install          # resolves src/{core,cli,server/web} workspaces
+# python3 must be on PATH for the CLI's pseudo-terminal tests
 npm run build -w @capsulebin/web   # build frontend (required before cargo build)
 ```
 
@@ -292,7 +293,7 @@ cargo test --workspace --locked
 npm run format:check
 npm run check -w @capsulebin/core && npm test -w @capsulebin/core
 npm run check -w @capsulebin/web && npm test -w @capsulebin/web
-npm run check -w @capsulebin/cli && npm test -w @capsulebin/cli
+npm run check -w @capsulebin/cli && npm test -w @capsulebin/cli   # needs python3 (PTY tests)
 ./scripts/reproducible-web.sh   # two web builds, byte-identical
 
 # Acceptance (release binary + smoke test, incl. CLI put/get/delete)
@@ -325,8 +326,10 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
 | `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
-| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete, incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
-| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, `CAPSULEBIN_PASSWORD` bound to `--server`, link channels (stdin, `--link-file`, `--delete-link-file`). Fake origin `https://capsule.test`. |
+| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete (retrieved content compared from the written files), incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
+| `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, `CAPSULEBIN_PASSWORD` bound to `--server`, link channels (stdin, `--link-file`, `--delete-link-file`), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory, `--here`/`-o`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
+| `src/cli/tests/escape.test.ts` | The escaping functions of `terminal.ts` over every code point and byte in U+0000–U+00FF plus seeded random input: no control character emitted, text without one unchanged. |
+| `src/cli/tests/terminal.test.ts` | The bundled CLI on a real pseudo-terminal (python3 `pty`): hidden password prompt, burn confirmation, Ctrl-C/EOF → exit `8` with no guarded request, `stty` restored after every run. Fails (no skip) without `python3`, with a message naming it (`pty-requirement.test.ts`); skipped on Windows. |
 | `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
@@ -448,14 +451,16 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
-| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code; `get --server` (else a usable `CAPSULEBIN_SERVER`) is the anchor for `CAPSULEBIN_PASSWORD` |
-| `src/commands/{put,get,delete}.ts` | The three commands; `put --delete-link-file` (exclusive `0600` file written before the upload, removed on failure) |
-| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping (core's `REDIRECT_REFUSED` → `7`, checked before the status) |
+| `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code; `get --server` (else a usable `CAPSULEBIN_SERVER`) is the anchor for `CAPSULEBIN_PASSWORD`; `get --here` (refused together with `-o`); error output through `escapeDiagnostic`/`jsonLine` |
+| `src/commands/{put,get,delete}.ts` | The three commands; `put --delete-link-file` (exclusive `0600` file written before the upload, removed on failure); `get` never writes item content to stdout: a single item goes to the current directory, several to a new `0700` directory `capsule-<local date>-<id prefix>` (non-recursive `mkdir`, free name ` (n)` if taken), `--here` the current directory, `-o DIR` created `0700` with parents; each file opened `wx` with mode `0600` (no temp file, `link` or `rename`), on `EEXIST` the next free name `name (n).ext`, at most 1000 attempts (`no_free_name`); a failed write removes the files and the empty new directory of this run; `safeFileName` keeps the last path component and replaces C0, DEL and C1 |
+| `src/terminal.ts` | `escapeDiagnostic` (every control character incl. `\n`, for stderr: applied centrally in `run()`'s error output, to `created …`/`wrote …` lines, the `secrets.ts` mismatch notice and `main.ts`'s last-resort message), `jsonLine` (every `--json` output; DEL/C1 as `\u00NN`). Backslashes are not doubled |
+| `src/exit.ts` | Stable exit codes and the API-error → exit-code mapping (core's `REDIRECT_REFUSED` → `7`, checked before the status); `promptStopped()`: Ctrl-C (`interrupted`) or EOF (`input_closed`) at a prompt → `8` |
 | `src/items.ts` | Presentation/language inference for input files |
 | `src/secrets.ts` | Password and creation-token sources (file, env, prompt — never argv); `put` refuses a whitespace-only password; `CAPSULEBIN_PASSWORD` for `get` only when the link's base equals the anchor; `readLink`: positional link, `-` (stdin) or `--link-file` |
 | `src/transport.ts` | HTTPS-or-loopback policy (`localhost`, `127.0.0.0/8`, `[::1]`; else `--allow-http`/`CAPSULEBIN_ALLOW_HTTP=1`), `normalizeBase()` for comparing server bases |
-| `src/io.ts` | Process I/O behind an interface, replaced in tests |
+| `src/io.ts` | Process I/O behind an interface, replaced in tests; `terminalPrompt` gives readline a real `Writable` (muted for hidden input), restores the terminal on answer, Ctrl-C and EOF |
 | `tests/cli.test.ts` | End-to-end against the in-memory API in `src/core/tests/fake-server.ts` |
+| `tests/terminal.test.ts`, `tests/pty.ts`, `tests/pty-driver.py` | The bundled CLI (built with `scripts.build` from `package.json`, into a temp dir) in a python3 `pty` pseudo-terminal against the fake API on `127.0.0.1:0`; input is sent only after the expected prompt text appeared; without python3 on PATH `requirePython()` in `pty.ts` throws a message naming it (checked by `tests/pty-requirement.test.ts`) |
 
 ## Required checks
 

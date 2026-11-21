@@ -17,6 +17,7 @@ import { CliError, ExitCode, toCliError, usage } from './exit';
 import type { Io } from './io';
 import { AS_VALUES } from './items';
 import { readLink } from './secrets';
+import { escapeDiagnostic, jsonLine } from './terminal';
 import { allowHttp, checkTransport } from './transport';
 
 import pkg from '../package.json' with { type: 'json' };
@@ -53,12 +54,14 @@ put options:
 get options:
   -s, --server URL         The server you trust with CAPSULEBIN_PASSWORD (or CAPSULEBIN_SERVER):
                            the variable is only used for links to this server
-  -o, --output DIR         Write all items to DIR (default: a single item goes to stdout,
-                           several items to the current directory)
+  -o, --output DIR         Write the items to DIR, created if missing (default: a single
+                           item goes to the current directory, several items to a new
+                           directory capsule-DATE-ID in it); existing files are never
+                           overwritten, an item gets a free name such as "name (1).txt"
+      --here               Write several items directly to the current directory
       --password-file PATH Read the password from the first line of PATH (or
                            CAPSULEBIN_PASSWORD for links to --server, or prompt)
   -y, --yes                Retrieve a burn-after-retrieval capsule without asking
-  -f, --force              Overwrite existing files instead of picking a free name
       --link-file PATH     Read the share link from the first line of PATH
 
 delete options:
@@ -97,8 +100,8 @@ const OPTIONS = {
     'delete-link-file': { type: 'string' },
     'link-file': { type: 'string' },
     output: { type: 'string', short: 'o' },
+    here: { type: 'boolean' },
     yes: { type: 'boolean', short: 'y' },
-    force: { type: 'boolean', short: 'f' },
     'allow-http': { type: 'boolean' },
     json: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
@@ -124,7 +127,7 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
         'retries',
         'delete-link-file',
     ],
-    get: ['server', 'output', 'password-file', 'yes', 'force', 'link-file'],
+    get: ['server', 'output', 'here', 'password-file', 'yes', 'link-file'],
     delete: ['link-file'],
 };
 const COMMON_OPTIONS: (keyof typeof OPTIONS)[] = ['allow-http', 'json', 'help', 'version'];
@@ -290,6 +293,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
             }
             case 'get':
             case 'delete': {
+                if (values.here && values.output !== undefined) {
+                    throw usage('use either --here or --output');
+                }
                 const link = await readLink(io, command, positionals, values['link-file']);
                 if (command === 'get') {
                     await get(io, {
@@ -297,9 +303,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
                         anchor: passwordAnchor(io, values.server, httpAllowed),
                         allowHttp: httpAllowed,
                         output: values.output,
+                        here: values.here === true,
                         passwordFile: values['password-file'],
                         yes: values.yes === true,
-                        force: values.force === true,
                         json,
                     });
                 } else {
@@ -312,11 +318,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
     } catch (err) {
         const error = toCliError(err);
         if (json) {
-            io.stdout.write(
-                JSON.stringify({ error: { reason: error.reason, message: error.message } }) + '\n',
-            );
+            io.stdout.write(jsonLine({ error: { reason: error.reason, message: error.message } }));
         }
-        io.stderr.write(`capsulebin: ${error.message}\n`);
+        io.stderr.write(`capsulebin: ${escapeDiagnostic(error.message)}\n`);
         if (error.exitCode === ExitCode.Usage && !json) {
             io.stderr.write('Run "capsulebin --help" for usage.\n');
         }

@@ -101,6 +101,18 @@ export function alreadyRetrieved(): CliError {
     );
 }
 
+/**
+ * A prompt left without an answer: Ctrl-C (`interrupted`) or the end of the
+ * terminal input (`input_closed`). Like a missing password, it needs input.
+ */
+export function promptStopped(reason: 'interrupted' | 'input_closed'): CliError {
+    return new CliError(
+        reason === 'interrupted' ? 'interrupted' : 'no answer: the input was closed',
+        ExitCode.NeedsInput,
+        reason,
+    );
+}
+
 const REJECTION_HINTS: Record<string, string> = {
     unauthorized:
         'the server requires a creation token — pass --token-file or set CAPSULEBIN_TOKEN',
