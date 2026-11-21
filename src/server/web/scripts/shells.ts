@@ -15,6 +15,10 @@
  *   which pass through the build unchanged. The server replaces them at startup
  *   (no prefix for the default language, `/<lang>` for every other), the Vite dev
  *   server per request ({@link fillServerTokens});
+ * - `{{creation}}` - the instance's `creation.mode` (`public`, `token` or
+ *   `disabled`), for the create page's `<meta name="capsulebin-creation">`. Also
+ *   configuration: the generator writes {@link CREATION_TOKEN}, the dev server
+ *   fills in `public`, the mode of the dev configuration;
  * - `{{name}}` and `{{favicon}}` - the instance's name and the href of its
  *   favicon. They are the operator's branding, so the generator writes the tokens
  *   {@link NAME_TOKEN} and {@link FAVICON_TOKEN} for the server to fill; the dev
@@ -84,6 +88,9 @@ export const FAVICON_TOKEN = '%%capsulebin:favicon%%';
 /** Token for the target of the "Powered by" link, the source code of the running version. */
 export const SOURCE_TOKEN = '%%capsulebin:source%%';
 
+/** Token for the instance's creation mode, in the create page's creation meta. */
+export const CREATION_TOKEN = '%%capsulebin:creation%%';
+
 /** The placeholder in catalogue texts that stands for the instance's name. */
 export const NAME_PLACEHOLDER = '{name}';
 
@@ -95,6 +102,9 @@ export const PROJECT_PLACEHOLDER = '{project}';
  * instance's - linked to the source code, opened in a new tab.
  */
 export const PROJECT_LINK = `<a href="${SOURCE_TOKEN}" target="_blank" rel="noopener noreferrer">CapsuleBin</a>`;
+
+/** The creation mode the dev server fills in: the one of `capsulebin.dev.toml`. */
+export const DEV_CREATION_MODE = 'public';
 
 /** What the server fills in without a `[branding]` table. */
 export const DEFAULT_BRANDING = {
@@ -115,13 +125,15 @@ function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
         ['default', DEFAULT_TOKEN],
         ['name', NAME_TOKEN],
         ['favicon', FAVICON_TOKEN],
+        ['creation', CREATION_TOKEN],
     ]);
 }
 
 /**
  * Replaces the tokens in a generated shell of language `lang` the way the server
  * does for an instance whose default language is `defaultLanguage` and that has
- * no `[branding]`. The marker regions of logo and wordmark stay as they are.
+ * no `[branding]` and creates in {@link DEV_CREATION_MODE}. The marker regions of
+ * logo and wordmark stay as they are.
  */
 export function fillServerTokens(html: string, lang: string, defaultLanguage: string): string {
     return html
@@ -129,7 +141,8 @@ export function fillServerTokens(html: string, lang: string, defaultLanguage: st
         .replaceAll(DEFAULT_TOKEN, defaultLanguage)
         .replaceAll(NAME_TOKEN, DEFAULT_BRANDING.name)
         .replaceAll(FAVICON_TOKEN, DEFAULT_BRANDING.favicon)
-        .replaceAll(SOURCE_TOKEN, DEFAULT_BRANDING.source);
+        .replaceAll(SOURCE_TOKEN, DEFAULT_BRANDING.source)
+        .replaceAll(CREATION_TOKEN, DEV_CREATION_MODE);
 }
 
 const PLACEHOLDER = /\{\{([A-Za-z0-9_.]+)\}\}/g;

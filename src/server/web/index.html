@@ -7,6 +7,7 @@
         <meta name="referrer" content="no-referrer" />
         <title>{{name}}</title>
         <meta name="capsulebin-languages" content="{{languages}}" data-default="{{default}}" />
+        <meta name="capsulebin-creation" content="{{creation}}" />
         <meta name="color-scheme" content="light dark" />
         <link rel="icon" href="{{favicon}}" />
         <script src="/theme-init.js"></script>
@@ -81,6 +82,14 @@
         <template id="tmpl-edit">
             <h1 class="cb-h1">{{create.heading}}</h1>
             <p class="cb-lede">{{create.lede}}</p>
+            <p class="cb-callout" role="status" data-token-notice hidden></p>
+            <p class="cb-token-line" data-token-line hidden>
+                <span data-token-line-text></span>
+                <span aria-hidden="true">·</span>
+                <button type="button" class="cb-btn-inline" data-token-forget>
+                    {{create.token.forget}}
+                </button>
+            </p>
             <form class="cb-form cb-form--full" data-create-form novalidate>
                 <label class="cb-sr-only" for="create-title">{{create.titleLabel}}</label>
                 <input
@@ -267,6 +276,43 @@
             </form>
         </template>
 
+        <template id="tmpl-token">
+            <h1 class="cb-h1">{{create.heading}}</h1>
+            <p class="cb-callout" role="status" data-token-notice hidden></p>
+            <p class="cb-lede">{{create.token.required}}</p>
+            <div data-token-slot></div>
+        </template>
+
+        <template id="tmpl-token-form">
+            <form class="cb-form" data-token-form novalidate>
+                <label class="cb-label" for="creation-token">{{create.token.label}}</label>
+                <input
+                    id="creation-token"
+                    class="cb-input"
+                    type="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-describedby="creation-token-error"
+                    data-token-input
+                />
+                <p class="cb-error" id="creation-token-error" data-token-error hidden></p>
+                <label class="cb-check">
+                    <input type="checkbox" checked data-token-remember />
+                    <span>{{create.token.remember}}</span>
+                </label>
+                <p>
+                    <button type="submit" class="cb-btn" data-token-submit>
+                        {{create.token.continue}}
+                    </button>
+                </p>
+            </form>
+        </template>
+
+        <template id="tmpl-disabled">
+            <h1 class="cb-h1">{{create.disabled.heading}}</h1>
+            <p class="cb-lede">{{create.disabled.text}}</p>
+        </template>
+
         <template id="tmpl-encrypting">
             <h1 class="cb-h1">{{create.encrypting}}</h1>
             <div class="cb-spinner"></div>
@@ -308,6 +354,7 @@
         <template id="tmpl-error">
             <h1 class="cb-h1">{{create.error}}</h1>
             <p class="cb-lede" data-error-message></p>
+            <div data-token-slot></div>
             <p><button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button></p>
         </template>
     </body>

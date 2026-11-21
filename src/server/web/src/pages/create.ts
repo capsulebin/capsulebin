@@ -15,8 +15,9 @@ import {
     showTemplate,
     setText,
 } from './shell';
-import { apiErrorText } from './errors';
+import { apiErrorText, isTokenRefused } from './errors';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
+import { CreationToken, creationMode, takeInvitation, validToken } from '../creation-token';
 import { formatSize, t, type TextKey } from '../language';
 import { renderMarkdown } from '../render-markdown';
 import { trustedHtml } from '../trusted-html';
@@ -193,16 +194,121 @@ function displayName(item: ItemState, index: number): string {
     );
 }
 
+/** The form as it was submitted: what "Back to editing" puts back. */
+interface Draft {
+    /** The item states themselves; nothing changes them while the form is gone. */
+    items: ItemState[];
+    activeId: string | null;
+    title: string;
+    expiry: string;
+    burn: boolean;
+    password: string;
+}
+
+function captureDraft(): Draft {
+    return {
+        items,
+        activeId,
+        title: byId<HTMLInputElement>('create-title').value,
+        expiry: byId<HTMLSelectElement>('create-expiry').value,
+        burn: byId<HTMLInputElement>('create-burn').checked,
+        password: byId<HTMLInputElement>('create-password').value,
+    };
+}
+
+function restoreFields(draft: Draft): void {
+    byId<HTMLInputElement>('create-title').value = draft.title;
+    byId<HTMLSelectElement>('create-expiry').value = draft.expiry;
+    byId<HTMLInputElement>('create-burn').checked = draft.burn;
+    byId<HTMLInputElement>('create-password').value = draft.password;
+}
+
 // --- phases ------------------------------------------------------------------
 
-function showEdit(): void {
+/**
+ * The page for the instance's creation mode: no form when creation is closed,
+ * the token panel in `token` mode while no token is held, else the editor.
+ * `notice` is the outcome of an invitation link, shown above.
+ */
+function showCreate(draft: Draft | null, notice: string | null = null): void {
+    if (mode === 'disabled') {
+        endEditSession();
+        showTemplate('tmpl-disabled', 'data-create-root');
+    } else if (mode === 'token' && token.value === null) {
+        showTokenPanel(draft, notice);
+    } else {
+        showEdit(draft, notice);
+    }
+}
+
+/** Sets the invitation link's outcome, if any, into the view's notice line. */
+function showNotice(notice: string | null): void {
+    if (notice === null) return;
+    const line = byAttr<HTMLElement>('token-notice');
+    line.textContent = notice;
+    line.hidden = false;
+}
+
+/** `token` mode without a token: why there is no editor, and the token field. */
+function showTokenPanel(draft: Draft | null, notice: string | null): void {
+    endEditSession();
+    showTemplate('tmpl-token', 'data-create-root');
+    showNotice(notice);
+    mountTokenForm('create.token.continue', () => showCreate(draft));
+}
+
+/**
+ * Fills the view's token slot with the token field and the remember checkbox.
+ * A usable token is held from then on and `onToken` runs; anything else is
+ * refused inline and not used.
+ */
+function mountTokenForm(submitLabel: TextKey, onToken: () => void): void {
+    showTemplate('tmpl-token-form', 'data-token-slot');
+    setText('token-submit', t(submitLabel));
+    const input = byAttr<HTMLInputElement>('token-input');
+    const error = byAttr<HTMLElement>('token-error');
+    byAttr<HTMLFormElement>('token-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const value = validToken(input.value);
+        error.textContent = value === null ? t('create.token.invalid') : '';
+        error.hidden = value !== null;
+        if (value === null) {
+            input.setAttribute('aria-invalid', 'true');
+            input.focus();
+            return;
+        }
+        token.use(value, byAttr<HTMLInputElement>('token-remember').checked);
+        onToken();
+    });
+}
+
+/** The line above the form while a token is held in `token` mode, with "Forget". */
+function mountTokenLine(): void {
+    const line = byAttr<HTMLElement>('token-line');
+    line.hidden = mode !== 'token' || token.value === null;
+    if (line.hidden) return;
+    setText(
+        'token-line-text',
+        t(token.remembered ? 'create.token.stored' : 'create.token.pageOnly'),
+    );
+    byAttr<HTMLButtonElement>('token-forget').addEventListener('click', () => {
+        token.forget();
+        showCreate(captureDraft());
+    });
+}
+
+/** The editor: empty, or with `draft` as it was submitted. */
+function showEdit(draft: Draft | null, notice: string | null = null): void {
     endEditSession();
     editSession = new AbortController();
     const { signal } = editSession;
     showTemplate('tmpl-edit', 'data-create-root');
+    showNotice(notice);
+    mountTokenLine();
 
-    items = [newItem('plain')];
-    activeId = items[0]!.id;
+    items = draft ? draft.items : [newItem('plain')];
+    activeId = draft ? draft.activeId : items[0]!.id;
+    if (draft) restoreFields(draft);
     addMenuOpen = false;
     moreOpen = false;
     overflow = [];
@@ -436,22 +542,17 @@ function showEdit(): void {
         passwordField.removeAttribute('aria-invalid');
         // Encrypted with the items; the server never sees it.
         const title = byId<HTMLInputElement>('create-title').value.trim() || null;
+        const draft = captureDraft();
 
-        showEncrypting();
-
+        let paste: Paste;
         try {
-            const { shareUrl, deleteUrl } = await encryptAndShare(
-                itemData,
-                expirySecs,
-                burn,
-                password || null,
-                title,
-            );
-            showDone(shareUrl, deleteUrl);
+            paste = assemblePaste(itemData, expirySecs, burn, password || null, title);
         } catch (err) {
             console.error(err);
-            showError(apiErrorText(err));
+            showError(apiErrorText(err), draft);
+            return;
         }
+        await publish(paste, draft);
     });
 
     render();
@@ -804,21 +905,55 @@ function showDone(shareUrl: string, deleteUrl: string): void {
     }
 }
 
-function showError(message: string): void {
+/** A failed create; "Back to editing" brings back `draft` as it was submitted. */
+function showError(message: string, draft: Draft): void {
     showTemplate('tmpl-error', 'data-create-root');
     setText('error-message', message);
-    byAttr('retry-btn').addEventListener('click', showEdit);
+    byAttr('retry-btn').addEventListener('click', () => showEdit(draft));
+}
+
+/**
+ * The creation token was refused (and is forgotten). A new one sends the same
+ * sealed `paste` again: no new encryption, the same id (idempotent, ADR-011).
+ */
+function showTokenRefused(paste: Paste, draft: Draft): void {
+    showError(t('create.token.refused'), draft);
+    mountTokenForm('create.token.create', () => void publish(paste, draft));
 }
 
 // --- crypto flow -------------------------------------------------------------
 
-async function encryptAndShare(
+/**
+ * Seals `paste` (once; a sealed one is sent as it is) and creates it, with the
+ * creation token as the bearer in `token` mode.
+ */
+async function publish(paste: Paste, draft: Draft): Promise<void> {
+    showEncrypting();
+    const creationToken = mode === 'token' ? (token.value ?? undefined) : undefined;
+    try {
+        const { shareUrl, deleteUrl } = await paste.publish(
+            new PasteApi('', { creationToken }),
+            window.location.origin,
+        );
+        showDone(shareUrl, deleteUrl);
+    } catch (err) {
+        console.error(err);
+        if (mode === 'token' && isTokenRefused(err)) {
+            token.forget();
+            showTokenRefused(paste, draft);
+        } else {
+            showError(apiErrorText(err), draft);
+        }
+    }
+}
+
+function assemblePaste(
     itemData: ItemData[],
     expirySecs: number | null,
     burn: boolean,
     password: string | null,
     title: string | null,
-): Promise<{ shareUrl: string; deleteUrl: string }> {
+): Paste {
     const paste = new Paste({ title, password, expiresIn: expirySecs, burnAfterRetrieval: burn });
 
     // One capsule item per input, in the order the creator arranged them.
@@ -847,10 +982,24 @@ async function encryptAndShare(
         });
     }
 
-    return paste.publish(new PasteApi(''), window.location.origin);
+    return paste;
 }
 
 // --- boot --------------------------------------------------------------------
 
+// The invitation's fragment leaves the address before anything is rendered.
+const invitation = takeInvitation();
+const mode = creationMode();
+const token = new CreationToken();
 const shell = initShell();
-showEdit();
+
+/** An invitation link is used in `token` mode only; elsewhere it is just removed. */
+function acceptInvitation(): string | null {
+    if (mode !== 'token' || invitation.kind === 'none') return null;
+    if (invitation.kind === 'invalid') return t('create.token.invitationInvalid');
+    token.use(invitation.token, true);
+    // Storage that throws holds it for this page only; the token line says so.
+    return token.remembered ? t('create.token.accepted') : null;
+}
+
+showCreate(null, acceptInvitation());

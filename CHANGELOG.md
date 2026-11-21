@@ -78,7 +78,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   report endpoint whether reports are enabled, before reading the body. Describe, retrieve and
   delete accept at most 4 KiB, reports 32 KiB.
 - Subcommands `serve`, `check`, `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`,
-  `reports` and `moderation`.
+  `reports` and `moderation`. With `server.public_url` set (`--config` or the environment), `token`
+  also prints an invitation link `<public_url>/#token=<token>` after the token and hash; a
+  `public_url` that breaks a rule leaves the link out with a note on stderr.
 - Database files are owner-only from the first byte: the server creates a missing database `0600`
   whatever the umask (its `-wal`/`-shm` follow), and `serve` and `check` warn about existing
   database files other users can access, without changing them.
@@ -100,8 +102,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
   page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
   without one the default language's text is shown, marked with its `lang`. The built-in privacy
-  notice names moderation (reason and time, removal after a report) and says that an expired
-  capsule is removed by the next clean-up.
+  notice names moderation (reason and time, removal after a report), the creation token a browser
+  may store (`capsulebin.creation_token`), and says that an expired capsule is removed by the next
+  clean-up.
 - Operator branding (`[branding]`, [ADR-017](docs/adr/ADR-017-operator-branding.md)): the instance
   name, a slogan (per language with `[branding.<lang>]`), a header logo with an optional dark-theme
   variant and a favicon, without a rebuild. Logos and favicon are PNG, WebP or ICO files checked at
@@ -114,6 +117,14 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 ### Web client
 
 - Creation and view pages with item tabs, a sticky tab bar and an overflow menu, plus a capsule title.
+- Creating capsules with a creation token
+  ([ADR-018](docs/adr/ADR-018-creation-token-in-the-browser.md)): the server puts `creation.mode`
+  into the create page, so in `token` mode the page asks for a token before the editor appears and
+  in `disabled` mode says that no new capsules are accepted. The token comes from a field or an
+  invitation link (`#token=…`, removed from the address at once), is remembered in the browser
+  unless "Remember in this browser" is unchecked, can be forgotten, and is sent only as the bearer
+  of the create request. A refused token is forgotten and another one sends the same encrypted
+  capsule again. "Back to editing" after a failed create brings the draft back as it was submitted.
 - Markdown (sanitized) and code (highlight.js) rendering; copy, download and source view per item.
 - A wrong password keeps the password prompt open. Its message does not claim more than the server
   says - a wrong password and a capsule that went away look alike - and too many attempts show

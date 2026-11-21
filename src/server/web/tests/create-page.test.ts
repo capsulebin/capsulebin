@@ -14,6 +14,7 @@ import {
     type PublicHeader,
 } from '@capsulebin/core';
 import { createFakeServer, type FakeServer } from '../../../core/tests/fake-server';
+import { CREATION_TOKEN_KEY, type CreationMode } from '../src/creation-token';
 import de from '../src/i18n/de.json';
 import en from '../src/i18n/en.json';
 import { servedShell, setPageLanguage } from './page-language';
@@ -41,9 +42,14 @@ function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
     document.querySelector<HTMLButtonElement>(`[data-add-type="${kind}"]`)!.click();
 }
 
-async function loadPage(lang: 'en' | 'de' = 'en'): Promise<void> {
+async function loadPage(lang: 'en' | 'de' = 'en', mode: CreationMode = 'public'): Promise<void> {
+    const shell = servedShell('index', lang).replace(
+        '<meta name="capsulebin-creation" content="public"',
+        `<meta name="capsulebin-creation" content="${mode}"`,
+    );
+    expect(shell).toContain(`<meta name="capsulebin-creation" content="${mode}"`);
     document.documentElement.innerHTML = new DOMParser().parseFromString(
-        servedShell('index', lang),
+        shell,
         'text/html',
     ).documentElement.innerHTML;
     vi.resetModules();
@@ -460,4 +466,452 @@ describe('create page password', () => {
         expect(creates()).toBe(1);
         expect(await opensWith(share, 'correct horse')).toBe(true);
     }, 30_000);
+});
+
+describe('create page creation modes', () => {
+    const TOKEN = 'good-token_123';
+    let server: FakeServer;
+
+    beforeEach(() => {
+        server = createFakeServer(window.location.origin);
+        server.creationToken = TOKEN;
+        vi.stubGlobal('fetch', server.fetch);
+    });
+
+    afterEach(() => {
+        localStorage.clear();
+        history.replaceState(null, '', '/');
+    });
+
+    function query<T extends HTMLElement>(attr: string): T | null {
+        return document.querySelector<T>(`[data-${attr}]`);
+    }
+
+    function field<T extends HTMLElement>(id: string): T {
+        return document.getElementById(id) as T;
+    }
+
+    function enterToken(value: string, remember = true): void {
+        el<HTMLInputElement>('token-input').value = value;
+        el<HTMLInputElement>('token-remember').checked = remember;
+        el<HTMLFormElement>('token-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+    }
+
+    function submit(): void {
+        el<HTMLFormElement>('create-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+    }
+
+    function creates(): FakeServer['requests'] {
+        return server.requests.filter(
+            (r) => r.method === 'POST' && r.url.endsWith('/api/v1/pastes'),
+        );
+    }
+
+    function stored(): string | null {
+        return localStorage.getItem(CREATION_TOKEN_KEY);
+    }
+
+    async function done(): Promise<string> {
+        await vi.waitFor(() => expect(field('share-link')).not.toBeNull(), { timeout: 15_000 });
+        return field<HTMLInputElement>('share-link').value;
+    }
+
+    async function failed(): Promise<string> {
+        await vi.waitFor(() => expect(query('error-message')).not.toBeNull(), {
+            timeout: 15_000,
+        });
+        return el('error-message').textContent!;
+    }
+
+    describe('token mode without a token', () => {
+        beforeEach(async () => {
+            await loadPage('en', 'token');
+        });
+
+        it('shows the notice and the token field instead of the editor', () => {
+            expect(query('create-form')).toBeNull();
+            expect(document.body.textContent).toContain(en['create.token.required']);
+            expect(el<HTMLInputElement>('token-input')).not.toBeNull();
+            expect(el<HTMLInputElement>('token-remember').checked).toBe(true);
+            expect(el('token-error').hidden).toBe(true);
+        });
+
+        it.each([
+            ['empty', ''],
+            ['blank', '   '],
+            ['with a space', 'ab cd'],
+            ['too long', 'x'.repeat(1025)],
+            ['non-ASCII', 'tök'],
+        ])('refuses a token that is %s inline and does not use it', (_case, value) => {
+            enterToken(value);
+            expect(query('create-form')).toBeNull();
+            expect(el('token-error').hidden).toBe(false);
+            expect(el('token-error').textContent).toBe(en['create.token.invalid']);
+            expect(el('token-input').getAttribute('aria-invalid')).toBe('true');
+            expect(stored()).toBeNull();
+        });
+
+        // AC5: the upper bound itself is a usable token.
+        it('accepts a token of exactly 1024 visible ASCII characters', async () => {
+            const long = '~'.repeat(1024);
+            server.creationToken = long;
+            enterToken(long);
+            expect(query('token-input')).toBeNull();
+            expect(query('create-form')).not.toBeNull();
+            expect(stored()).toBe(long);
+            type('long token');
+            submit();
+            await done();
+            expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${long}`);
+        });
+
+        it('shows the editor and the stored line for a token, trimmed', () => {
+            enterToken(`  ${TOKEN} `);
+            expect(query('create-form')).not.toBeNull();
+            expect(query('token-input')).toBeNull();
+            expect(el('token-line').hidden).toBe(false);
+            expect(el('token-line-text').textContent).toBe(en['create.token.stored']);
+            expect(stored()).toBe(TOKEN);
+        });
+
+        it('sends the token as the bearer of the create request only', async () => {
+            enterToken(TOKEN);
+            type('with token');
+            submit();
+            await done();
+            const [create] = creates();
+            expect(create!.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+            for (const request of server.requests) {
+                expect(request.url).not.toContain(TOKEN);
+                expect(request.body).not.toContain(TOKEN);
+            }
+        });
+
+        it('holds a token it should not remember for this page only', async () => {
+            enterToken(TOKEN, false);
+            expect(el('token-line-text').textContent).toBe(en['create.token.pageOnly']);
+            type('page only');
+            submit();
+            await done();
+            expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+            expect(stored()).toBeNull();
+
+            await loadPage('en', 'token');
+            expect(query('create-form')).toBeNull();
+            expect(query('token-input')).not.toBeNull();
+        });
+    });
+
+    it('asks for the token in German', async () => {
+        await loadPage('de', 'token');
+        const main = document.querySelector('main')!.textContent!;
+        expect(main).toContain(de['create.token.required']);
+        expect(main).toContain(de['create.token.label']);
+        expect(main).toContain(de['create.token.remember']);
+        expect(el('token-submit').textContent).toBe(de['create.token.continue']);
+        enterToken('x y');
+        expect(el('token-error').textContent).toBe(de['create.token.invalid']);
+        enterToken(TOKEN);
+        expect(el('token-line-text').textContent).toBe(de['create.token.stored']);
+        expect(el('token-forget').textContent!.trim()).toBe(de['create.token.forget']);
+    });
+
+    it('opens with the editor for a stored token, and forgets it', async () => {
+        localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+        await loadPage('en', 'token');
+        expect(query('create-form')).not.toBeNull();
+        expect(el('token-line-text').textContent).toBe(en['create.token.stored']);
+
+        type('kept draft');
+        el<HTMLButtonElement>('token-forget').click();
+        expect(stored()).toBeNull();
+        expect(query('create-form')).toBeNull();
+        expect(query('token-input')).not.toBeNull();
+
+        enterToken(TOKEN, false);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('kept draft');
+        el<HTMLButtonElement>('token-forget').click();
+        expect(query('token-input')).not.toBeNull();
+        expect(stored()).toBeNull();
+    });
+
+    describe('when localStorage throws', () => {
+        const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+
+        afterEach(() => {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        });
+
+        it('still creates with a token for this page', async () => {
+            Object.defineProperty(window, 'localStorage', {
+                configurable: true,
+                get() {
+                    throw new DOMException('blocked', 'SecurityError');
+                },
+            });
+            await loadPage('en', 'token');
+            enterToken(TOKEN);
+            expect(el('token-line-text').textContent).toBe(en['create.token.pageOnly']);
+            type('no storage');
+            submit();
+            await done();
+            expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        });
+
+        it('uses an invitation for this page only, without the stored confirmation', async () => {
+            history.replaceState(null, '', `/#token=${TOKEN}`);
+            Object.defineProperty(window, 'localStorage', {
+                configurable: true,
+                get() {
+                    throw new DOMException('blocked', 'SecurityError');
+                },
+            });
+            await loadPage('en', 'token');
+            expect(location.hash).toBe('');
+            expect(query('create-form')).not.toBeNull();
+            expect(el('token-line-text').textContent).toBe(en['create.token.pageOnly']);
+            expect(el('token-notice').hidden).toBe(true);
+            expect(document.body.textContent).not.toContain(en['create.token.accepted']);
+            type('invited, no storage');
+            submit();
+            await done();
+            expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+        });
+    });
+
+    describe('public mode', () => {
+        it('shows no token UI and sends no Authorization header, even with a stored token', async () => {
+            server.creationToken = null;
+            localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+            await loadPage('en', 'public');
+            expect(el('token-line').hidden).toBe(true);
+            expect(query('token-input')).toBeNull();
+            type('public');
+            submit();
+            await done();
+            expect(creates()[0]!.headers.has('Authorization')).toBe(false);
+        });
+    });
+
+    describe('disabled mode', () => {
+        it('shows only the notice, no form and no token field', async () => {
+            await loadPage('en', 'disabled');
+            expect(query('create-form')).toBeNull();
+            expect(query('token-input')).toBeNull();
+            expect(query('token-form')).toBeNull();
+            expect(document.querySelector('main')!.textContent).toContain(
+                en['create.disabled.text'],
+            );
+        });
+
+        it('in German too', async () => {
+            await loadPage('de', 'disabled');
+            expect(document.querySelector('main')!.textContent).toContain(
+                de['create.disabled.text'],
+            );
+        });
+    });
+
+    describe('invitation link', () => {
+        it.each(['en', 'de'] as const)(
+            'stores the token, leaves the address and confirms (%s)',
+            async (lang) => {
+                const path = lang === 'en' ? '/' : '/de/';
+                history.replaceState(null, '', `${path}#token=${TOKEN}`);
+                const length = history.length;
+                await loadPage(lang, 'token');
+                expect(location.hash).toBe('');
+                expect(location.href).toBe(`${location.origin}${path}`);
+                expect(history.length).toBe(length);
+                expect(stored()).toBe(TOKEN);
+                expect(el('token-notice').hidden).toBe(false);
+                expect(el('token-notice').textContent).toBe(
+                    { en, de }[lang]['create.token.accepted'],
+                );
+                expect(query('create-form')).not.toBeNull();
+            },
+        );
+
+        it('stores nothing for an unusable value and says so', async () => {
+            history.replaceState(null, '', `/#token=${'x'.repeat(1025)}`);
+            await loadPage('en', 'token');
+            expect(location.hash).toBe('');
+            expect(stored()).toBeNull();
+            expect(el('token-notice').textContent).toBe(en['create.token.invitationInvalid']);
+            expect(query('create-form')).toBeNull();
+            expect(query('token-input')).not.toBeNull();
+        });
+
+        it('leaves any other fragment alone', async () => {
+            history.replaceState(null, '', '/#section');
+            await loadPage('en', 'token');
+            expect(location.hash).toBe('#section');
+            expect(el('token-notice').hidden).toBe(true);
+        });
+
+        it.each(['public', 'disabled'] as const)(
+            'is removed and stores nothing in %s mode',
+            async (mode) => {
+                history.replaceState(null, '', `/#token=${TOKEN}`);
+                await loadPage('en', mode);
+                expect(location.hash).toBe('');
+                expect(stored()).toBeNull();
+                expect(document.querySelector('[data-token-notice]:not([hidden])')).toBeNull();
+            },
+        );
+    });
+
+    /** Two items (text and code), the first active, title, expiry, burn and password. */
+    function writeDraft(): void {
+        type('first item');
+        add('code');
+        type('fn main() {}');
+        const lang = el<HTMLSelectElement>('item-lang');
+        lang.value = 'rust';
+        lang.dispatchEvent(new Event('change'));
+        document.querySelector<HTMLElement>('[role="tab"]')!.click();
+        field<HTMLInputElement>('create-title').value = 'Draft title';
+        field<HTMLSelectElement>('create-expiry').value = '3600';
+        field<HTMLInputElement>('create-burn').checked = true;
+        field<HTMLInputElement>('create-password').value = 'pass phrase';
+    }
+
+    /** The draft of {@link writeDraft}, after the items in `more`. */
+    function expectDraft(...more: string[]): void {
+        expect(tabs()).toEqual(['text.txt *', 'snippet.rs', ...more]);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('first item');
+        expect(field<HTMLInputElement>('create-title').value).toBe('Draft title');
+        expect(field<HTMLSelectElement>('create-expiry').value).toBe('3600');
+        expect(field<HTMLInputElement>('create-burn').checked).toBe(true);
+        expect(field<HTMLInputElement>('create-password').value).toBe('pass phrase');
+        document.querySelectorAll<HTMLElement>('[role="tab"]')[1]!.click();
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('fn main() {}');
+        expect(el<HTMLSelectElement>('item-type').value).toBe('code');
+        expect(el<HTMLSelectElement>('item-lang').value).toBe('rust');
+    }
+
+    it('asks again for a refused token and sends the same sealed capsule', async () => {
+        localStorage.setItem(CREATION_TOKEN_KEY, 'wrong-token');
+        await loadPage('en', 'token');
+        writeDraft();
+        submit();
+
+        expect(await failed()).toBe(en['create.token.refused']);
+        expect(stored()).toBeNull();
+        expect(el<HTMLInputElement>('token-remember').checked).toBe(true);
+        expect(el('token-submit').textContent).toBe(en['create.token.create']);
+
+        enterToken('still-wrong');
+        expect(await failed()).toBe(en['create.token.refused']);
+        expect(query('token-input')).not.toBeNull();
+
+        enterToken(TOKEN);
+        const share = await done();
+        const bodies = creates().map((r) => r.body);
+        expect(bodies).toHaveLength(3);
+        // No new encryption: the same request, the same id.
+        expect(new Set(bodies).size).toBe(1);
+        expect(parseLink(share, 'share').id).toBe(JSON.parse(bodies[0]!).id);
+        expect(creates().map((r) => r.headers.get('Authorization'))).toEqual([
+            'Bearer wrong-token',
+            'Bearer still-wrong',
+            `Bearer ${TOKEN}`,
+        ]);
+        expect(stored()).toBe(TOKEN);
+    }, 60_000);
+
+    describe('"Back to editing"', () => {
+        function problem(status: number, code: string): Response {
+            return new Response(JSON.stringify({ title: code, status, code }), {
+                status,
+                headers: { 'Content-Type': 'application/problem+json' },
+            });
+        }
+
+        it.each([
+            ['401', () => Promise.resolve(problem(401, 'unauthorized'))],
+            ['413', () => Promise.resolve(problem(413, 'payload_too_large'))],
+            ['429', () => Promise.resolve(problem(429, 'rate_limited'))],
+            ['a network error', () => Promise.reject(new TypeError('Failed to fetch'))],
+        ])(
+            'restores the draft as submitted after %s',
+            async (_case, answer) => {
+                localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+                await loadPage('en', 'token');
+                vi.stubGlobal('fetch', answer);
+                writeDraft();
+                const file = new File([new Uint8Array([1, 2, 3])], 'data.bin');
+                const input = el<HTMLInputElement>('item-file');
+                Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+                input.dispatchEvent(new Event('change'));
+                await vi.waitFor(() => expect(tabs()).toHaveLength(3));
+                await vi.waitFor(() => expect(el('item-drop-label').textContent).toContain('3 B'));
+                document.querySelector<HTMLElement>('[role="tab"]')!.click();
+                submit();
+
+                await failed();
+                el<HTMLButtonElement>('retry-btn').click();
+                expect(query('create-form')).not.toBeNull();
+                expect(tabs()).toEqual(['text.txt *', 'snippet.rs', 'data.bin']);
+                document.querySelectorAll<HTMLElement>('[role="tab"]')[2]!.click();
+                expect(el<HTMLSelectElement>('item-type').value).toBe('download');
+                expect(el('item-drop-label').textContent).toBe('data.bin (3 B)');
+                document.querySelector<HTMLElement>('[role="tab"]')!.click();
+                expectDraft('data.bin');
+            },
+            30_000,
+        );
+
+        // AC10: "any error" includes public mode, and edited item names survive.
+        it('restores renamed items in public mode after a 413', async () => {
+            await loadPage('en', 'public');
+            vi.stubGlobal('fetch', () => Promise.resolve(problem(413, 'payload_too_large')));
+            type('alpha');
+            const name = el<HTMLInputElement>('item-name');
+            name.value = 'notes.md';
+            name.dispatchEvent(new Event('input'));
+            add('plain');
+            type('beta');
+            field<HTMLInputElement>('create-title').value = 'Public draft';
+            submit();
+
+            await failed();
+            el<HTMLButtonElement>('retry-btn').click();
+            expect(query('create-form')).not.toBeNull();
+            expect(tabs()).toHaveLength(2);
+            expect(tabs()[0]).toBe('notes.md');
+            expect(tabs()[1]).toMatch(/ \*$/);
+            expect(el<HTMLTextAreaElement>('item-text').value).toBe('beta');
+            expect(field<HTMLInputElement>('create-title').value).toBe('Public draft');
+            document.querySelector<HTMLElement>('[role="tab"]')!.click();
+            expect(el<HTMLInputElement>('item-name').value).toBe('notes.md');
+            expect(el<HTMLTextAreaElement>('item-text').value).toBe('alpha');
+        }, 30_000);
+
+        // AC10: the active item is restored as submitted, also when it is not the first.
+        it('restores a second active item after a failed create', async () => {
+            localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+            await loadPage('en', 'token');
+            vi.stubGlobal('fetch', () => Promise.resolve(problem(429, 'rate_limited')));
+            writeDraft();
+            document.querySelectorAll<HTMLElement>('[role="tab"]')[1]!.click();
+            expect(el<HTMLTextAreaElement>('item-text').value).toBe('fn main() {}');
+            submit();
+
+            await failed();
+            el<HTMLButtonElement>('retry-btn').click();
+            expect(query('create-form')).not.toBeNull();
+            const selected = [...document.querySelectorAll<HTMLElement>('[role="tab"]')].map(
+                (tab) => tab.getAttribute('aria-selected'),
+            );
+            expect(selected).toEqual(['false', 'true']);
+            expect(el<HTMLTextAreaElement>('item-text').value).toBe('fn main() {}');
+            expect(el<HTMLSelectElement>('item-type').value).toBe('code');
+            expect(el<HTMLSelectElement>('item-lang').value).toBe('rust');
+        }, 30_000);
+    });
 });

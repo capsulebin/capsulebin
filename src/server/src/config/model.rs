@@ -154,6 +154,25 @@ impl ServerConfig {
             .public_url
             .as_deref()
             .ok_or_else(|| invalid("server.public_url is required".to_owned()))?;
+        Self::check_public_url(public_url)?;
+
+        // An entry the parser cannot read would otherwise be dropped silently,
+        // leaving the proxy untrusted and every client keyed on its address.
+        if let Some(entry) = self.trusted_proxies.iter().find(|entry| !crate::api::client_ip::is_cidr(entry)) {
+            return Err(invalid(format!(
+                "server.trusted_proxies entry {entry:?} is not an address with a prefix length \
+                 (\"127.0.0.1/32\", \"::1/128\")"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Checks `server.public_url` against the rules every link built on it
+    /// needs. Shared by [`ServerConfig::validate`] and `capsulebin token`, which
+    /// prints an invitation link on it without validating anything else.
+    pub fn check_public_url(public_url: &str) -> Result<(), ConfigError> {
+        let invalid = |message: String| ConfigError::Invalid(message);
 
         // No message below repeats the value: a share or management link pasted
         // here by mistake would put its paste id and link secret into stderr and
@@ -201,15 +220,6 @@ impl ServerConfig {
         // A trailing slash would produce "//problems/..." in problem type URIs.
         if public_url.ends_with('/') {
             return Err(invalid("server.public_url must not end with a slash".to_owned()));
-        }
-
-        // An entry the parser cannot read would otherwise be dropped silently,
-        // leaving the proxy untrusted and every client keyed on its address.
-        if let Some(entry) = self.trusted_proxies.iter().find(|entry| !crate::api::client_ip::is_cidr(entry)) {
-            return Err(invalid(format!(
-                "server.trusted_proxies entry {entry:?} is not an address with a prefix length \
-                 (\"127.0.0.1/32\", \"::1/128\")"
-            )));
         }
 
         Ok(())
@@ -508,6 +518,17 @@ pub enum CreationMode {
     Token,
     /// Anyone may create. Only sensible behind another access control.
     Public,
+}
+
+impl CreationMode {
+    /// The mode as it is configured (`serde(rename_all = "lowercase")`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Token => "token",
+            Self::Public => "public",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

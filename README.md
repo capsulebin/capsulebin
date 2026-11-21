@@ -27,6 +27,8 @@ What 1.0 contains:
 - **Lifecycle:** expiry, burn after first retrieval (enforced server-side, race-free), password
   protection, deletion through an independent management link, idempotent create for safe retries.
 - **Rendering:** Markdown and syntax-highlighted code, sanitized and under a strict CSP.
+- **Creation modes:** `token` (default), `public` or `disabled`. In `token` mode the create page
+  takes a creation token from a field or an invitation link and remembers it in the browser.
 - **Command line client** (`put` / `get` / `delete`) sharing the browser's crypto implementation.
 - **Operations:** a single binary with embedded assets and migrations, SQLite, retention policy and
   scheduled purge, rate limiting, backup and restore, health endpoints.
@@ -285,7 +287,7 @@ node src/cli/dist/cli.js delete --link-file notes.link
 | `healthcheck` | Probe the running server's `/health/ready` (`--live`: `/health/live`); exit 0 if healthy. Needs only the address (`server.bind` or `--address`), validates nothing else. For container health checks |
 | `migrate` | Apply pending migrations and exit |
 | `prune` | Apply the retention policy (capsules, closed reports, moderation records) once and exit |
-| `token` | Generate a creation token and the hash to configure for it |
+| `token` | Generate a creation token and the hash to configure for it; with `server.public_url` set (`--config` or `CAPSULEBIN__SERVER__PUBLIC_URL`) also an invitation link `<public_url>/#token=<token>` for the create page |
 | `backup --output FILE` | Consistent, compacted snapshot of the live database (owner-only file) |
 | `restore --input FILE` | Verify and migrate a private copy of a backup, then put it in place of the database (server stopped; `--force` keeps the old one aside, `--dry-run` changes nothing) |
 | `reports list\|show\|review\|close` | Work through the abuse report queue |
@@ -366,6 +368,18 @@ knowing before editing one:
   partially keeps the defaults for its other fields.
 
 Run `capsulebin --config … check` to validate a file before deploying it.
+
+### Creation tokens
+
+`creation.mode` is `token` by default: creating a capsule needs a token whose hash is listed in
+`creation.token_hashes`. `capsulebin token` generates one; the CLI sends it from `--token-file` or
+`CAPSULEBIN_TOKEN`. The create page knows the mode from the page itself: in `token` mode it asks
+for a token before showing the editor and remembers it in the browser unless "Remember in this
+browser" is unchecked ("Forget" removes it); in `disabled` mode it says that no new capsules are
+accepted. An invitation link `<public_url>/#token=<token>` stores the token in the browser that
+opens it, the token staying in the fragment the browser never sends. See
+[Creating capsules in the browser](docs/operations.md#creating-capsules-in-the-browser) and
+[ADR-018](docs/adr/ADR-018-creation-token-in-the-browser.md).
 
 ### Legal pages
 
@@ -517,8 +531,9 @@ every response including the 404. With `CAPSULEBIN_CLI` set (as in CI) it also d
 CLI through `put`, `get` and `delete` against the binary. The browser tests in
 `src/server/web/e2e` (Playwright) run the embedded web client against the same binary in Chromium,
 Firefox and WebKit: create, open with a password, every item kind, delete, burn and report, plus
-hostile Markdown, the legal pages, the German interface and language switch, and a branded
-instance. Any CSP or Trusted Types violation, page error or executed XSS canary fails a
+hostile Markdown, the legal pages, the German interface and language switch, a branded
+instance, and the create page in `token` and `disabled` mode (token field, invitation links,
+remember and forget, a refused token). Any CSP or Trusted Types violation, page error or executed XSS canary fails a
 test — jsdom, which the unit tests use, enforces neither.
 
 ```sh

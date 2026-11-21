@@ -20,7 +20,7 @@ jurisdiction, and the operator stays responsible for what their instance publish
 | Capsules | The stored data, the legal basis, when a capsule is deleted, and that afterwards only its identifier is kept so it is never used for another capsule | `pastes.maximum_expiry`, `pastes.allow_permanent`, `purge.*` |
 | IP addresses and server logs | Whether the client address is processed in memory for rate limits; what the log contains | `rate_limits.*` |
 | Reports | What a report stores, the legal basis, how long it is kept | `abuse.enabled`, `abuse.report_retention` |
-| Cookies and third parties | No cookies; the theme and language choice in local storage; no third-party requests | Fixed by the software |
+| Cookies and third parties | No cookies; the theme and language choice in local storage, and a creation token once one is entered or an invitation link opened; no third-party requests | Fixed by the software |
 | Your rights | Data subject rights; how to find a capsule by its id without sending the key | Fixed by the software |
 
 ## What the operator has to add
@@ -71,6 +71,9 @@ The server's own log contains the request method, the path with ids replaced by 
 status and the latency - no IP addresses, capsule ids, tokens, bodies or report text.
 
 In the browser there are no cookies; the only stored values are the colour theme and the interface
-language, in `localStorage` (`capsulebin.theme`, `capsulebin.language`). Pages load nothing from
-third parties, and images referenced in Markdown are shown as links. Every page sends
-`Referrer-Policy: no-referrer`.
+language, in `localStorage` (`capsulebin.theme`, `capsulebin.language`), and on an instance in
+`token` mode the creation token (`capsulebin.creation_token`): stored only after the user opens an
+invitation link or enters a token with "Remember in this browser" checked, sent to the server only
+as the bearer of a create request, removed by "Forget" on the create page or when the server
+refuses it. Pages load nothing from third parties, and images referenced in Markdown are shown as
+links. Every page sends `Referrer-Policy: no-referrer`.

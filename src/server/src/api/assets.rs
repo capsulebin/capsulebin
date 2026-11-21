@@ -34,7 +34,7 @@ use axum::{
 use crate::AppState;
 use crate::api::access_log::ServedAsset;
 use crate::branding::{Branding, Tagline};
-use crate::config::{KNOWN_LANGUAGES, language_prefix};
+use crate::config::{CreationMode, KNOWN_LANGUAGES, language_prefix};
 use crate::legal::{LegalPages, Which, escape};
 
 /// Start of the footer marker of one legal link in every HTML shell:
@@ -68,6 +68,10 @@ pub const NAME_TOKEN: &str = "%%capsulebin:name%%";
 pub const FAVICON_TOKEN: &str = "%%capsulebin:favicon%%";
 /// The `href` of the attribution link: the escaped `branding.source_url`.
 pub const SOURCE_TOKEN: &str = "%%capsulebin:source%%";
+/// The `content` of the create shell's `<meta name="capsulebin-creation">`:
+/// the instance's `creation.mode` (`public`, `token` or `disabled`), so the
+/// page knows before anything is written whether a token is needed.
+pub const CREATION_TOKEN: &str = "%%capsulebin:creation%%";
 /// Where the server puts the operator's tagline in place of the built-in
 /// slogan: never written by the web build, only by [`with_branding_regions`],
 /// so that the text is filled in the one token pass like the name.
@@ -266,7 +270,14 @@ impl Document {
             return Self::Missing(file);
         };
         let shell = String::from_utf8_lossy(&bytes);
-        let mut document = render(&shell, legal, language, state.default_language, &state.branding);
+        let mut document = render(
+            &shell,
+            legal,
+            language,
+            state.default_language,
+            &state.branding,
+            state.creation_mode,
+        );
         // After the tokens, so that the operator's text is put in as it is.
         if let Some((which, page)) = legal_page {
             // Read before `render` replaced the footer markers; already escaped.
@@ -292,17 +303,17 @@ impl IntoResponse for Document {
 /// Fills in what a shell of `language` leaves to the server: the link to the
 /// colours' stylesheet, the logo, wordmark and tagline regions of the header,
 /// the tokens (prefix of its internal links, default language, name, tagline,
-/// favicon, source link) and the legal links. All fixed at startup and the
-/// same for every request, so the shell does not depend on the path id. The
-/// shells are UTF-8; a lossy conversion only matters for a broken build,
-/// which `/health/ready` reports.
+/// favicon, source link, creation mode) and the legal links. All fixed at
+/// startup and the same for every request, so the shell does not depend on the
+/// path id. The shells are UTF-8; a lossy conversion only matters for a broken
+/// build, which `/health/ready` reports.
 ///
 /// Operator values are never read as markup of the shell: the tokens are
 /// filled in one pass, so a value is not searched for tokens again, and every
 /// operator value is escaped, so it holds no `<` and cannot form a marker.
 /// The legal links (and the legal page in [`Document::build`]) come after the
 /// tokens, so their operator text is not searched for tokens either.
-fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding) -> String {
+fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding, creation: CreationMode) -> String {
     // First, so that it lands in the head of the shell, before anything of
     // the operator is put in.
     let shell = with_stylesheet(shell, branding);
@@ -317,6 +328,7 @@ fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &st
             (TAGLINE_TOKEN, &tagline),
             (FAVICON_TOKEN, &escape(favicon)),
             (SOURCE_TOKEN, &escape(&branding.source_url)),
+            (CREATION_TOKEN, creation.as_str()),
         ],
     );
     Which::ALL
@@ -608,7 +620,7 @@ mod tests {
                      <!--capsulebin:legal-link:privacy:Datenschutz-->\
                      <!--capsulebin:legal-link:terms:Nutzungs&amp;bedingungen--></footer>";
         assert_eq!(
-            render(shell, &legal, "de", "en", &default_branding()),
+            render(shell, &legal, "de", "en", &default_branding(), CreationMode::Token),
             r#"<footer><a href="/de/imprint">Impressum</a><a href="https://operator.example/terms?a=1&amp;b=2">Nutzungs&amp;bedingungen</a></footer>"#
         );
     }
@@ -624,7 +636,7 @@ mod tests {
             ..LegalPages::default()
         };
         for shell in ["<footer></footer>", "<footer><!--capsulebin:legal-link:imprint:Imprint</footer>"] {
-            assert_eq!(render(shell, &legal, "de", "en", &default_branding()), shell);
+            assert_eq!(render(shell, &legal, "de", "en", &default_branding(), CreationMode::Token), shell);
         }
     }
 
@@ -632,7 +644,7 @@ mod tests {
     fn the_tokens_follow_the_default_language() {
         let shell = r#"<meta data-default="%%capsulebin:default%%"><a href="%%capsulebin:prefix%%/"></a><a href="%%capsulebin:prefix%%/report"></a>"#;
         let branding = default_branding();
-        let render = |language, default| render(shell, &LegalPages::default(), language, default, &branding);
+        let render = |language, default| render(shell, &LegalPages::default(), language, default, &branding, CreationMode::Token);
 
         let unprefixed = |default| format!(r#"<meta data-default="{default}"><a href="/"></a><a href="/report"></a>"#);
         assert_eq!(render("en", "en"), unprefixed("en"));
@@ -677,7 +689,7 @@ mod tests {
             },
             ..LegalPages::default()
         };
-        render(&branded_shell(), &legal, "de", "en", branding)
+        render(&branded_shell(), &legal, "de", "en", branding, CreationMode::Token)
     }
 
     #[test]
@@ -729,6 +741,49 @@ mod tests {
         );
     }
 
+    /// The create shell's meta as the web build writes it.
+    const CREATION_META: &str = r#"<meta name="capsulebin-creation" content="%%capsulebin:creation%%">"#;
+
+    #[test]
+    fn the_creation_token_names_the_configured_mode() {
+        for (mode, value) in [
+            (CreationMode::Public, "public"),
+            (CreationMode::Token, "token"),
+            (CreationMode::Disabled, "disabled"),
+        ] {
+            for language in KNOWN_LANGUAGES {
+                assert_eq!(
+                    render(CREATION_META, &LegalPages::default(), language, "en", &default_branding(), mode),
+                    format!(r#"<meta name="capsulebin-creation" content="{value}">"#),
+                    "{language}"
+                );
+            }
+        }
+    }
+
+    /// A name or tagline that holds the creation token stays literal: the token
+    /// is filled in the same single pass, which never rescans an inserted value.
+    #[test]
+    fn the_creation_token_in_operator_values_stays_literal() {
+        let branding = Branding {
+            name: "<%%capsulebin:creation%%>".to_owned(),
+            taglines: KNOWN_LANGUAGES
+                .iter()
+                .map(|&language| (language, Tagline::Text("& %%capsulebin:creation%%".to_owned())))
+                .collect(),
+            ..default_branding()
+        };
+        let shell = format!(
+            "{CREATION_META}<title>%%capsulebin:name%%</title>\
+             <!--capsulebin:tagline--><span class=\"cb-claim\">Paste it.</span><!--/capsulebin:tagline-->"
+        );
+        assert_eq!(
+            render(&shell, &LegalPages::default(), "de", "en", &branding, CreationMode::Disabled),
+            "<meta name=\"capsulebin-creation\" content=\"disabled\"><title>&lt;%%capsulebin:creation%%&gt;</title>\
+             <span class=\"cb-claim\">&amp; %%capsulebin:creation%%</span>"
+        );
+    }
+
     #[test]
     fn a_logo_replaces_the_symbol_and_keeps_the_name() {
         let branding = Branding {
@@ -775,7 +830,7 @@ mod tests {
             ..default_branding()
         };
         let shell = "<a>x</a>\n<!--capsulebin:tagline-->\n<span class=\"cb-claim\">Built-in</span>\n<!--/capsulebin:tagline-->\n<nav>";
-        let render = |branding: &Branding, language| render(shell, &LegalPages::default(), language, "en", branding);
+        let render = |branding: &Branding, language| render(shell, &LegalPages::default(), language, "en", branding, CreationMode::Token);
         assert_eq!(render(&branding, "en"), "<a>x</a>\n<span class=\"cb-claim\">Ours</span>\n<nav>");
         assert_eq!(render(&branding, "de"), "<a>x</a>\n\n<nav>");
         for language in KNOWN_LANGUAGES {
@@ -801,7 +856,7 @@ mod tests {
             stylesheet,
             ..default_branding()
         };
-        let render = |shell: &str, branding: &Branding| render(shell, &LegalPages::default(), "en", "en", branding);
+        let render = |shell: &str, branding: &Branding| render(shell, &LegalPages::default(), "en", "en", branding, CreationMode::Token);
         assert_eq!(
             render(shell, &branding),
             "<head><link rel=\"stylesheet\" href=\"/assets/a.css\">\n\
@@ -820,7 +875,10 @@ mod tests {
             ..default_branding()
         };
         let shell = "<!--capsulebin:logo--><svg></svg><!--capsulebin:wordmark-->x %%capsulebin:unknown%%";
-        assert_eq!(render(shell, &LegalPages::default(), "en", "en", &branding), shell);
+        assert_eq!(
+            render(shell, &LegalPages::default(), "en", "en", &branding, CreationMode::Token),
+            shell
+        );
     }
 
     #[test]
@@ -917,6 +975,24 @@ mod tests {
             "{}: tagline",
             path.display()
         );
+    }
+
+    /// Only the create page says how capsules are created, in its head.
+    #[test]
+    fn only_the_create_shell_source_carries_the_creation_meta() {
+        for shell in Shell::ALL {
+            let (path, source) = template(shell);
+            let head = source.split(HEAD_END).next().unwrap_or_default();
+            let expected = if shell == Shell::Create { 1 } else { 0 };
+            assert_eq!(
+                head.matches(r#"<meta name="capsulebin-creation" content="{{creation}}" />"#)
+                    .count(),
+                expected,
+                "{}",
+                path.display()
+            );
+            assert_eq!(source.matches("capsulebin-creation").count(), expected, "{}", path.display());
+        }
     }
 
     #[test]

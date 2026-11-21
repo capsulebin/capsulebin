@@ -10,6 +10,7 @@ import { KNOWN_LANGUAGES } from '@capsulebin/core';
 import { describe, expect, it } from 'vitest';
 
 import {
+    CREATION_TOKEN,
     DEFAULT_BRANDING,
     DEFAULT_TOKEN,
     FAVICON_TOKEN,
@@ -396,6 +397,25 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         ).toBeTruthy();
     });
 
+    /**
+     * The create page reads the instance's creation mode from it before anything
+     * is written; the mode is configuration, so the server fills it in. No other
+     * page carries it.
+     */
+    it('carries the creation meta with the creation token on the create page only', () => {
+        const metas = doc.querySelectorAll<HTMLMetaElement>('meta[name="capsulebin-creation"]');
+        if (shell !== 'index') {
+            expect(metas).toHaveLength(0);
+            expect(html).not.toContain('capsulebin-creation');
+            expect(html).not.toContain(CREATION_TOKEN);
+            return;
+        }
+        expect(metas).toHaveLength(1);
+        expect(metas[0]!.parentElement).toBe(doc.head);
+        expect(metas[0]!.content).toBe(CREATION_TOKEN);
+        expect(html.split(CREATION_TOKEN)).toHaveLength(2);
+    });
+
     /** Every `<a href>` of `page`, including those inside <template>s. */
     const allHrefs = (page: Document): string[] =>
         [...page.querySelectorAll('a[href]')]
@@ -434,6 +454,7 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
             .replaceAll(`data-default="${DEFAULT_TOKEN}"`, '')
             .replaceAll(NAME_TOKEN, '')
             .replaceAll(`<link rel="icon" href="${FAVICON_TOKEN}" />`, '')
+            .replaceAll(`<meta name="capsulebin-creation" content="${CREATION_TOKEN}" />`, '')
             .replaceAll(PROJECT_LINK, '');
         expect(other).not.toContain('%%');
     });
@@ -450,6 +471,10 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
                 parse(served).querySelector<HTMLMetaElement>('meta[name="capsulebin-languages"]')!
                     .dataset.default,
             ).toBe(d);
+            expect(
+                parse(served).querySelector<HTMLMetaElement>('meta[name="capsulebin-creation"]')
+                    ?.content,
+            ).toBe(shell === 'index' ? 'public' : undefined);
 
             const others = KNOWN_LANGUAGES.filter((known) => known !== lang).join('|');
             for (const href of hrefs(parse(served))) {

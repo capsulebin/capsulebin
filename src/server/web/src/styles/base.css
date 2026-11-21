@@ -551,6 +551,32 @@ body {
     margin-bottom: var(--cb-space-4);
 }
 
+/* The creation token held by the create page, above the form. */
+.cb-token-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--cb-space-2);
+    margin: 0 0 var(--cb-space-3);
+    font-size: 0.875rem;
+    color: var(--cb-text-muted);
+}
+
+/* A button that reads as a link inside a line of text. */
+.cb-btn-inline {
+    padding: 0;
+    font: inherit;
+    color: var(--cb-accent);
+    background: none;
+    border: 0;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.cb-btn-inline:hover {
+    color: var(--cb-accent-hover);
+}
+
 .cb-form-actions {
     display: flex;
     align-items: center;
