@@ -172,3 +172,53 @@ fn privacy_says_only_the_identifier_is_kept() {
         }
     }
 }
+
+/// An expired capsule stays in the database until a purge run removes it; the
+/// text must not promise deletion at the moment of expiry, and must say when
+/// the clean-up runs.
+#[test]
+fn privacy_says_an_expired_capsule_waits_for_the_clean_up() {
+    for f in every_facts() {
+        for (language, daily, manual) in [
+            (
+                "en",
+                "removed by the next daily clean-up",
+                "removed the next time we run the clean-up",
+            ),
+            (
+                "de",
+                "bei der nächsten täglichen Bereinigung entfernt",
+                "bei der nächsten von uns ausgeführten Bereinigung entfernt",
+            ),
+        ] {
+            let text = privacy(&f, language).join(None);
+            let (expected, absent) = if f.purge { (daily, manual) } else { (manual, daily) };
+            assert!(text.contains(expected), "{f:?}, {language}: {text}");
+            assert!(!text.contains(absent), "{f:?}, {language}: {text}");
+        }
+    }
+}
+
+/// Moderation keeps a reason code and a time on the row and can delete a
+/// capsule; both belong in the notice, whether or not reports are enabled.
+#[test]
+fn privacy_names_moderation() {
+    for f in every_facts() {
+        for (language, stored, deleted) in [
+            (
+                "en",
+                "whether, why and when it was blocked or removed after a report",
+                "when we remove it after a report",
+            ),
+            (
+                "de",
+                "ob, warum und wann sie nach einer Meldung",
+                "wenn wir sie nach einer Meldung entfernen",
+            ),
+        ] {
+            let text = privacy(&f, language).join(None);
+            assert!(text.contains(stored), "{f:?}, {language}: {text}");
+            assert!(text.contains(deleted), "{f:?}, {language}: {text}");
+        }
+    }
+}

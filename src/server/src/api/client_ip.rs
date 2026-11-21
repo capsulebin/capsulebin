@@ -21,6 +21,8 @@ struct TrustedCidr {
 pub struct CidrList(Arc<Vec<TrustedCidr>>);
 
 impl CidrList {
+    /// Parses `server.trusted_proxies`. Configuration validation refuses an
+    /// entry [`is_cidr`] does not accept, so none is dropped here in practice.
     pub fn parse(entries: &[String]) -> Self {
         let cidrs: Vec<TrustedCidr> = entries.iter().filter_map(|entry| parse_cidr(entry)).collect();
         Self(Arc::new(cidrs))
@@ -84,6 +86,12 @@ impl TrustedCidr {
             _ => false,
         }
     }
+}
+
+/// True if `entry` is an address with a prefix length (`127.0.0.1/32`,
+/// `10.0.0.0/8`, `::1/128`), the only form `server.trusted_proxies` accepts.
+pub fn is_cidr(entry: &str) -> bool {
+    parse_cidr(entry).is_some()
 }
 
 fn parse_cidr(entry: &str) -> Option<TrustedCidr> {

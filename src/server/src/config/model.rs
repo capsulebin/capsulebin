@@ -203,6 +203,15 @@ impl ServerConfig {
             return Err(invalid("server.public_url must not end with a slash".to_owned()));
         }
 
+        // An entry the parser cannot read would otherwise be dropped silently,
+        // leaving the proxy untrusted and every client keyed on its address.
+        if let Some(entry) = self.trusted_proxies.iter().find(|entry| !crate::api::client_ip::is_cidr(entry)) {
+            return Err(invalid(format!(
+                "server.trusted_proxies entry {entry:?} is not an address with a prefix length \
+                 (\"127.0.0.1/32\", \"::1/128\")"
+            )));
+        }
+
         Ok(())
     }
 }

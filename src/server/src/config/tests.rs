@@ -1621,3 +1621,35 @@ fn rejects_colours_that_are_not_rgb_or_rrggbb() {
         );
     }
 }
+
+/// A proxy entry the parser cannot read would leave that proxy untrusted
+/// without a word; every form of it is a startup error naming the key.
+#[test]
+fn refuses_a_trusted_proxy_without_a_prefix_length() {
+    let dir = tempdir("trusted-proxies");
+    for entry in [
+        "127.0.0.1",
+        "::1",
+        "10.0.0.0/33",
+        "::/129",
+        " 127.0.0.1/32",
+        "localhost/32",
+        "127.0.0.1/",
+        "",
+    ] {
+        let mut config = valid(&dir);
+        config.server.trusted_proxies = vec!["10.0.0.0/8".to_owned(), entry.to_owned()];
+        let message = error(&config);
+        assert!(message.contains("server.trusted_proxies"), "{entry:?}: {message}");
+    }
+}
+
+#[test]
+fn accepts_trusted_proxies_with_a_prefix_length() {
+    let dir = tempdir("trusted-proxies-valid");
+    let mut config = valid(&dir);
+    config.server.trusted_proxies = ["127.0.0.1/32", "10.0.0.0/8", "::1/128", "fd00::/8", "0.0.0.0/0"]
+        .map(str::to_owned)
+        .to_vec();
+    config.validate().expect("valid proxy ranges");
+}
