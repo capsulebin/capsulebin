@@ -63,9 +63,19 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   delete accept at most 4 KiB, reports 32 KiB.
 - Subcommands `serve`, `check`, `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`,
   `reports` and `moderation`.
-- A container image: distroless without OpenSSL, non-root, configured by environment variables,
-  with the database on a `/data` volume and a health check that needs no shell or `curl`. Every
-  change and a weekly run scan it for known vulnerabilities in the base image.
+- Database files are owner-only from the first byte: the server creates a missing database `0600`
+  whatever the umask (its `-wal`/`-shm` follow), and `serve` and `check` warn about existing
+  database files other users can access, without changing them.
+- `backup` writes and verifies its snapshot in a private directory and renames it to the output
+  name, refusing an existing entry there instead of replacing or following it. `restore` verifies
+  and migrates a private copy of the backup's main file before the old database moves aside, undoes
+  every move on a failure, and keeps the old database with its `-wal`/`-shm`; `restore --dry-run`
+  test-migrates that copy and changes nothing. A database missing after an interrupted restore stops
+  the server instead of being replaced by an empty one.
+- A container image: distroless without OpenSSL, non-root, configured by environment variables or a
+  mounted configuration file, with the database on a `/data` volume and a health check that needs
+  no shell or `curl` and nothing but the address it probes. Every change and a weekly run scan it
+  for known vulnerabilities in the base image.
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
 - Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an

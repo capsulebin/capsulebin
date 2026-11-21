@@ -250,6 +250,43 @@ logs one warning per minute at most, without id, text or contact; the throttle i
 (`CeilingWarning` in `api/reports.rs`), not a process-wide static, so instances do not share it;
 `reports list` (text) starts with `open reports: N of M (at most K per capsule)`, `--json` unchanged.
 
+### Database files, backup and restore
+
+- **Private from the first byte.** `db::connect` creates a missing database file itself
+  (`db::create_private_file`: `create_new`, `0600` on Unix) and then opens it with
+  `create_if_missing(false)` (`:memory:` excepted); SQLite gives `-wal`/`-shm` the main file's mode.
+  Never let SQLite or `VACUUM INTO` create a file in a path others can reach, and never fix modes
+  with a later `chmod` (it cannot revoke a descriptor opened in between) or by changing the umask.
+- **Existing files are only reported.** `db::permission_warnings` (database, existing `-wal`/`-shm`
+  with any group/other bit; directory with a group/other write bit): `serve` logs, `check` prints
+  `warning: …` and stays `ok:`/exit 0. Nothing is `chmod`ed.
+- **No fixed scratch names.** The write probe in `DatabaseConfig::validate` is
+  `.capsulebin-write-probe-<16 hex>`, created exclusively and removed; backup and restore stages are
+  `0700` directories `.<output>.backup-<16 hex>` (next to the output) and
+  `.<file>.restore-<16 hex>` (next to the database), all named by `db::random_name` (`getrandom`),
+  stages removed by a drop guard. The shared file helpers live in `db.rs`: `db::parent_or_current`
+  (behind `DatabaseConfig::directory()`, the one source for the database directory, and the backup
+  stage's directory) and `db::sidecars` (`-wal`/`-shm` names) — do not re-implement them.
+- **Backup order** (`backup::create`): `occupied(output)` check → stage → `VACUUM INTO` the stage
+  → `verify_file` → `occupied(output)` re-check → `rename` the snapshot to the output. `rename`
+  follows no symlink but replaces an entry created after the re-check; that window is accepted
+  like restore's (planting there needs write access to the output directory, which could replace
+  the backup anyway) — a hard link would make backups fail on filesystems without hard links.
+- **Restore order** (`backup::restore`): collision check (target, or with `--force`
+  `<file>.pre-restore-<now>` and its sidecars, via `symlink_metadata`) → stage → copy only the main
+  file → `verify_file` on the copy (never on the input: RUSTSEC-2026-0459) → `db::connect` +
+  `db::verify` + `wal_checkpoint(TRUNCATE)` → collision re-check → move database, `-wal`, `-shm`
+  aside → rename the copy into place. The moves use `rename`, which replaces a destination created
+  after the re-check; that window is accepted (stopped server; planting there needs write access to
+  the database directory) — publishing by hard link would make restore need hard links on the
+  database volume. Every move is recorded and undone in reverse on a failure;
+  if undoing fails, `BackupError::RollbackFailed` names what to move by hand. `restore_dry_run`
+  stops after the checkpoint. Failure points are a `#[cfg(test)]` step hook, no production flag.
+- **Restore leftovers.** The names come from `db::pre_restore_prefix` and
+  `db::restore_stage_prefix` only. A missing database next to any `<file>.pre-restore-*` entry or a
+  `.<file>.restore-*` directory is `DbError::RestoreLeftovers` for every command that opens it, not
+  a new empty database; next to an existing database they are ignored.
+
 ### Rate limiting
 
 Per-endpoint-class, per-client-IP token buckets (`requests_per_minute` or `requests_per_hour`,
@@ -293,14 +330,14 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 |---------|---------|
 | `serve`  | Start the server |
 | `check`  | Validate configuration, database, migrations (no port opened) |
-| `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`) |
+| `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`). Dispatched before `Config::validate`: reads only `server.bind` (nothing with `--address`), writes nothing |
 | `migrate`| Apply pending migrations and exit |
 | `prune`  | Apply retention policy once and exit |
 | `token`  | Generate a creation token + the hash to configure (domain-separated) |
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
-| `backup` | `VACUUM INTO` snapshot of the live DB (compacted, 0600, verified, never overwrites) |
-| `restore`| Verify a backup and replace the DB (server stopped; `--force` moves the old DB aside, `--dry-run`) |
+| `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
+| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy only) |
 
 ### Test commands (CI gates)
 ```sh
@@ -336,6 +373,10 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
+| `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; dry-run changes nothing. |
+| `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
+| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema. |
 | `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation. Fails on an edited released migration. |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
 | `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
@@ -389,9 +430,9 @@ npm run e2e -w @capsulebin/web
 | `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs; the colour stylesheet as a `BrandingFile` (`branding/colors.rs`: `Colors` parsing, built-in palette `TOKENS`, `CONTRAST_PAIRS`, `stylesheet()`, `contrast_warnings()`) |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
-| `src/db.rs` | Database connection pool, migration runner |
+| `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
-| `src/backup.rs` | Backup (`VACUUM INTO`), backup verification, restore |
+| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with rollback and `restore_dry_run` (tests in `backup/tests.rs`) |
 | `src/domain.rs` | Domain types: `PasteId`, `Verifier`, `Capability`, `Clock` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |
@@ -495,7 +536,7 @@ including the acceptance run against a release binary. Dependency advisories are
 `Rust`, `TypeScript` (on the Node.js version in `.node-version`), `TypeScript (Node 26)` (the tests
 on the newest LTS), `Acceptance (release binary)`, `Browser (Chromium, Firefox, WebKit)` (the
 Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`,
-scans the image with Grype and waits for the container to report healthy), `Support windows` and
+scans the image with Grype and waits until both an environment-configured container and one configured only by a read-only mounted file report healthy), `Support windows` and
 `Dependency audit` — each a required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
 and the base image digests.
 
@@ -554,6 +595,10 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
   token or marker must stay literal (`fill_tokens` in `api/assets.rs` never rescans an inserted
   value; tokens filled one `replace` after another would expand it). Never accept SVG or other
   active documents from the operator (ADR-017).
+- **Database files and operator scratch entries are created by CapsuleBin, exclusively and private**
+  — never leave creation to SQLite or `VACUUM INTO` in a reachable path, never use a fixed scratch
+  name, never verify or open a restore input in place (see [Database files, backup and
+  restore](#database-files-backup-and-restore)).
 - **Report text is personal data** — never log it; it has its own retention (`abuse.report_retention`).
 - **The public header is canonical JSON** — field order and whitespace are fixed because it's
   AES-GCM AAD. Changing serialization breaks all existing capsules.
