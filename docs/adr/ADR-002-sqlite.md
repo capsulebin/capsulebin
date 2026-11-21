@@ -74,13 +74,17 @@ Operational parameters set at startup:
   replaced database read-only to the staged copy's connection and copies its ids (rows and retired
   ids) that the copy does not hold as a row into the copy's `retired_ids`, inside SQLite so millions
   of ids never pass through the process; the database path is bound as a parameter, never formatted
-  into SQL. The replaced database is read in exactly one statement, into a scratch table of the
-  staged copy that is created and dropped in the same transaction, so it never reaches the installed
-  database. Not a `TEMP` table: the bundled SQLite keeps those in memory, and a temporary file would
-  lie outside the private stage. If the replaced database cannot be attached or read, the restore
-  still runs and warns: corruption is the typical reason to restore, and refusing would remove the
-  way back. Only that one read can produce the warning; a failure counting or inserting the ids
-  concerns the copy and stops the restore like any other step.
+  into SQL. First a read probe checks whether the replaced database has `retired_ids` and counts the
+  same ids the insert reads, writing nothing into the copy. Then the ids are copied into a scratch
+  table of the staged copy that is created and dropped in the same transaction, so it never reaches
+  the installed database. Not a `TEMP` table: the bundled SQLite keeps those in memory, and a
+  temporary file would lie outside the private stage. If the replaced database cannot be attached,
+  or the probe cannot read it, the restore still runs and warns: corruption is the typical reason to
+  restore, and refusing would remove the way back. Only `ATTACH` and the probe can produce the
+  warning. A failure while writing the ids into the copy (the disk full, for example) stops the
+  restore before the cutover like any other step, and so does a read failure that shows up only
+  then: it cannot be told apart from a failure on the copy, and an aborted restore keeps the old
+  database, while one installed without the ids would silently free them.
 - CapsuleBin creates the database file itself, exclusively and owner-only (`0600`), instead of
   leaving that to SQLite: SQLite derives the modes of `-wal` and `-shm` from the main file, so this
   keeps all three private without changing the process-wide umask.

@@ -450,7 +450,10 @@ The server must be stopped. `restore` never opens the input file with SQLite and
 be read (it is corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would
 create), the restore still installs the backup and prints
 `warning: the ids of the replaced database could not be carried over (…)` on stderr, with exit code
-0: those ids can then be used again.
+0: those ids can then be used again. Only a failure to attach the current database or to read it in
+a first read-only probe gives this warning. A failure while writing the ids into the copy (the disk
+full, for example), or a read failure that shows up only then, stops the restore before the cutover
+like any other step.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored

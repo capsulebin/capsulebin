@@ -251,10 +251,12 @@ would race a purge); no row inserted → `IdConflict` → the same `409 id_confl
 `restore` and `--dry-run` carry the replaced database's ids (`pastes` and, if present,
 `retired_ids`) missing from the backup into the staged copy's `retired_ids` with `ATTACH` (path as a
 bound read-only `file:` URI, never SQL text) and `INSERT … SELECT`, never through process memory.
-The replaced database is read in one statement into the scratch table `restore_carried_ids` of the
-staged copy (not `TEMP`: in memory, or a temporary file outside the stage), created and dropped in
-the same transaction; only a failure of that read (or of `ATTACH`) is a warning
-(`RestoreOutcome::warnings`) and leaves the copy unchanged, a failure on the copy is an error.
+First a read probe (whether `old` has `retired_ids`, and a `count(*)` over the same ids) writes
+nothing into the copy; then the ids go into the scratch table `restore_carried_ids` of the staged
+copy (not `TEMP`: in memory, or a temporary file outside the stage), created and dropped in the
+same transaction. Only a failure of `ATTACH` or of the probe is a warning
+(`RestoreOutcome::warnings`) and leaves the copy unchanged; every later failure, also a read of
+`old` that fails only in the insert, is an error that stops the restore before the cutover.
 
 ### Abuse report ceilings
 
@@ -401,7 +403,7 @@ npm run e2e -w @capsulebin/web
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
-| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables); dry-run counts them and changes nothing. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables), but stops (restore and dry run, old database and directory unchanged) when writing the ids into the copy fails (`SQLITE_FULL` from a test-only `max_page_count`); dry-run counts them and changes nothing. |
 | `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
 | `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`. |
 | `src/server/tests/upgrade.rs` | A database at schema 3 (migrations 0001–0003, `tests/fixtures/capsulebin-1.0.sql`, never regenerated) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; migration 0004 starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired. Fails when an existing migration is edited (sqlx checksum). |
