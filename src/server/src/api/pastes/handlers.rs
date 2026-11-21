@@ -2,7 +2,7 @@
 
 use crate::domain::{PasteId, Verifier};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{FromRequest as _, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -73,18 +73,19 @@ fn resolve_expiry(state: &AppState, requested: Option<Option<i64>>) -> Result<Op
     Ok(Some(now.saturating_add(seconds)))
 }
 
-pub(super) async fn create(
-    State(state): State<AppState>,
-    id_extension: Option<Extension<RequestId>>,
-    headers: HeaderMap,
-    body: Result<Json<CreateRequest>, JsonRejection>,
-) -> Response {
+/// Takes the whole request rather than a `Json` argument: an extractor
+/// argument is read before the handler runs, so a caller without the creation
+/// capability could make the server buffer and parse an upload-sized body. The
+/// capability is decided from the head alone, and only then is the body read.
+pub(super) async fn create(State(state): State<AppState>, id_extension: Option<Extension<RequestId>>, incoming: Request) -> Response {
     let request_id = request_id(id_extension);
 
     let outcome = async {
-        authorize_creation(&state, &headers)?;
+        authorize_creation(&state, incoming.headers())?;
 
-        let Json(request) = body.map_err(from_json_rejection)?;
+        let Json(request) = Json::<CreateRequest>::from_request(incoming, &state)
+            .await
+            .map_err(from_json_rejection)?;
 
         let id = PasteId::parse(&request.id).map_err(|_| ApiError::InvalidId)?;
 

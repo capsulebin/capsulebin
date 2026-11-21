@@ -58,6 +58,8 @@ pub struct AppState {
     /// buckets.
     pub limiter: api::rate_limit::LimiterState,
     pub abuse: AbuseConfig,
+    /// Throttles the warning about reports dropped at an open report ceiling.
+    pub report_ceiling_warning: api::reports::CeilingWarning,
     /// The operator's legal pages and footer links for every interface
     /// language, rendered once from `[legal]` (see
     /// [`legal`] and [`api::assets`]).
@@ -92,6 +94,7 @@ impl AppState {
             max_body_bytes: resolved.max_body_bytes,
             trusted_proxies: resolved.config.server.trusted_proxies.clone(),
             abuse: resolved.config.abuse.clone(),
+            report_ceiling_warning: api::reports::CeilingWarning::default(),
             legal: Arc::new(LegalByLanguage::new(resolved.legal.clone())),
             default_language: resolved.default_language,
             branding: Arc::new(resolved.branding.clone()),
@@ -116,7 +119,11 @@ impl AppState {
 ///   must be started with connect info (`into_make_service_with_connect_info`),
 ///   otherwise every request looks like it came from one address.
 /// - The body limit sits below them, so an oversized request is rejected before a
-///   handler allocates anything - but still gets the headers.
+///   handler allocates anything - but still gets the headers. Smaller per-route
+///   limits (the proof routes in `api::pastes`, the report endpoint in
+///   `api::reports`) sit inside this global one, so the smaller limit wins, and
+///   `body_limit_problem` outside all of them turns every `413` into
+///   `problem+json`.
 /// - `DefaultBodyLimit::disable()` turns off axum's own per-extractor cap, which
 ///   defaults to a hard-coded 2 MiB independently of any layer here. Without it,
 ///   every `Json<T>` extraction in `api::pastes` would reject bodies above 2 MiB

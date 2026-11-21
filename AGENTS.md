@@ -152,6 +152,15 @@ Versioned in the path: `/api/v1/pastes`.
 Errors are `application/problem+json` with a stable `code` field and `X-Request-Id`.
 Clients branch on `code`, never on `title`.
 
+Request bodies: create takes the whole request and decides the creation capability from the head
+(mode, `Authorization`) before reading the body; `POST /api/v1/reports` checks `abuse.enabled`
+before reading its body — an extractor argument (`Json<T>`) would be read before the handler runs.
+Fixed per-route limits sit inside the global `max_body_bytes` layer: 4 KiB for describe, retrieve
+and delete (`PROOF_BODY_LIMIT` in `api/pastes.rs`), 32 KiB for reports (`MAX_REPORT_BODY_BYTES` in
+`api/reports.rs`); create keeps `max_body_bytes`. Every `413` is `payload_too_large`
+(`body_limit_problem` outside all limit layers), declared or streamed. No server-side body timeout:
+that is the reverse proxy's (`docs/operations.md`).
+
 Every page exists once per known language (ADR-016, [`docs/i18n.md`](docs/i18n.md)): `/`,
 `/p/{id}`, `/manage/{id}`, `/report`, `/imprint`, `/privacy`, `/terms` in the default language
 (`i18n.default_language`), and the same paths under `/{lang}/` for every other language. Paths
@@ -229,6 +238,17 @@ Three independent rules, each deletes the whole row (metadata + payload):
 
 Runs at startup and every 24h. `prune` subcommand applies once on demand.
 `purge.enabled = false` disables the scheduled job.
+
+### Abuse report ceilings
+
+`abuse.max_open_reports_per_paste` (default 10) and `abuse.max_open_reports` (default 1000), integers
+≥ 1 (`0` is refused; `abuse.enabled = false` stops reports). Open = `open` or `reviewing`. A report
+is stored only below both ceilings; existence check, both counts and insert are one statement
+(`submit_report` in `repository/sqlite/abuse.rs`, returns `SubmitOutcome`). Every outcome answers
+the same `202`. Both callers take the ceilings from `AbuseConfig::report_ceilings()`. A dropped report
+logs one warning per minute at most, without id, text or contact; the throttle is per `AppState`
+(`CeilingWarning` in `api/reports.rs`), not a process-wide static, so instances do not share it;
+`reports list` (text) starts with `open reports: N of M (at most K per capsule)`, `--json` unchanged.
 
 ### Rate limiting
 
@@ -317,7 +337,9 @@ npm run e2e -w @capsulebin/web
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/upgrade.rs` | A database written by 1.0 (`tests/fixtures/capsulebin-1.0.sql`) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation. Fails on an edited released migration. |
-| `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids; moderated pastes look like unknown ones. |
+| `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
+| `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
+| `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`); 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
@@ -377,7 +399,7 @@ npm run e2e -w @capsulebin/web
 | `src/domain/abuse.rs` | Report validation, reason/resolution/action codes (ADR-013) |
 | `src/repository.rs` | `PasteRepository` trait |
 | `src/repository/sqlite.rs` | SQLite implementation (SQLx queries) |
-| `src/repository/sqlite/abuse.rs` | `AbuseRepository`: reports, moderation, audit trail, retention |
+| `src/repository/sqlite/abuse.rs` | `AbuseRepository`: reports (capped by the open report ceilings), moderation, audit trail, retention |
 | `src/api.rs` | API module root |
 | `src/api/pastes/handlers.rs` | Route handlers: create, describe, retrieve, delete |
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
@@ -390,7 +412,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/request_id.rs` | Per-request UUID, echoed in response body and `X-Request-Id` |
 | `src/api/access_log.rs` | Redacted access logging (method + redacted path only; branding file names directly below `/branding/` kept) |
 | `src/api/rate_limit.rs` | Token-bucket rate limiting (per minute or per hour) |
-| `src/api/reports.rs` | Report endpoint and policy |
+| `src/api/reports.rs` | Report endpoint and policy; 32 KiB body limit, `enabled` checked before the body, ceiling warning throttled by `CeilingWarning` (one per `AppState`) |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
 | `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |

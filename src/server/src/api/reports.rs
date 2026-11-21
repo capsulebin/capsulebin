@@ -11,20 +11,31 @@
 //! The endpoint is therefore no oracle for paste ids, and junk reports about
 //! random ids do not reach the operator's queue.
 //!
+//! Each capsule and the instance take only a bounded number of open reports
+//! (`abuse.max_open_reports_per_paste`, `abuse.max_open_reports`); a report
+//! above a ceiling is dropped and gets the same `202`.
+//!
+//! Whether reports are accepted is decided before a byte of the body is read,
+//! and the body is limited to [`MAX_REPORT_BODY_BYTES`].
+//!
 //! Nothing about a report is logged: its text is personal data, and its paste
-//! id must not reach the access log either.
+//! id must not reach the access log either. A dropped report leaves one
+//! warning without either, at most once per [`CEILING_WARNING_INTERVAL`].
 //!
 //! `GET /api/v1/reports` describes the reporting policy for the report page
 //! (whether reports are accepted, the contact address, the reason codes, the
 //! limits).
 
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use axum::extract::{FromRequest as _, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
+use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::AppState;
 use crate::api::pastes::codec::from_json_rejection;
@@ -32,10 +43,48 @@ use crate::api::problem::{ApiError, Problem};
 use crate::api::request_id::RequestId;
 use crate::domain::PasteId;
 use crate::domain::abuse::{MAX_CONTACT_BYTES, MAX_DESCRIPTION_BYTES, NewReport, ReasonCode, ReportError};
-use crate::repository::AbuseRepository as _;
+use crate::repository::{AbuseRepository as _, SubmitOutcome};
+
+/// The body limit of `POST /api/v1/reports`. A report holds at most
+/// `MAX_DESCRIPTION_BYTES` + `MAX_CONTACT_BYTES` of text; even with every
+/// character escaped as `\uXXXX` that stays below 26 KB, so no valid report
+/// is refused. Sits inside the global `max_body_bytes` limit.
+pub const MAX_REPORT_BODY_BYTES: usize = 32 * 1024;
+
+/// At most one "open report limit" warning per this interval and instance, so a
+/// flood of reports cannot flood the log.
+pub const CEILING_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+/// When the last "open report limit" warning was logged, one per state: the
+/// clones of an [`AppState`] share it.
+#[derive(Clone, Debug, Default)]
+pub struct CeilingWarning(Arc<Mutex<Option<Instant>>>);
+
+impl CeilingWarning {
+    /// Logs that a report was dropped at a ceiling, unless that was already
+    /// logged within [`CEILING_WARNING_INTERVAL`]. Names neither the paste nor
+    /// the report.
+    pub fn warn(&self) {
+        let now = Instant::now();
+        {
+            let mut last = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if last.is_some_and(|at| now.duration_since(at) < CEILING_WARNING_INTERVAL) {
+                return;
+            }
+            *last = Some(now);
+        }
+        tracing::warn!(
+            "report not stored: open report limit reached (abuse.max_open_reports_per_paste or \
+             abuse.max_open_reports); see `capsulebin reports list`"
+        );
+    }
+}
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/reports", get(policy).post(submit))
+    Router::new().route(
+        "/api/v1/reports",
+        get(policy).merge(post(submit).layer(RequestBodyLimitLayer::new(MAX_REPORT_BODY_BYTES))),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,11 +132,10 @@ fn report_error(error: ReportError) -> ApiError {
     })
 }
 
-async fn submit(
-    State(state): State<AppState>,
-    id_extension: Option<Extension<RequestId>>,
-    body: Result<Json<ReportRequest>, JsonRejection>,
-) -> Response {
+/// Takes the whole request rather than a `Json` argument: an extractor
+/// argument is read before the handler runs, and a disabled endpoint must not
+/// read the body at all.
+async fn submit(State(state): State<AppState>, id_extension: Option<Extension<RequestId>>, request: Request) -> Response {
     let request_id = id_extension.map(|Extension(id)| id.0).unwrap_or_default();
 
     let outcome = async {
@@ -95,7 +143,9 @@ async fn submit(
             return Err(ApiError::ReportsDisabled);
         }
 
-        let Json(request) = body.map_err(from_json_rejection)?;
+        let Json(request) = Json::<ReportRequest>::from_request(request, &state)
+            .await
+            .map_err(from_json_rejection)?;
         let paste_id = PasteId::parse(&request.paste_id).map_err(|_| ApiError::InvalidId)?;
 
         let now = state.clock.now();
@@ -109,8 +159,11 @@ async fn submit(
         )
         .map_err(report_error)?;
 
-        // Whether it was stored is deliberately not part of the answer.
-        let _stored = state.abuse_repo.submit_report(&report, now).await?;
+        // What happened to the report is deliberately not part of the answer.
+        match state.abuse_repo.submit_report(&report, state.abuse.report_ceilings(), now).await? {
+            SubmitOutcome::CeilingReached => state.report_ceiling_warning.warn(),
+            SubmitOutcome::Stored | SubmitOutcome::NoSuchPaste => {}
+        }
         Ok(())
     }
     .await;

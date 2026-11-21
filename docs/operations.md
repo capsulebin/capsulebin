@@ -161,11 +161,15 @@ it without the URI and with short retention.
 nginx:
 
 ```nginx
+limit_conn_zone $binary_remote_addr zone=capsulebin_conn:10m;   # in the http block
+
 server {
     listen 443 ssl http2;
     server_name paste.example.org;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
     client_max_body_size 16m;   # above pastes.max_plaintext_size × 4/3
+    client_body_timeout 30s;    # between two reads of the body, not for the whole upload
+    limit_conn capsulebin_conn 20;
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -179,6 +183,15 @@ Pages and the redirect away from the default language's prefix (see
 [Interface languages](#interface-languages)) are sent with `Cache-Control: no-store`; a caching
 proxy or CDN must honour it. No page response depends on `Accept-Language`, so nothing has to be
 keyed on it.
+
+**Slow and parallel uploads are the proxy's job.** CapsuleBin has no request or body timeout of its
+own and no instance-wide budget for uploads in flight; what it limits is the size of each body
+(`pastes.max_plaintext_size` for create; fixed 4 KiB for describe, retrieve and delete and 32 KiB
+for reports, `413 payload_too_large` above) and, if configured, uploads per client
+(`rate_limits.create.max_concurrent`). Let the proxy end a body that stalls (nginx
+`client_body_timeout`, Caddy `servers { timeouts { read_body … } }` in the global options) and cap
+connections per client (nginx `limit_conn`). nginx buffers the whole body before passing it on
+(the default `proxy_request_buffering on`), so a slow client ties up the proxy, not CapsuleBin.
 
 **`trusted_proxies` must list the proxy, not the clients.** Too broad a range lets clients pick
 their own address for rate limiting by sending `X-Forwarded-For`; empty behind a proxy makes every
@@ -194,6 +207,7 @@ client share the proxy's bucket.
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
 | `purge.*` | Leave enabled. Never-retrieved capsules go after 30 days, inactive ones after 90. |
 | `abuse.contact`, `abuse.report_retention` | Set a contact; keep closed reports no longer than needed (default 90 days). |
+| `abuse.max_open_reports_per_paste`, `abuse.max_open_reports` | Ceilings on open reports (status open or reviewing): 10 per capsule, 1000 on the instance by default; integers of at least 1. A report above a ceiling is not stored, and the reporter is told nothing different (see [Abuse handling runbook](#abuse-handling-runbook)). To stop taking reports, set `abuse.enabled = false` — `0` is refused. |
 | `legal.*` | A public instance in the EU usually needs an imprint and a privacy notice. Set `[legal.operator]`; see [Legal pages](#legal-pages). |
 | `branding.*` | Optional: name, tagline, logo and favicon of the instance; `source_url` if you run a modified version. See [Branding](#branding). |
 | `database.synchronous` | `full` (default). Lower only if you accept losing acknowledged writes on power loss. |
@@ -418,7 +432,11 @@ and restart. Existing capsules are unaffected — the token only authorizes crea
 ## Abuse handling runbook
 
 Reports arrive through the report form (`/report`, `/de/report`). Only reports about capsules that
-currently exist reach the queue.
+currently exist reach the queue, and only while the queue is below its ceilings: a capsule takes at
+most `abuse.max_open_reports_per_paste` (default 10) open reports, the instance at most
+`abuse.max_open_reports` (default 1000). Open means `open` or `reviewing`; closing a report frees
+its place. A report above a ceiling is dropped, and the reporter gets the same answer as for a
+stored one.
 
 ```sh
 capsulebin reports list                             # open reports, oldest first
@@ -431,6 +449,14 @@ capsulebin moderation restore <paste-id>            # only after disable
 capsulebin reports close <report-id> --resolution action_taken|no_action|duplicate|invalid
 ```
 
+- `reports list` starts with a line like `open reports: 3 of 1000 (at most 10 per capsule)`; when
+  the instance ceiling is reached it adds `the limit is reached: new reports are not stored until
+  open ones are closed`. The server log then also says `report not stored: open report limit
+  reached` — at most once a minute, without the capsule or the report. Work through the queue and
+  close what is done (`duplicate` for repeats about the same capsule); if the queue is full of junk,
+  close it as `invalid` and consider `rate_limits.report`. Raise a ceiling only if genuine reports
+  are being lost: the ceilings are what keeps anyone who knows one id from growing the queue and the
+  database without bound. `reports list --json` stays a plain array without this line.
 - **Disable first** when in doubt: it blocks the capsule immediately and is reversible. Delete is
   final.
 - **Do not open reported content** to "check it". Nothing in the tooling decrypts, and a report
@@ -448,6 +474,7 @@ capsulebin reports close <report-id> --resolution action_taken|no_action|duplica
 | --- | --- |
 | A creation token leaked | Remove its hash, restart. Consider `creation.mode = "disabled"` while investigating — existing capsules stay readable. |
 | Flood of uploads | Enable or tighten `rate_limits.create` (rate, `bytes_per_day`, `max_concurrent`); `creation.mode = "disabled"` stops all creation. |
+| Flood of reports | The ceilings keep the queue bounded; `reports list` shows how full it is. Enable `rate_limits.report` (e.g. 5/hour burst 2), close junk as `invalid`; `abuse.enabled = false` stops reports while moderation keeps working. |
 | Database or backup stolen | Content stays protected without the links. Reports in it contain contact data — treat it as a personal-data breach. Rotate creation tokens. |
 | Server compromised | Assume served JavaScript may have been modified: web users of that period may have exposed keys. Rebuild from a trusted binary, rotate tokens, inform users. CLI users were not exposed through served code. |
 | Disk full | SQLite refuses writes; reads continue. Free space, run `prune`, check `pastes.max_plaintext_size` and the byte quota. |

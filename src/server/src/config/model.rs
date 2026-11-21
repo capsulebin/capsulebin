@@ -101,6 +101,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_max_open_reports_per_paste() -> i64 {
+    10
+}
+
+fn default_max_open_reports() -> i64 {
+    1_000
+}
+
 fn default_creation_mode() -> CreationMode {
     CreationMode::Token
 }
@@ -562,6 +570,15 @@ pub struct AbuseConfig {
     /// until an operator closes them.
     #[serde(default = "default_report_retention")]
     pub report_retention: HumanDuration,
+    /// A report is stored only while the capsule it names has fewer open
+    /// (`open` or `reviewing`) reports than this. Further ones are dropped and
+    /// answered like stored ones.
+    #[serde(default = "default_max_open_reports_per_paste")]
+    pub max_open_reports_per_paste: i64,
+    /// A report is stored only while the instance has fewer open reports than
+    /// this, so nobody can grow the operator's queue without bound.
+    #[serde(default = "default_max_open_reports")]
+    pub max_open_reports: i64,
 }
 
 impl Default for AbuseConfig {
@@ -570,16 +587,36 @@ impl Default for AbuseConfig {
             enabled: default_true(),
             contact: None,
             report_retention: default_report_retention(),
+            max_open_reports_per_paste: default_max_open_reports_per_paste(),
+            max_open_reports: default_max_open_reports(),
         }
     }
 }
 
 impl AbuseConfig {
+    /// The open report ceilings the repository works with.
+    pub fn report_ceilings(&self) -> crate::repository::ReportCeilings {
+        crate::repository::ReportCeilings {
+            per_paste: self.max_open_reports_per_paste,
+            total: self.max_open_reports,
+        }
+    }
+
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         let invalid = |message: String| ConfigError::Invalid(message);
 
         if self.report_retention.as_secs() == 0 {
             return Err(invalid("abuse.report_retention must be greater than zero".to_owned()));
+        }
+        // Zero is not "off" (that is `abuse.enabled = false`): it would drop every
+        // report while the form still says it was received.
+        for (key, value) in [
+            ("max_open_reports_per_paste", self.max_open_reports_per_paste),
+            ("max_open_reports", self.max_open_reports),
+        ] {
+            if value < 1 {
+                return Err(invalid(format!("abuse.{key} must be at least 1, got {value}")));
+            }
         }
         if let Some(contact) = &self.contact
             && (contact.trim().is_empty() || contact.len() > 254 || contact.chars().any(char::is_control))

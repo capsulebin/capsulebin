@@ -805,6 +805,68 @@ fn rejects_invalid_abuse_settings() {
 }
 
 #[test]
+fn report_ceilings_default_and_must_be_positive() {
+    let defaults = AbuseConfig::default();
+    assert_eq!(defaults.max_open_reports_per_paste, 10);
+    assert_eq!(defaults.max_open_reports, 1_000);
+
+    let dir = tempdir("report-ceilings");
+    let path = dir.join("capsulebin.toml");
+    let from_file = |value: &str| {
+        std::fs::write(
+            &path,
+            format!("[abuse]\nmax_open_reports_per_paste = {value}\nmax_open_reports = {value}\n"),
+        )
+        .expect("write config");
+        Config::load(Some(&path))
+    };
+    let config = from_file("3").expect("load");
+    assert_eq!(config.abuse.max_open_reports_per_paste, 3);
+    assert_eq!(config.abuse.max_open_reports, 3);
+
+    for bad in ["1.5", "\"ten\""] {
+        let error = from_file(bad).expect_err("a non-integer must be refused").to_string();
+        assert!(error.contains("max_open_reports"), "{bad}: {error}");
+    }
+
+    let from_env = |key: &str, value: &str| {
+        let mut table = toml::Table::new();
+        apply_env(
+            &mut table,
+            [
+                ("CAPSULEBIN__SERVER__PUBLIC_URL".to_owned(), "https://paste.example".to_owned()),
+                (
+                    "CAPSULEBIN__DATABASE__PATH".to_owned(),
+                    dir.join("capsulebin.db").display().to_string(),
+                ),
+                ("CAPSULEBIN__CREATION__MODE".to_owned(), "public".to_owned()),
+                (format!("CAPSULEBIN__ABUSE__{}", key.to_uppercase()), value.to_owned()),
+            ],
+        )
+        .expect("overlay applies");
+        table.try_into::<Config>().map_err(|error| error.to_string())
+    };
+    for key in ["max_open_reports_per_paste", "max_open_reports"] {
+        let config = from_env(key, "7").expect("deserialise");
+        let resolved = config.validate().expect("must be usable");
+        let abuse = &resolved.config.abuse;
+        let value = if key == "max_open_reports" {
+            abuse.max_open_reports
+        } else {
+            abuse.max_open_reports_per_paste
+        };
+        assert_eq!(value, 7, "{key}");
+
+        for bad in ["0", "-1"] {
+            let message = error(&from_env(key, bad).expect("deserialise"));
+            assert!(message.contains(&format!("abuse.{key}")), "{key} = {bad}: {message}");
+        }
+        let message = from_env(key, "ten").expect_err("a non-integer must be refused");
+        assert!(message.contains(key), "{key} = ten: {message}");
+    }
+}
+
+#[test]
 fn legal_sections_can_be_set_from_the_environment() {
     let mut table = toml::Table::new();
     apply_env(

@@ -246,6 +246,122 @@ async fn authorization_is_checked_before_the_body() {
     assert_eq!(answer.code(), "unauthorized");
 }
 
+/// `body` as JSON with whitespace after the opening brace, `len` bytes long.
+fn padded(body: &serde_json::Value, len: usize) -> Vec<u8> {
+    let text = body.to_string();
+    assert!(text.len() <= len, "the body is already longer than {len} bytes");
+    format!("{{{}{}", " ".repeat(len - text.len()), &text[1..]).into_bytes()
+}
+
+/// A `413` as every other error: `problem+json` with the request id in the
+/// header and the body.
+fn assert_payload_too_large(answer: &Answer, what: &str) {
+    assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE, "{what}: {}", answer.text());
+    assert_eq!(answer.header("content-type"), Some("application/problem+json"), "{what}");
+    assert_eq!(answer.code(), "payload_too_large", "{what}");
+    let request_id = answer.header("x-request-id").unwrap_or_default();
+    assert!(!request_id.is_empty(), "{what}: no X-Request-Id");
+    assert_eq!(answer.json()["request_id"], request_id, "{what}");
+}
+
+/// Stronger than `authorization_is_checked_before_the_body`: the creation
+/// capability is decided from the head alone, so a caller without it cannot make
+/// the server buffer an upload-sized body - not even read one byte of it.
+#[tokio::test]
+async fn an_unauthorized_create_never_reads_the_body() {
+    let token_mode = harness_with_mode("unread-token", CreationMode::Token).await;
+    let disabled = harness_with_mode("unread-disabled", CreationMode::Disabled).await;
+    let body = create_body(&id(30)).to_string();
+
+    for framing in [Framing::Declared, Framing::Streamed] {
+        let refusals = [
+            ("no token", &token_mode, None, StatusCode::UNAUTHORIZED, "unauthorized"),
+            ("wrong token", &token_mode, Some("wrong"), StatusCode::UNAUTHORIZED, "unauthorized"),
+            ("disabled", &disabled, Some(TOKEN), StatusCode::FORBIDDEN, "creation_disabled"),
+        ];
+        for (what, h, token, status, code) in refusals {
+            let (polled, answer) = h.post_expecting_continue("/api/v1/pastes", body.as_bytes(), framing, token).await;
+            assert!(!polled, "{what}, {framing:?}: the body was polled");
+            assert_eq!(answer.status, status, "{what}, {framing:?}: {}", answer.text());
+            assert_eq!(
+                answer.header("content-type"),
+                Some("application/problem+json"),
+                "{what}, {framing:?}"
+            );
+            assert_eq!(answer.code(), code, "{what}, {framing:?}");
+        }
+    }
+
+    // With the valid token the same kind of body is read and stored.
+    for (framing, byte) in [(Framing::Declared, 31), (Framing::Streamed, 32)] {
+        let body = create_body(&id(byte)).to_string();
+        let (polled, answer) = token_mode
+            .post_expecting_continue("/api/v1/pastes", body.as_bytes(), framing, Some(TOKEN))
+            .await;
+        assert!(polled, "{framing:?}: the body was not read");
+        assert_eq!(answer.status, StatusCode::CREATED, "{framing:?}: {}", answer.text());
+    }
+}
+
+/// Without `Content-Length` the limit layer cannot refuse the request up front;
+/// reading the body runs into the configured limit instead.
+#[tokio::test]
+async fn a_streamed_create_above_the_body_limit_is_refused() {
+    let h = harness("streamed-oversize").await;
+    let limit = capsulebin_server::config::max_body_bytes(capsulebin_server::config::units::ByteSize(64 * 1024));
+
+    let answer = h
+        .send_framed(
+            "POST",
+            "/api/v1/pastes",
+            padded(&create_body(&id(33)), limit + 1),
+            Framing::Streamed,
+            Some(TOKEN),
+        )
+        .await;
+
+    assert_payload_too_large(&answer, "streamed create");
+}
+
+/// Describe, retrieve and delete carry a few tokens; their bodies are capped at
+/// 4 KiB, far below the upload limit, declared or streamed.
+#[tokio::test]
+async fn proof_routes_have_a_small_body_limit() {
+    let h = harness("proof-limit").await;
+    let mut body = create_body(&id(34));
+    body["burn_after_retrieval"] = serde_json::json!(true);
+    assert_eq!(h.post("/api/v1/pastes", body).await.status, StatusCode::CREATED);
+    let id = id(34).encode();
+
+    // Valid requests, so that only their size can refuse them.
+    let describe = format!("/api/v1/pastes/{id}/describe");
+    let retrieve = format!("/api/v1/pastes/{id}/retrieve");
+    let delete = format!("/api/v1/pastes/{id}");
+    let routes = [
+        ("POST", &describe, describe_body(DESCRIBE_TOKEN)),
+        ("POST", &retrieve, retrieve_body(REVEAL_TOKEN)),
+        ("DELETE", &delete, delete_body(DELETE_SECRET)),
+    ];
+
+    for framing in [Framing::Declared, Framing::Streamed] {
+        for (method, path, body) in &routes {
+            let answer = h.send_framed(method, path, padded(body, 4097), framing, None).await;
+            assert_payload_too_large(&answer, &format!("{method} {path}, {framing:?}"));
+        }
+    }
+
+    // Neither burned nor deleted by a refused request.
+    assert_eq!(h.bookkeeping(&support::id(34)).await.consumed_at, None);
+
+    // Exactly at the limit the size is no reason to refuse.
+    for framing in [Framing::Declared, Framing::Streamed] {
+        let answer = h
+            .send_framed("POST", &describe, padded(&describe_body(DESCRIBE_TOKEN), 4096), framing, None)
+            .await;
+        assert_eq!(answer.status, StatusCode::OK, "{framing:?}: {}", answer.text());
+    }
+}
+
 #[tokio::test]
 async fn public_mode_needs_no_token() {
     let h = harness_with_mode("public-mode", CreationMode::Public).await;
