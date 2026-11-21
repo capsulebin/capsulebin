@@ -11,8 +11,12 @@ import { promptStopped } from './exit';
 export interface Io {
     stdout: { write(chunk: string | Uint8Array): unknown };
     stderr: { write(chunk: string): unknown };
-    /** Reads all of stdin. Only called when stdin is the content source. */
-    readStdin(): Promise<Uint8Array>;
+    /**
+     * Reads stdin to its end, or stops after more than `limit` bytes (then
+     * returns `limit + 1` of them and reads no further). Without a limit, all
+     * of it. Only called when stdin is the content source or carries a link.
+     */
+    readStdin(limit?: number): Promise<Uint8Array>;
     /** Whether an interactive prompt is possible (stdin and stderr are a terminal). */
     interactive: boolean;
     /** Asks a question on the terminal; `hidden` suppresses the echo (passwords). */
@@ -27,17 +31,34 @@ export function processIo(): Io {
     return {
         stdout: process.stdout,
         stderr: process.stderr,
-        readStdin: async () => {
-            const chunks: Buffer[] = [];
-            for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-            return new Uint8Array(Buffer.concat(chunks));
-        },
+        readStdin: (limit) => readBounded(process.stdin, limit),
         interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
         prompt: terminalPrompt,
         env: process.env,
         cwd: process.cwd(),
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     };
+}
+
+/**
+ * Collects `chunks` until they end or exceed `limit` bytes. Over the limit the
+ * iteration is left early, which destroys a Node stream, and the result is cut
+ * to `limit + 1` bytes: enough for the caller to see the overflow, never more
+ * than the limit plus one chunk read.
+ */
+export async function readBounded(
+    chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    limit = Infinity,
+): Promise<Uint8Array> {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of chunks) {
+        parts.push(chunk);
+        total += chunk.length;
+        if (total > limit) break;
+    }
+    const bytes = new Uint8Array(Buffer.concat(parts));
+    return total > limit ? bytes.subarray(0, limit + 1) : bytes;
 }
 
 /**

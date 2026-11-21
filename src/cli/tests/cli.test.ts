@@ -15,6 +15,7 @@ import {
     readlink,
     stat,
     symlink,
+    truncate,
     writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,13 +26,14 @@ import {
     encodeUtf8,
     fromBase64url,
     generateUlid,
+    MAX_CAPSULE_BYTES,
     Paste,
     PasteApi,
     toBase64url,
 } from '@capsulebin/core';
 import { run, parseDuration } from '../src/cli';
 import { safeFileName } from '../src/commands/get';
-import type { Io } from '../src/io';
+import { type Io, readBounded } from '../src/io';
 import { buildItem } from '../src/items';
 import { escapeDiagnostic } from '../src/terminal';
 import { createFakeServer, type FakeServer } from '../../core/tests/fake-server';
@@ -43,7 +45,19 @@ const fsHooks = vi.hoisted(() => ({
     failWrites: false,
     failOpenNumber: undefined as number | undefined,
     opens: 0,
+    /** Read streams opened (by `put` for its input files). */
+    readStreams: 0,
 }));
+vi.mock('node:fs', async (importOriginal) => {
+    const fs = await importOriginal<typeof import('node:fs')>();
+    return {
+        ...fs,
+        createReadStream: (...args: Parameters<typeof fs.createReadStream>) => {
+            fsHooks.readStreams++;
+            return fs.createReadStream(...args);
+        },
+    };
+});
 vi.mock('node:fs/promises', async (importOriginal) => {
     const fs = await importOriginal<typeof import('node:fs/promises')>();
     return {
@@ -83,6 +97,8 @@ afterEach(() => {
     fsHooks.failWrites = false;
     fsHooks.failOpenNumber = undefined;
     fsHooks.opens = 0;
+    fsHooks.readStreams = 0;
+    vi.useRealTimers();
 });
 
 interface TestIo extends Io {
@@ -93,7 +109,7 @@ interface TestIo extends Io {
 
 function testIo(
     options: {
-        stdin?: string | Uint8Array;
+        stdin?: string | Uint8Array | AsyncIterable<Uint8Array>;
         env?: Record<string, string>;
         interactive?: boolean;
         answers?: string[];
@@ -109,10 +125,11 @@ function testIo(
             write: (chunk) => out.push(typeof chunk === 'string' ? encoder.encode(chunk) : chunk),
         },
         stderr: { write: (chunk) => err.push(chunk) },
-        readStdin: async () =>
-            typeof options.stdin === 'string'
-                ? encoder.encode(options.stdin)
-                : (options.stdin ?? new Uint8Array()),
+        readStdin: async (limit) => {
+            const stdin = options.stdin ?? new Uint8Array();
+            if (typeof stdin === 'string') return readBounded([encoder.encode(stdin)], limit);
+            return readBounded(stdin instanceof Uint8Array ? [stdin] : stdin, limit);
+        },
         interactive: options.interactive ?? false,
         prompt: async (question) => {
             prompts.push(question);
@@ -458,6 +475,156 @@ describe('put options', () => {
         expect(server.requests).toHaveLength(0);
     });
 });
+
+describe('put input limit', () => {
+    const LIMIT_MESSAGE = `the input exceeds the capsule limit of ${MAX_CAPSULE_BYTES} bytes`;
+
+    /** A sparse file of `size` bytes in the test directory. */
+    async function sizedFile(name: string, size: number): Promise<void> {
+        await writeFile(join(cwd, name), '');
+        await truncate(join(cwd, name), size);
+    }
+
+    /** Ends a refused put: usage exit, the limit named, nothing sent or printed. */
+    function expectRefused(io: TestIo, code: number): void {
+        expect(code, io.err()).toBe(2);
+        expect(io.err()).toContain(LIMIT_MESSAGE);
+        expect(io.out()).toBe('');
+        expect(server.requests).toHaveLength(0);
+    }
+
+    it('put refuses inputs above the capsule limit before reading them', async () => {
+        const half = Math.floor(MAX_CAPSULE_BYTES / 2);
+        await sizedFile('a.bin', half);
+        await sizedFile('b.bin', half);
+        await sizedFile('c.bin', half);
+
+        const io = testIo();
+        expectRefused(io, await run(['put', '-s', SERVER, 'a.bin', 'b.bin', 'c.bin'], io));
+        expect(fsHooks.readStreams).toBe(0);
+    });
+
+    it('put stops reading at the capsule limit', async () => {
+        const CHUNK = 64 * 1024;
+        let consumed = 0;
+        async function* endless(): AsyncGenerator<Uint8Array> {
+            for (;;) {
+                consumed += CHUNK;
+                yield new Uint8Array(CHUNK).fill(0x61);
+            }
+        }
+        const io = testIo({ stdin: endless() });
+        expectRefused(io, await run(['put', '-s', SERVER], io));
+        expect(consumed).toBeGreaterThan(MAX_CAPSULE_BYTES);
+        expect(consumed).toBeLessThanOrEqual(MAX_CAPSULE_BYTES + CHUNK);
+
+        // A file and stdin together: the budget spans all inputs.
+        await sizedFile('big.bin', MAX_CAPSULE_BYTES - 10);
+        const both = testIo({ stdin: 'more than ten bytes' });
+        expectRefused(both, await run(['put', '-s', SERVER, 'big.bin', '-'], both));
+    });
+
+    it.skipIf(process.platform === 'win32')(
+        'put stops reading at the capsule limit of an endless special file',
+        async () => {
+            const io = testIo();
+            expectRefused(io, await run(['put', '-s', SERVER, '/dev/zero'], io));
+        },
+    );
+
+    it('accepts inputs that fit within the limit together', async () => {
+        await sizedFile('a.bin', 1024);
+        const io = testIo({ stdin: 'and some stdin' });
+        expect(await run(['put', '-s', SERVER, 'a.bin', '-'], io), io.err()).toBe(0);
+        expect(server.pastes.size).toBe(1);
+    });
+});
+
+describe('response limits and timeouts', () => {
+    it('response limits and timeouts end with exit 7', async () => {
+        // An oversized answer to create is not retried.
+        let calls = 0;
+        vi.stubGlobal('fetch', async () => {
+            calls++;
+            return new Response('"' + 'x'.repeat(128 * 1024) + '"', { status: 201 });
+        });
+        const large = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--json', '--retries', '2'], large)).toBe(7);
+        expect(calls).toBe(1);
+        expect(JSON.parse(large.out()).error.reason).toBe('response_too_large');
+        expect(large.err()).toContain('larger response than any valid answer');
+        expect(large.err()).not.toContain('retrying');
+
+        // A create that never answers times out and is replayed unchanged.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        const realFetch = server.fetch;
+        vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+            await realFetch(input, init);
+            // The request lands, but its answer never comes.
+            return new Promise<Response>(() => {});
+        });
+        const slow = testIo({ stdin: 'x' });
+        const exit = await settleWithTimers(
+            run(['put', '-s', SERVER, '--json', '--retries', '1'], slow),
+        );
+        expect(exit, slow.err()).toBe(7);
+        expect(server.requests).toHaveLength(2);
+        expect(server.requests[0]!.body).toBe(server.requests[1]!.body);
+        expect(server.pastes.size).toBe(1);
+        expect(JSON.parse(slow.out()).error.reason).toBe('timeout');
+        expect(slow.err()).toContain('timeout, retrying');
+        expect(slow.err()).toContain('the server did not answer in time');
+
+        // The same mapping for get, which never retries.
+        vi.useRealTimers();
+        vi.stubGlobal('fetch', server.fetch);
+        const created = await putText('hello');
+        const before = server.requests.length;
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        vi.stubGlobal('fetch', () => new Promise<Response>(() => {}));
+        const get = testIo();
+        expect(await settleWithTimers(run(['get', '--json', created.share_url], get))).toBe(7);
+        expect(JSON.parse(get.out()).error.reason).toBe('timeout');
+        expect(server.requests).toHaveLength(before);
+    });
+});
+
+describe('input limit and response bounds, edges', () => {
+    it('put refuses a single file one byte above the capsule limit without reading it', async () => {
+        await writeFile(join(cwd, 'one.bin'), '');
+        await truncate(join(cwd, 'one.bin'), MAX_CAPSULE_BYTES + 1);
+        const io = testIo();
+        expect(await run(['put', '-s', SERVER, 'one.bin'], io)).toBe(2);
+        expect(io.err()).toContain(`${MAX_CAPSULE_BYTES} bytes`);
+        expect(io.out()).toBe('');
+        expect(server.requests).toHaveLength(0);
+        expect(fsHooks.readStreams).toBe(0);
+    });
+
+    it('stderr of an oversized answer carries no control characters and no body', async () => {
+        vi.stubGlobal(
+            'fetch',
+            async () =>
+                new Response('\u001b[31m' + 'y'.repeat(128 * 1024), {
+                    status: 500,
+                }),
+        );
+        const io = testIo({ stdin: 'x' });
+        expect(await run(['put', '-s', SERVER, '--retries', '0'], io)).toBe(7);
+        const err = io.err();
+        // eslint-disable-next-line no-control-regex
+        expect(err.replace(/\n$/, '')).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        expect(err).not.toContain('yyyy');
+    });
+});
+
+/** Advances fake timers until `promise` settles, then returns its value. */
+async function settleWithTimers<T>(promise: Promise<T>): Promise<T> {
+    let settled = false;
+    void promise.finally(() => (settled = true));
+    while (!settled) await vi.advanceTimersByTimeAsync(10_000);
+    return promise;
+}
 
 describe('burn after retrieval', () => {
     it('refuses to consume a burn capsule non-interactively without --yes', async () => {

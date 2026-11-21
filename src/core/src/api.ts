@@ -6,6 +6,7 @@
  * transmitted to the server.
  */
 
+import { MAX_CAPSULE_BYTES } from './capsule';
 import type { SealedPaste } from './paste';
 import { fromBase64url, toBase64url } from './helpers/bytes';
 import { PublicHeader } from './public_header';
@@ -40,6 +41,55 @@ export interface RetrieveResponse {
 
 /** {@link ApiError} code for a redirect the client did not follow. */
 export const REDIRECT_REFUSED = 'redirect_refused';
+
+/** {@link ApiError} code for a response body above the endpoint's byte limit. */
+export const RESPONSE_TOO_LARGE = 'response_too_large';
+
+/** {@link ApiError} code for a request that missed its deadline, or whose
+ *  response body stalled. */
+export const TIMEOUT = 'timeout';
+
+/** Length of the AES-GCM authentication tag appended to the ciphertext. */
+const GCM_TAG_BYTES = 16;
+
+/** Largest ciphertext of a valid capsule: no encoder produces a capsule above
+ *  `MAX_CAPSULE_BYTES` (padding is capped there), plus the GCM tag. */
+export const MAX_CIPHERTEXT_BYTES = MAX_CAPSULE_BYTES + GCM_TAG_BYTES;
+
+/** Response limit for every endpoint but retrieve, and for every error body:
+ *  the public header is capped at 4 KiB on every server, problem bodies are
+ *  tiny. */
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+/** Response limit for retrieve: a maximum ciphertext as unpadded base64url,
+ *  plus an allowance for the JSON envelope around it. Derived from the
+ *  format, not from a server setting the client cannot know. */
+const MAX_RETRIEVE_RESPONSE_BYTES = Math.ceil((MAX_CIPHERTEXT_BYTES * 4) / 3) + 1024;
+
+/** Total deadline of a request that sends and receives little data. */
+const SHORT_DEADLINE_MS = 30_000;
+
+/** Total deadline of a request that may carry a whole capsule. */
+const LONG_DEADLINE_MS = 10 * 60_000;
+
+/** A response body that delivers no new bytes for this long is cancelled. */
+const IDLE_TIMEOUT_MS = 30_000;
+
+/** Byte limit and total deadline of one request. */
+interface RequestBounds {
+    maxBytes: number;
+    deadlineMs: number;
+}
+
+/** Describe and delete: small answers, short deadline. */
+const SHORT_BOUNDS: RequestBounds = { maxBytes: MAX_RESPONSE_BYTES, deadlineMs: SHORT_DEADLINE_MS };
+/** Create: a small answer, but the upload of a whole capsule comes first. */
+const CREATE_BOUNDS: RequestBounds = { maxBytes: MAX_RESPONSE_BYTES, deadlineMs: LONG_DEADLINE_MS };
+/** Retrieve: a whole capsule in the answer. */
+const RETRIEVE_BOUNDS: RequestBounds = {
+    maxBytes: MAX_RETRIEVE_RESPONSE_BYTES,
+    deadlineMs: LONG_DEADLINE_MS,
+};
 
 export class ApiError extends Error {
     constructor(
@@ -112,7 +162,7 @@ export class PasteApi {
         if (this.#creationToken) {
             headers['Authorization'] = `Bearer ${this.#creationToken}`;
         }
-        return this.#request<CreateResponse>(this.#url('/api/v1/pastes'), {
+        return this.#request<CreateResponse>(this.#url('/api/v1/pastes'), CREATE_BOUNDS, {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -155,7 +205,7 @@ export class PasteApi {
             expires_at: number | null;
             burn_after_retrieval: boolean;
             payload_size: number;
-        }>(this.#url(`/api/v1/pastes/${encodeURIComponent(id)}/describe`), {
+        }>(this.#url(`/api/v1/pastes/${encodeURIComponent(id)}/describe`), SHORT_BOUNDS, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -199,6 +249,7 @@ export class PasteApi {
     ): Promise<RetrieveResponse> {
         return this.#request<RetrieveResponse>(
             this.#url(`/api/v1/pastes/${encodeURIComponent(id)}/retrieve`),
+            RETRIEVE_BOUNDS,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -220,11 +271,15 @@ export class PasteApi {
         id: string,
         deleteSecret: string, // base64url
     ): Promise<void> {
-        return this.#request<void>(this.#url(`/api/v1/pastes/${encodeURIComponent(id)}`), {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ delete_secret: deleteSecret }),
-        });
+        return this.#request<void>(
+            this.#url(`/api/v1/pastes/${encodeURIComponent(id)}`),
+            SHORT_BOUNDS,
+            {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ delete_secret: deleteSecret }),
+            },
+        );
     }
 
     /** Builds the full API URL from this client's base URL. */
@@ -240,49 +295,158 @@ export class PasteApi {
      * mistake or someone else. It ends in an `ApiError` with code
      * `redirect_refused`; the `Location` is server-controlled text and is
      * not passed on.
+     *
+     * The server is not trusted to be honest or alive: the whole request
+     * must finish within `bounds.deadlineMs`, and the response body (success
+     * or error) is read through {@link readBounded}. Both failures are
+     * `ApiError`s with status `0`, like a network error.
      */
-    async #request<T>(url: string, options: RequestInit): Promise<T> {
-        let response: Response;
+    async #request<T>(url: string, bounds: RequestBounds, options: RequestInit): Promise<T> {
+        const deadline = new Deadline(bounds.deadlineMs);
         try {
-            response = await fetch(url, { ...options, redirect: 'manual' });
-        } catch {
-            throw new ApiError('network error', 0, null);
-        }
+            let response: Response;
+            try {
+                response = await deadline.race(
+                    fetch(url, { ...options, redirect: 'manual', signal: deadline.signal }),
+                );
+            } catch (err) {
+                throw err instanceof ApiError ? err : new ApiError('network error', 0, null);
+            }
 
-        // Browsers hide a refused redirect behind an opaque response (status
-        // 0); Node returns the 3xx response itself.
-        if (
-            response.type === 'opaqueredirect' ||
-            (response.status >= 300 && response.status < 400)
-        ) {
-            response.body?.cancel().catch(() => undefined);
-            throw new ApiError('redirect not followed', response.status, REDIRECT_REFUSED);
-        }
+            // Browsers hide a refused redirect behind an opaque response (status
+            // 0); Node returns the 3xx response itself.
+            if (
+                response.type === 'opaqueredirect' ||
+                (response.status >= 300 && response.status < 400)
+            ) {
+                response.body?.cancel().catch(() => undefined);
+                throw new ApiError('redirect not followed', response.status, REDIRECT_REFUSED);
+            }
 
-        // 204 No Content: success with no body.
-        if (response.status === 204) {
-            return undefined as T;
-        }
+            // 204 No Content: success with no body.
+            if (response.status === 204) {
+                return undefined as T;
+            }
 
-        let body: unknown;
-        try {
-            body = await response.json();
-        } catch {
-            throw new ApiError(`unexpected response: ${response.status}`, response.status, null);
-        }
+            // An error body is a small problem document on every endpoint.
+            const maxBytes = response.ok ? bounds.maxBytes : MAX_RESPONSE_BYTES;
+            const text = await readBounded(response, maxBytes, deadline);
+            let body: unknown;
+            try {
+                body = JSON.parse(text);
+            } catch {
+                throw new ApiError(
+                    `unexpected response: ${response.status}`,
+                    response.status,
+                    null,
+                );
+            }
 
-        if (!response.ok) {
-            const problem =
-                typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
-            const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
-            throw new ApiError(
-                typeof problem['title'] === 'string' ? problem['title'] : 'request failed',
-                response.status,
-                typeof problem['code'] === 'string' ? problem['code'] : null,
-                Number.isFinite(retryAfter) ? retryAfter : null,
-            );
-        }
+            if (!response.ok) {
+                const problem =
+                    typeof body === 'object' && body !== null
+                        ? (body as Record<string, unknown>)
+                        : {};
+                const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
+                throw new ApiError(
+                    typeof problem['title'] === 'string' ? problem['title'] : 'request failed',
+                    response.status,
+                    typeof problem['code'] === 'string' ? problem['code'] : null,
+                    Number.isFinite(retryAfter) ? retryAfter : null,
+                );
+            }
 
-        return body as T;
+            return body as T;
+        } finally {
+            deadline.clear();
+        }
     }
+}
+
+/**
+ * The deadlines of one request: a total one started on construction and an
+ * idle one restarted for every chunk of the body. Either expiring aborts the
+ * request's signal and rejects every pending {@link race}, so a `fetch` or a
+ * body that ignores the signal cannot hold the call open.
+ */
+class Deadline {
+    readonly #controller = new AbortController();
+    readonly #expired: Promise<never>;
+    #expire: () => void = () => undefined;
+    readonly #total: ReturnType<typeof setTimeout>;
+    #idle: ReturnType<typeof setTimeout> | undefined;
+
+    constructor(totalMs: number) {
+        this.#expired = new Promise<never>((_, reject) => {
+            this.#expire = () => {
+                reject(new ApiError('request timed out', 0, TIMEOUT));
+                this.#controller.abort();
+            };
+        });
+        // Only ever observed through race(); never an unhandled rejection.
+        this.#expired.catch(() => undefined);
+        this.#total = setTimeout(this.#expire, totalMs);
+    }
+
+    get signal(): AbortSignal {
+        return this.#controller.signal;
+    }
+
+    /** Settles like `promise`, or rejects with a `timeout` `ApiError` once a
+     *  deadline has expired. */
+    race<T>(promise: Promise<T>): Promise<T> {
+        return Promise.race([promise, this.#expired]);
+    }
+
+    /** (Re)starts the idle deadline. */
+    restartIdle(): void {
+        clearTimeout(this.#idle);
+        this.#idle = setTimeout(this.#expire, IDLE_TIMEOUT_MS);
+    }
+
+    /** Stops both deadlines; called on every exit path of a request. */
+    clear(): void {
+        clearTimeout(this.#total);
+        clearTimeout(this.#idle);
+    }
+}
+
+/**
+ * Reads a response body as UTF-8 text, at most `maxBytes` of it, counted on
+ * the stream itself whatever `Content-Length` says. Above the limit, and when
+ * a deadline expires, the stream is cancelled; the first ends in an
+ * `ApiError` with code `response_too_large`, the second with `timeout`.
+ */
+async function readBounded(
+    response: Response,
+    maxBytes: number,
+    deadline: Deadline,
+): Promise<string> {
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const parts: string[] = [];
+    let total = 0;
+    let finished = false;
+    try {
+        deadline.restartIdle();
+        for (;;) {
+            const { done, value } = await deadline.race(reader.read());
+            if (done) break;
+            if (value.length === 0) continue;
+            total += value.length;
+            if (total > maxBytes) {
+                throw new ApiError('response too large', 0, RESPONSE_TOO_LARGE);
+            }
+            deadline.restartIdle();
+            parts.push(decoder.decode(value, { stream: true }));
+        }
+        finished = true;
+    } catch (err) {
+        throw err instanceof ApiError ? err : new ApiError('network error', 0, null);
+    } finally {
+        if (!finished) reader.cancel().catch(() => undefined);
+    }
+    parts.push(decoder.decode());
+    return parts.join('');
 }

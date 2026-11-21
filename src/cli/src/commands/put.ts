@@ -8,19 +8,23 @@
  * create a second capsule.
  */
 
-import { type FileHandle, open, readFile, unlink } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { type FileHandle, open, stat, unlink } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import {
     ApiError,
     type CreateResponse,
+    MAX_CAPSULE_BYTES,
     MAX_ITEMS,
     Paste,
     PasteApi,
     REDIRECT_REFUSED,
+    RESPONSE_TOO_LARGE,
     type SealedPaste,
+    TIMEOUT,
 } from '@capsulebin/core';
-import { usage } from '../exit';
-import type { Io } from '../io';
+import { type CliError, usage } from '../exit';
+import { type Io, readBounded } from '../io';
 import { buildItem, type ItemInput, type Presentation } from '../items';
 import { creationToken, newPassword } from '../secrets';
 import { jsonLine } from '../terminal';
@@ -135,47 +139,79 @@ async function createWithLinkFile(
     }
 }
 
+/**
+ * Reads the inputs within one budget of `MAX_CAPSULE_BYTES` over all of them,
+ * so a large input ends in a usage error instead of exhausting memory. The
+ * sizes of regular files are checked before anything is read; files that
+ * grow, special files reporting size 0 and stdin are cut off at the first
+ * byte beyond the budget.
+ */
 async function readInputs(io: Io, options: PutOptions): Promise<ItemInput[]> {
     const sources = options.inputs.length > 0 ? options.inputs : ['-'];
     if (options.name && sources.length > 1) {
         throw usage('--name applies to a single input only');
     }
 
-    const inputs: ItemInput[] = [];
+    let declared = 0;
     for (const source of sources) {
-        if (source === '-') {
-            const bytes = await io.readStdin();
-            if (bytes.length === 0) throw usage('stdin is empty');
-            inputs.push({ name: options.name ?? 'stdin', bytes });
-            continue;
-        }
-        let bytes: Uint8Array;
+        if (source === '-') continue;
+        let info;
         try {
-            bytes = new Uint8Array(await readFile(resolve(io.cwd, source)));
+            info = await stat(resolve(io.cwd, source));
         } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            throw usage(
-                code === 'ENOENT'
-                    ? `${source}: no such file`
-                    : code === 'EISDIR'
-                      ? `${source}: is a directory`
-                      : `${source}: cannot read file`,
-            );
+            throw fileError(source, err);
         }
-        inputs.push({ name: options.name ?? basename(source), bytes });
+        if (info.isDirectory()) throw usage(`${source}: is a directory`);
+        if (info.isFile()) declared += info.size;
+    }
+    if (declared > MAX_CAPSULE_BYTES) throw inputTooLarge();
+
+    const inputs: ItemInput[] = [];
+    let remaining = MAX_CAPSULE_BYTES;
+    for (const source of sources) {
+        let bytes: Uint8Array;
+        if (source === '-') {
+            bytes = await io.readStdin(remaining);
+            if (bytes.length === 0) throw usage('stdin is empty');
+        } else {
+            try {
+                bytes = await readBounded(createReadStream(resolve(io.cwd, source)), remaining);
+            } catch (err) {
+                throw fileError(source, err);
+            }
+        }
+        if (bytes.length > remaining) throw inputTooLarge();
+        remaining -= bytes.length;
+        inputs.push({ name: options.name ?? (source === '-' ? 'stdin' : basename(source)), bytes });
     }
     return inputs;
 }
 
+function inputTooLarge(): CliError {
+    return usage(`the input exceeds the capsule limit of ${MAX_CAPSULE_BYTES} bytes`);
+}
+
+function fileError(source: string, err: unknown): CliError {
+    const code = (err as NodeJS.ErrnoException).code;
+    return usage(
+        code === 'ENOENT'
+            ? `${source}: no such file`
+            : code === 'EISDIR'
+              ? `${source}: is a directory`
+              : `${source}: cannot read file`,
+    );
+}
+
 /**
- * Statuses worth a retry: no response, rate limited, or a server-side fault.
- * Never a refused redirect, whatever its status: the next attempt would get
- * the same answer.
+ * Statuses worth a retry: no response (a timeout included), rate limited, or
+ * a server-side fault. Never a refused redirect, whatever its status, nor an
+ * oversized response: the next attempt would get the same answer.
  */
 function isTransient(err: unknown): err is ApiError {
     return (
         err instanceof ApiError &&
         err.code !== REDIRECT_REFUSED &&
+        err.code !== RESPONSE_TOO_LARGE &&
         (err.status === 0 || err.status === 429 || err.status >= 500)
     );
 }
@@ -198,7 +234,7 @@ async function createWithRetry(
                 MAX_RETRY_DELAY_MS,
             );
             io.stderr.write(
-                `capsulebin: ${err.status === 0 ? 'network error' : `HTTP ${err.status}`}, retrying in ${Math.round(delay / 1000)}s (${attempt + 1}/${retries})\n`,
+                `capsulebin: ${err.code === TIMEOUT ? 'timeout' : err.status === 0 ? 'network error' : `HTTP ${err.status}`}, retrying in ${Math.round(delay / 1000)}s (${attempt + 1}/${retries})\n`,
             );
             await io.sleep(delay);
         }

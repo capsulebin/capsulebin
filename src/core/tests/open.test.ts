@@ -5,12 +5,18 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, PasteApi } from '../src/api';
+import { ApiError, MAX_CIPHERTEXT_BYTES, PasteApi } from '../src/api';
+import { decrypt } from '../src/crypto';
 import { encodeUtf8, decodeUtf8, fromBase64url, toBase64url } from '../src/helpers/bytes';
 import { parseLink } from '../src/links';
 import { derivePasswordKeyFor, openPaste } from '../src/open';
 import { Paste, type PasteOptions } from '../src/paste';
 import { createFakeServer, type FakeServer } from './fake-server';
+
+vi.mock('../src/crypto', async (importOriginal) => {
+    const crypto = await importOriginal<typeof import('../src/crypto')>();
+    return { ...crypto, decrypt: vi.fn(crypto.decrypt) };
+});
 
 const ORIGIN = 'http://capsule.test';
 let server: FakeServer;
@@ -181,6 +187,17 @@ describe('openPaste', () => {
         expect(opened.kind).toBe('success');
         expect(asked).toBe(1);
         expect(retrieves()).toHaveLength(1);
+    });
+
+    it('refuses an oversized ciphertext before decrypting', async () => {
+        const { share } = await publish();
+        const stored = server.pastes.get(share.id)!;
+        stored.ciphertext = toBase64url(new Uint8Array(MAX_CIPHERTEXT_BYTES + 1));
+        vi.mocked(decrypt).mockClear();
+
+        const outcome = await openPaste(new PasteApi(share.base), share.id, share.secret);
+        expect(outcome).toMatchObject({ kind: 'invalid_capsule' });
+        expect(decrypt).not.toHaveBeenCalled();
     });
 
     it('reports a tampered ciphertext as decrypt_failed', async () => {

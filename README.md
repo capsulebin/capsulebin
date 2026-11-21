@@ -227,8 +227,18 @@ node src/cli/dist/cli.js delete --link-file notes.link
   `/de/` language prefix of the pages. It also refuses one with a query or fragment, even an
   empty one (`https://example.org/team?`, exit code `2`): the API path is appended to the URL.
   The server refuses the same addresses as `public_url`.
+- **`put` stops at the capsule limit.** All inputs together, files and stdin, may hold at most
+  10 MiB (10485760 bytes). Regular files whose sizes sum above that are refused before any of them
+  is read; stdin, pipes, special files and growing files are read only up to the first byte beyond
+  the limit. Either way `put` ends with exit code `2`, naming the limit, and sends nothing.
+- **A server cannot hold the client forever.** Each request has a deadline: 30 seconds for
+  describing and deleting, 10 minutes for creating and retrieving; an answer that delivers no data
+  for 30 seconds is abandoned. The deadlines are fixed. An answer larger than any valid one (a
+  retrieve above the largest capsule, anything else above 64 KiB) is cut off. Both end with exit
+  code `7`, reason `timeout` or `response_too_large`. A burn capsule whose retrieve times out after
+  the server answered is consumed.
 - **Retries are safe.** `put` seals once and re-sends the identical request on network errors,
-  `429` and `5xx` (never after a redirect); the server answers a replay like the original
+  timeouts, `429` and `5xx` (never after a redirect or an oversized answer); the server answers a replay like the original
   ([ADR-011](docs/adr/ADR-011-idempotent-create.md)) instead of storing a second copy.
 - **Burn capsules are not consumed by accident.** `get` asks first, and refuses
   non-interactively unless `--yes` is given. Once retrieved, an existing entry does not stop the
