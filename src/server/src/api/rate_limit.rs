@@ -30,11 +30,26 @@
 //!   or delete that ends in `404` costs a token; with the bucket empty, further
 //!   ones from that IP are refused before any lookup. That throttles
 //!   guessing ids or capabilities without touching legitimate use.
+//!
+//! Buckets live in two tables, one keyed by client (request classes, create
+//! bytes, invalid capabilities) and one keyed by paste (password attempts),
+//! each capped at 100 000 entries (`CLIENT_CEILING`, `PASTE_CEILING`). The
+//! work per request is bounded by a constant, whatever their size: a new key
+//! lets a sweep cursor look at a few entries and drop those that have refilled
+//! completely (they carry no information), and a table at its ceiling then
+//! decides by its own rule. The client table evicts its least recently used
+//! bucket - that address starts afresh, which costs nothing an attacker with
+//! many addresses does not already have. The paste table never evicts a
+//! budget: a wrong password on a paste it does not track is refused, a correct
+//! one passes (see [`LimiterState::password_attempt`]). A saturated table logs
+//! a warning at most once a minute, naming the table and its ceiling, never an
+//! address or an id.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::IpAddr;
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -139,20 +154,14 @@ pub enum EndpointClass {
     Unclassified,
 }
 
-/// What a bucket counts. One map holds them all.
+/// What a bucket counts. `InvalidCapabilityPerPaste` buckets are keyed by the
+/// paste and live in the paste table, all others in the client table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BucketKind {
     Requests(EndpointClass),
     CreateBytes,
     InvalidCapability,
     InvalidCapabilityPerPaste,
-}
-
-/// Who a bucket belongs to: a client, or (for failed capabilities) a paste.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum BucketKey {
-    Ip(IpAddr),
-    Paste(PasteId),
 }
 
 fn default_per_paste() -> RateLimit {
@@ -265,6 +274,17 @@ struct Spec {
     refill_per_second: f64,
 }
 
+impl Spec {
+    /// Whole seconds until `missing` tokens have been refilled, at least one.
+    fn seconds_to_refill(self, missing: f64) -> u64 {
+        if self.refill_per_second <= 0.0 {
+            return u64::MAX;
+        }
+        // Saturating float-to-int cast.
+        ((missing / self.refill_per_second).ceil() as u64).max(1)
+    }
+}
+
 struct Bucket {
     tokens: f64,
     last_refill: Instant,
@@ -286,12 +306,7 @@ impl Bucket {
 
     /// Seconds until `cost` tokens are available, at least one.
     fn wait_for(&self, spec: Spec, cost: f64) -> u64 {
-        let missing = cost - self.tokens;
-        if spec.refill_per_second <= 0.0 {
-            return u64::MAX;
-        }
-        // Saturating float-to-int cast.
-        ((missing / spec.refill_per_second).ceil() as u64).max(1)
+        spec.seconds_to_refill(cost - self.tokens)
     }
 
     /// Takes `cost` tokens, or returns how many whole seconds until they are
@@ -327,32 +342,307 @@ impl Bucket {
     }
 }
 
-/// Above this many buckets, full ones are swept out before a new one is
-/// added. Without it, a stream of distinct client addresses (trivial with
-/// IPv6) would grow the map without bound.
-const SWEEP_THRESHOLD: usize = 10_000;
+/// Most client buckets (request classes, create bytes, invalid capabilities)
+/// the limiter keeps. An entry (bucket, recency links, index) takes about a
+/// hundred bytes, so a full table stays near 10 MB.
+const CLIENT_CEILING: usize = 100_000;
+
+/// Most paste buckets (`invalid_capability_per_paste`) the limiter keeps. A
+/// table of its own, so a flood of client addresses cannot push out password
+/// budgets.
+const PASTE_CEILING: usize = 100_000;
+
+/// Entries the reclaim sweep looks at for each new key. Together with the
+/// lookup and at most one eviction, this bounds the work done under the lock
+/// per admission, whatever the size of the table.
+const SWEEP_STEP: usize = 8;
+
+/// A saturated table logs at most one warning in this interval.
+const SATURATION_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The end of the recency list.
+const NONE: usize = usize::MAX;
+
+/// The limiter's monotonic time source: `Instant::now` in production, a clock
+/// moved by hand in the tests.
+type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// What a table at its ceiling does with a new key once the sweep freed nothing.
+#[derive(Debug, Clone, Copy)]
+enum WhenFull {
+    /// Drop the least recently used bucket. Right for client buckets: an
+    /// attacker with many addresses gets fresh budgets anyway.
+    EvictOldest,
+    /// Track nothing new. Right for paste buckets: evicting one would reset a
+    /// password budget, so flooding the table would unlock new guesses.
+    Refuse,
+}
+
+struct Entry<K> {
+    key: K,
+    bucket: Bucket,
+    spec: Spec,
+    /// Neighbours in the recency list, [`NONE`] at either end.
+    newer: usize,
+    older: usize,
+}
+
+/// Buckets with a ceiling and bounded work per admission.
+///
+/// The entries sit in a dense vector, indexed by a map from key to slot and
+/// threaded on a doubly linked list from the most to the least recently used
+/// one. Each new key first lets a sweep cursor walk [`SWEEP_STEP`] slots and
+/// drop the buckets that have refilled completely (they carry no
+/// information). So full buckets are reclaimed before anything is evicted, and
+/// the table shrinks back after a burst without a full scan. Only at the
+/// ceiling does [`WhenFull`] decide.
+struct Table<K> {
+    /// For the saturation warning, never a key.
+    name: &'static str,
+    ceiling: usize,
+    when_full: WhenFull,
+    slots: HashMap<K, usize>,
+    entries: Vec<Entry<K>>,
+    newest: usize,
+    oldest: usize,
+    cursor: usize,
+    last_warning: Option<Instant>,
+    warning_due: bool,
+    /// Entries visited by the last admission.
+    #[cfg(test)]
+    visits: usize,
+}
+
+impl<K: Copy + Eq + Hash> Table<K> {
+    fn new(name: &'static str, ceiling: usize, when_full: WhenFull) -> Self {
+        Self {
+            name,
+            ceiling,
+            when_full,
+            slots: HashMap::new(),
+            entries: Vec::new(),
+            newest: NONE,
+            oldest: NONE,
+            cursor: 0,
+            last_warning: None,
+            warning_due: false,
+            #[cfg(test)]
+            visits: 0,
+        }
+    }
+
+    fn visit(&mut self) {
+        #[cfg(test)]
+        {
+            self.visits += 1;
+        }
+    }
+
+    /// The slot of `key`, now the most recently used one. Starts an admission.
+    fn find(&mut self, key: &K) -> Option<usize> {
+        #[cfg(test)]
+        {
+            self.visits = 0;
+        }
+        self.visit();
+        let slot = *self.slots.get(key)?;
+        if slot != self.newest {
+            self.unlink(slot);
+            self.push_newest(slot);
+        }
+        Some(slot)
+    }
+
+    /// The slot of `key`, with a fresh bucket if it had none. `None` only when
+    /// a [`WhenFull::Refuse`] table is at its ceiling.
+    fn admit(&mut self, key: K, spec: Spec, now: Instant) -> Option<usize> {
+        match self.find(&key) {
+            Some(slot) => Some(slot),
+            None => self.insert(key, spec, now),
+        }
+    }
+
+    /// Adds a bucket for `key`, which has none.
+    fn insert(&mut self, key: K, spec: Spec, now: Instant) -> Option<usize> {
+        self.reclaim(now);
+        if self.entries.len() >= self.ceiling {
+            self.note_saturation(now);
+            match self.when_full {
+                WhenFull::Refuse => return None,
+                WhenFull::EvictOldest => {
+                    if self.oldest == NONE {
+                        return None;
+                    }
+                    self.visit();
+                    self.remove(self.oldest);
+                }
+            }
+        }
+        let slot = self.entries.len();
+        self.entries.push(Entry {
+            key,
+            bucket: Bucket::new(spec, now),
+            spec,
+            newer: NONE,
+            older: NONE,
+        });
+        self.slots.insert(key, slot);
+        self.push_newest(slot);
+        Some(slot)
+    }
+
+    fn bucket(&mut self, slot: usize) -> &mut Bucket {
+        &mut self.entries[slot].bucket
+    }
+
+    /// Walks the sweep cursor [`SWEEP_STEP`] slots on and drops every bucket
+    /// on the way that has refilled completely.
+    fn reclaim(&mut self, now: Instant) {
+        for _ in 0..SWEEP_STEP {
+            if self.entries.is_empty() {
+                return;
+            }
+            if self.cursor >= self.entries.len() {
+                self.cursor = 0;
+            }
+            self.visit();
+            let entry = &self.entries[self.cursor];
+            if entry.bucket.is_full(entry.spec, now) {
+                // The last entry moves into this slot and is looked at next.
+                self.remove(self.cursor);
+            } else {
+                self.cursor += 1;
+            }
+        }
+    }
+
+    fn note_saturation(&mut self, now: Instant) {
+        if self
+            .last_warning
+            .is_none_or(|at| now.saturating_duration_since(at) >= SATURATION_WARNING_INTERVAL)
+        {
+            self.last_warning = Some(now);
+            self.warning_due = true;
+        }
+    }
+
+    /// The warning noted by the last admission, to be logged once the lock is
+    /// released.
+    fn take_warning(&mut self) -> Option<SaturationWarning> {
+        std::mem::take(&mut self.warning_due).then_some(SaturationWarning {
+            table: self.name,
+            ceiling: self.ceiling,
+            when_full: self.when_full,
+        })
+    }
+
+    fn push_newest(&mut self, slot: usize) {
+        self.entries[slot].newer = NONE;
+        self.entries[slot].older = self.newest;
+        if self.newest == NONE {
+            self.oldest = slot;
+        } else {
+            self.entries[self.newest].newer = slot;
+        }
+        self.newest = slot;
+    }
+
+    fn unlink(&mut self, slot: usize) {
+        let Entry { newer, older, .. } = self.entries[slot];
+        if newer == NONE {
+            self.newest = older;
+        } else {
+            self.entries[newer].older = older;
+        }
+        if older == NONE {
+            self.oldest = newer;
+        } else {
+            self.entries[older].newer = newer;
+        }
+    }
+
+    /// Removes the entry in `slot`; the last entry takes its place.
+    fn remove(&mut self, slot: usize) {
+        self.unlink(slot);
+        let removed = self.entries.swap_remove(slot);
+        self.slots.remove(&removed.key);
+        if slot < self.entries.len() {
+            let Entry { key, newer, older, .. } = self.entries[slot];
+            self.slots.insert(key, slot);
+            if newer == NONE {
+                self.newest = slot;
+            } else {
+                self.entries[newer].older = slot;
+            }
+            if older == NONE {
+                self.oldest = slot;
+            } else {
+                self.entries[older].newer = slot;
+            }
+        }
+    }
+}
+
+/// A table reached its ceiling. Names the table, never a key.
+struct SaturationWarning {
+    table: &'static str,
+    ceiling: usize,
+    when_full: WhenFull,
+}
+
+impl SaturationWarning {
+    fn log(&self) {
+        let Self { table, ceiling, .. } = *self;
+        match self.when_full {
+            WhenFull::EvictOldest => tracing::warn!(
+                table,
+                ceiling,
+                "rate limiter table full: the least recently used bucket makes room for each new one"
+            ),
+            WhenFull::Refuse => tracing::warn!(
+                table,
+                ceiling,
+                "rate limiter table full: wrong passwords on capsules without a bucket are refused until buckets refill"
+            ),
+        }
+    }
+}
+
+/// Recovers the guard of a poisoned lock: a panic elsewhere while it was held
+/// must not turn every future request into a panic too.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Clone)]
 pub struct LimiterState {
-    inner: std::sync::Arc<LimiterInner>,
+    inner: Arc<LimiterInner>,
 }
 
 struct LimiterInner {
     /// For the `problem+json` type URI, as everywhere else.
     base_url: String,
-    buckets: Mutex<HashMap<(BucketKind, BucketKey), Bucket>>,
+    clients: Mutex<Table<(BucketKind, IpAddr)>>,
+    pastes: Mutex<Table<PasteId>>,
     in_flight: Mutex<HashMap<IpAddr, u32>>,
     config: RateLimitConfig,
+    now: Now,
 }
 
 impl LimiterState {
     pub fn new(config: RateLimitConfig, base_url: String) -> Self {
+        Self::build(config, base_url, CLIENT_CEILING, PASTE_CEILING, Arc::new(Instant::now))
+    }
+
+    fn build(config: RateLimitConfig, base_url: String, client_ceiling: usize, paste_ceiling: usize, now: Now) -> Self {
         Self {
-            inner: std::sync::Arc::new(LimiterInner {
+            inner: Arc::new(LimiterInner {
                 base_url,
-                buckets: Mutex::new(HashMap::new()),
+                clients: Mutex::new(Table::new("client", client_ceiling, WhenFull::EvictOldest)),
+                pastes: Mutex::new(Table::new("paste", paste_ceiling, WhenFull::Refuse)),
                 in_flight: Mutex::new(HashMap::new()),
                 config,
+                now,
             }),
         }
     }
@@ -362,27 +652,31 @@ impl LimiterState {
         Self::new(config, "https://paste.example".to_owned())
     }
 
-    /// Runs `op` on the bucket for `kind`/`key`, if that kind is enabled.
-    fn with_bucket(
-        &self,
-        kind: BucketKind,
-        key: BucketKey,
-        op: impl FnOnce(&mut Bucket, Spec, Instant) -> Result<(), u64>,
-    ) -> Result<(), u64> {
+    /// A limiter with small ceilings on a clock the test moves.
+    #[cfg(test)]
+    fn bounded_for_tests(config: RateLimitConfig, client_ceiling: usize, paste_ceiling: usize, now: Now) -> Self {
+        Self::build(config, "https://paste.example".to_owned(), client_ceiling, paste_ceiling, now)
+    }
+
+    /// Runs `op` on the bucket for `kind` of client `ip`, if that kind is
+    /// enabled.
+    fn with_bucket(&self, kind: BucketKind, ip: IpAddr, op: impl FnOnce(&mut Bucket, Spec, Instant) -> Result<(), u64>) -> Result<(), u64> {
         let Some(spec) = self.inner.config.spec(kind) else {
             return Ok(());
         };
-        let now = Instant::now();
-        // A panic elsewhere while the lock is held must not turn every future
-        // request into a panic too — recovering the guard is safer than
-        // propagating the poison into the request path.
-        let mut buckets = self.inner.buckets.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if buckets.len() >= SWEEP_THRESHOLD && !buckets.contains_key(&(kind, key)) {
-            let config = &self.inner.config;
-            buckets.retain(|(kind, _), bucket| config.spec(*kind).is_some_and(|spec| !bucket.is_full(spec, now)));
+        let now = (self.inner.now)();
+        let (result, warning) = {
+            let mut clients = lock(&self.inner.clients);
+            // The client table evicts at its ceiling, so it always has a slot.
+            let result = clients
+                .admit((kind, ip), spec, now)
+                .map_or(Ok(()), |slot| op(clients.bucket(slot), spec, now));
+            (result, clients.take_warning())
+        };
+        if let Some(warning) = warning {
+            warning.log();
         }
-        let bucket = buckets.entry((kind, key)).or_insert_with(|| Bucket::new(spec, now));
-        op(bucket, spec, now)
+        result
     }
 
     /// Claims an in-flight create slot, released when the guard drops.
@@ -416,18 +710,45 @@ impl LimiterState {
     /// Checking and charging happen under one lock: as two steps, parallel
     /// guesses - reveal tokens precomputed offline from a password list - could
     /// all pass the check before any of them was charged.
+    ///
+    /// A paste without a bucket has its whole budget, so a correct password
+    /// creates none. With the paste table at its ceiling and nothing to
+    /// reclaim, a wrong password on such a paste is refused: no budget is ever
+    /// evicted to make room, and admitting it without one would be an unlimited
+    /// guessing path. Correct passwords still pass, so whoever fills the table
+    /// with pastes of their own cannot lock others out. The refusal's
+    /// `Retry-After` is the time one token takes to refill (6 s at the
+    /// default), not a full refill: that is when a tracked paste would admit
+    /// the next attempt. A slot in the table may free up only later.
     pub fn password_attempt(&self, paste: PasteId, failed: bool) -> Result<(), u64> {
-        self.with_bucket(
-            BucketKind::InvalidCapabilityPerPaste,
-            BucketKey::Paste(paste),
-            |bucket, spec, now| {
-                bucket.check(spec, now)?;
-                if failed {
-                    bucket.tokens -= 1.0;
+        let Some(spec) = self.inner.config.spec(BucketKind::InvalidCapabilityPerPaste) else {
+            return Ok(());
+        };
+        let now = (self.inner.now)();
+        let (result, warning) = {
+            let mut pastes = lock(&self.inner.pastes);
+            let slot = match pastes.find(&paste) {
+                Some(slot) => Some(slot),
+                None if !failed => return Ok(()),
+                None => pastes.insert(paste, spec, now),
+            };
+            let result = match slot {
+                Some(slot) => {
+                    let bucket = pastes.bucket(slot);
+                    bucket.check(spec, now).map(|()| {
+                        if failed {
+                            bucket.tokens -= 1.0;
+                        }
+                    })
                 }
-                Ok(())
-            },
-        )
+                None => Err(spec.seconds_to_refill(1.0)),
+            };
+            (result, pastes.take_warning())
+        };
+        if let Some(warning) = warning {
+            warning.log();
+        }
+        result
     }
 }
 
@@ -503,14 +824,12 @@ pub async fn middleware(State(state): State<LimiterState>, request: Request, nex
     // Too many failed capability checks from this client: refuse before
     // anything is looked up.
     if guards_capabilities
-        && let Err(retry_after) = state.with_bucket(BucketKind::InvalidCapability, BucketKey::Ip(ip), |bucket, spec, now| {
-            bucket.check(spec, now)
-        })
+        && let Err(retry_after) = state.with_bucket(BucketKind::InvalidCapability, ip, |bucket, spec, now| bucket.check(spec, now))
     {
         return too_many_requests(&state, &request_id, retry_after);
     }
 
-    if let Err(retry_after) = state.with_bucket(BucketKind::Requests(class), BucketKey::Ip(ip), |bucket, spec, now| {
+    if let Err(retry_after) = state.with_bucket(BucketKind::Requests(class), ip, |bucket, spec, now| {
         bucket.try_consume(spec, 1.0, now)
     }) {
         return too_many_requests(&state, &request_id, retry_after);
@@ -529,7 +848,7 @@ pub async fn middleware(State(state): State<LimiterState>, request: Request, nex
             else {
                 return problem(&state, &request_id, ApiError::LengthRequired);
             };
-            if let Err(retry_after) = state.with_bucket(BucketKind::CreateBytes, BucketKey::Ip(ip), |bucket, spec, now| {
+            if let Err(retry_after) = state.with_bucket(BucketKind::CreateBytes, ip, |bucket, spec, now| {
                 bucket.try_consume(spec, length as f64, now)
             }) {
                 return too_many_requests(&state, &request_id, retry_after);
@@ -547,7 +866,7 @@ pub async fn middleware(State(state): State<LimiterState>, request: Request, nex
     if guards_capabilities && response.status() == StatusCode::NOT_FOUND {
         // Charged after the fact: the answer is the same for every reason a
         // paste is unavailable, so this does not single out any of them.
-        let _ = state.with_bucket(BucketKind::InvalidCapability, BucketKey::Ip(ip), charge_one);
+        let _ = state.with_bucket(BucketKind::InvalidCapability, ip, charge_one);
     }
 
     response
@@ -575,7 +894,7 @@ fn classify(request: &Request) -> EndpointClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::domain::ID_BYTES;
 
     fn spec(per_minute: u32, per_hour: u32, burst: u32) -> Spec {
         RateLimit {
@@ -667,21 +986,296 @@ mod tests {
         assert_eq!(bucket.check(spec, start), Err(1));
     }
 
-    #[test]
-    fn full_buckets_are_swept_once_the_map_is_large() {
-        let state = LimiterState::new_for_tests(RateLimitConfig {
-            descriptor: limit(60, 0, 1),
-            ..RateLimitConfig::default()
-        });
-        let kind = BucketKind::Requests(EndpointClass::Descriptor);
-        for i in 0..SWEEP_THRESHOLD as u32 {
-            let ip = IpAddr::from(i.to_be_bytes());
-            // Untouched buckets are full right away.
-            let _ = state.with_bucket(kind, BucketKey::Ip(ip), |_, _, _| Ok(()));
+    /// A monotonic clock the test moves by hand.
+    #[derive(Clone)]
+    struct FakeClock(Arc<Mutex<Instant>>);
+
+    impl FakeClock {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(Instant::now())))
         }
-        let _ = state.with_bucket(kind, BucketKey::Ip(IpAddr::from([255, 255, 255, 255])), |_, _, _| Ok(()));
-        let size = state.inner.buckets.lock().map(|b| b.len()).unwrap_or_default();
-        assert_eq!(size, 1, "full buckets were not swept");
+
+        fn advance(&self, by: Duration) {
+            *lock(&self.0) += by;
+        }
+
+        fn source(&self) -> Now {
+            let at = Arc::clone(&self.0);
+            Arc::new(move || *lock(&at))
+        }
+    }
+
+    fn bounded(config: RateLimitConfig, client_ceiling: usize, paste_ceiling: usize) -> (LimiterState, FakeClock) {
+        let clock = FakeClock::new();
+        let state = LimiterState::bounded_for_tests(config, client_ceiling, paste_ceiling, clock.source());
+        (state, clock)
+    }
+
+    const DESCRIBE: BucketKind = BucketKind::Requests(EndpointClass::Descriptor);
+
+    fn describe_limit(limit: RateLimit) -> RateLimitConfig {
+        RateLimitConfig {
+            descriptor: limit,
+            ..RateLimitConfig::default()
+        }
+    }
+
+    fn ipv4(n: u32) -> IpAddr {
+        IpAddr::from(n.to_be_bytes())
+    }
+
+    /// `2001:db8::<n>`.
+    fn ipv6(n: u32) -> IpAddr {
+        IpAddr::from(std::net::Ipv6Addr::from((0x2001_0db8_u128 << 96) | u128::from(n)))
+    }
+
+    fn paste(n: u32) -> PasteId {
+        let mut bytes = [0x5a; ID_BYTES];
+        bytes[..4].copy_from_slice(&n.to_be_bytes());
+        PasteId::from_bytes(bytes)
+    }
+
+    /// One descriptor request from `ip`.
+    fn request(state: &LimiterState, ip: IpAddr) -> Result<(), u64> {
+        state.with_bucket(DESCRIBE, ip, |bucket, spec, now| bucket.try_consume(spec, 1.0, now))
+    }
+
+    /// Entries in the client and the paste table.
+    fn sizes(state: &LimiterState) -> (usize, usize) {
+        (lock(&state.inner.clients).entries.len(), lock(&state.inner.pastes).entries.len())
+    }
+
+    /// Entries visited by the last admission to the client and the paste table.
+    fn visits(state: &LimiterState) -> (usize, usize) {
+        (lock(&state.inner.clients).visits, lock(&state.inner.pastes).visits)
+    }
+
+    #[test]
+    fn client_buckets_are_capped() {
+        assert_eq!((CLIENT_CEILING, PASTE_CEILING), (100_000, 100_000));
+        let (state, _clock) = bounded(describe_limit(limit(60, 0, 5)), 100, 100);
+        for n in 0..5_000 {
+            for ip in [ipv4(n), ipv6(n)] {
+                // Each client leaves its bucket partly used, so none is reclaimable.
+                assert_eq!(request(&state, ip), Ok(()));
+                assert!(sizes(&state).0 <= 100, "the client table outgrew its ceiling");
+            }
+        }
+        assert_eq!(sizes(&state).0, 100);
+    }
+
+    /// The most entries one admission visits, on tables filled to `ceiling`
+    /// with buckets that are not full - for new keys and for existing ones.
+    fn most_visits_at_ceiling(ceiling: usize) -> usize {
+        let (state, _clock) = bounded(describe_limit(limit(60, 0, 5)), ceiling, ceiling);
+        let n = u32::try_from(ceiling).unwrap();
+        for i in 0..n {
+            assert_eq!(request(&state, ipv4(i)), Ok(()));
+            assert_eq!(state.password_attempt(paste(i), true), Ok(()));
+        }
+        assert_eq!(sizes(&state), (ceiling, ceiling));
+
+        let mut most = 0;
+        // Fifty new keys (each evicts a client, each paste is refused), then
+        // existing ones: from the middle, the newest of the fill, the newest.
+        for i in (n..n + 50).chain([n / 2, n - 1, n + 49]) {
+            let _ = request(&state, ipv4(i));
+            let (clients, _) = visits(&state);
+            let _ = state.password_attempt(paste(i), true);
+            let (_, pastes) = visits(&state);
+            most = most.max(clients).max(pastes);
+        }
+        most
+    }
+
+    #[test]
+    fn admission_work_is_bounded() {
+        let small = most_visits_at_ceiling(1_000);
+        assert!(small <= 16, "one admission visited {small} entries");
+        assert_eq!(most_visits_at_ceiling(10_000), small, "the work grew with the ceiling");
+    }
+
+    #[test]
+    fn saturation_evicts_the_least_recently_used_client() {
+        let (state, _clock) = bounded(describe_limit(limit(60, 0, 1)), 10, 10);
+        for n in 0..10 {
+            assert_eq!(request(&state, ipv4(n)), Ok(()));
+        }
+        // Client 0 comes back just before the table overflows: it is refused,
+        // and now the most recently used client.
+        assert_eq!(request(&state, ipv4(0)), Err(1));
+
+        assert_eq!(request(&state, ipv4(100)), Ok(()));
+        assert_eq!(request(&state, ipv4(0)), Err(1), "a recently used client lost its bucket");
+        // Client 1 was the least recently used one: it starts afresh.
+        assert_eq!(request(&state, ipv4(1)), Ok(()), "the least recently used client was kept");
+        assert_eq!(sizes(&state).0, 10);
+    }
+
+    #[test]
+    fn password_budgets_survive_saturation() {
+        // The default per-paste limit: 10 a minute, burst 10.
+        let (state, clock) = bounded(describe_limit(limit(60, 0, 1)), 50, 50);
+        let target = paste(u32::MAX);
+        for _ in 0..10 {
+            assert_eq!(state.password_attempt(target, true), Ok(()));
+        }
+        assert!(state.password_attempt(target, true).is_err());
+
+        for n in 0..5_000 {
+            let _ = request(&state, ipv4(n));
+            let _ = request(&state, ipv6(n));
+            let _ = state.password_attempt(paste(n), true);
+        }
+        assert_eq!(sizes(&state), (50, 50));
+
+        let Err(wait) = state.password_attempt(target, true) else {
+            panic!("a wrong password passed after the tables were flooded");
+        };
+        assert!(wait > 0);
+        assert!(
+            state.password_attempt(target, false).is_err(),
+            "a correct password passed a used-up budget"
+        );
+        clock.advance(Duration::from_secs(wait));
+        assert_eq!(state.password_attempt(target, false), Ok(()));
+        assert_eq!(state.password_attempt(target, true), Ok(()));
+    }
+
+    #[test]
+    fn untracked_pastes_refuse_wrong_passwords_when_saturated() {
+        let (state, _clock) = bounded(RateLimitConfig::default(), 10, 10);
+        for n in 0..10 {
+            assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+        }
+        let untracked = paste(1_000);
+
+        assert_eq!(state.password_attempt(untracked, false), Ok(()));
+        assert!(
+            state.password_attempt(untracked, true).is_err_and(|wait| wait > 0),
+            "a wrong password on an untracked paste passed a full table"
+        );
+        assert_eq!(sizes(&state), (0, 10));
+        assert!(!lock(&state.inner.pastes).slots.contains_key(&untracked));
+    }
+
+    #[test]
+    fn full_buckets_are_reclaimed_first() {
+        let (state, clock) = bounded(describe_limit(limit(60, 0, 5)), 100, 100);
+        for n in 0..100 {
+            assert_eq!(request(&state, ipv4(n)), Ok(()));
+            assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+        }
+        assert_eq!(sizes(&state), (100, 100));
+
+        // Every bucket refills: one request a second, one password every six.
+        clock.advance(Duration::from_secs(60));
+        let fresh = 1_000..1_050;
+        for n in fresh.clone() {
+            assert_eq!(request(&state, ipv4(n)), Ok(()));
+            // At the ceiling, this would be refused without a reclaimed slot.
+            assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+            let (clients, pastes) = visits(&state);
+            assert!(clients <= 16 && pastes <= 16, "an admission visited {clients}/{pastes} entries");
+        }
+
+        // No partly used bucket was evicted, and the full ones are gone.
+        let clients = lock(&state.inner.clients);
+        assert!(fresh.clone().all(|n| clients.slots.contains_key(&(DESCRIBE, ipv4(n)))));
+        assert_eq!(clients.entries.len(), fresh.len());
+        let pastes = lock(&state.inner.pastes);
+        assert!(fresh.clone().all(|n| pastes.slots.contains_key(&paste(n))));
+        assert_eq!(pastes.entries.len(), fresh.len());
+    }
+
+    /// A `tracing` writer that collects everything into a buffer.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Capture {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&lock(&self.0)).into_owned()
+        }
+
+        fn warnings(&self, table: &str) -> usize {
+            let field = format!("table=\"{table}\"");
+            self.text()
+                .lines()
+                .filter(|line| line.contains("WARN") && line.contains(&field))
+                .count()
+        }
+    }
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            lock(&self.0).extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn saturation_warns_once_a_minute_without_identifiers() {
+        // An hourly refill: no bucket becomes full while the clock moves a minute.
+        let config = RateLimitConfig {
+            invalid_capability_per_paste: limit(0, 1, 5),
+            ..describe_limit(limit(0, 1, 5))
+        };
+        let (state, clock) = bounded(config.clone(), 5, 5);
+        let ids = |n: u32| paste(0xc0ff_ee00 + n);
+        let flood = |state: &LimiterState, round: u32| {
+            for n in round * 20..round * 20 + 20 {
+                let _ = request(state, IpAddr::from([203, 0, 113, u8::try_from(n).unwrap()]));
+                let _ = request(state, ipv6(n));
+                let _ = state.password_attempt(ids(n), true);
+            }
+        };
+        let counts = |capture: &Capture| (capture.warnings("client"), capture.warnings("paste"));
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).with_ansi(false).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // `tracing` caches per call site whether anyone listens. Another
+            // test that saturates a table first, before this subscriber
+            // existed, may have cached "nobody": register both warnings here,
+            // then rebuild the cache with this subscriber in place.
+            flood(&bounded(config, 1, 1).0, 0);
+            tracing::callsite::rebuild_interest_cache();
+            lock(&capture.0).clear();
+
+            flood(&state, 0);
+            assert_eq!(counts(&capture), (1, 1));
+            clock.advance(Duration::from_secs(59));
+            flood(&state, 1);
+            assert_eq!(counts(&capture), (1, 1));
+            clock.advance(Duration::from_secs(1));
+            flood(&state, 2);
+            assert_eq!(counts(&capture), (2, 2));
+        });
+
+        let text = capture.text();
+        assert!(text.contains("ceiling=5"), "the warning does not name the ceiling: {text}");
+        assert!(
+            !text.contains("203.0.113") && !text.contains("2001:db8"),
+            "an address was logged: {text}"
+        );
+        for n in 0..60 {
+            let id = ids(n);
+            assert!(
+                !text.contains(&id.encode()) && !text.contains(&id.prefix()),
+                "a paste id was logged: {text}"
+            );
+        }
     }
 
     #[test]

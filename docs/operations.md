@@ -371,8 +371,20 @@ See [branding.md](branding.md) for the rules in detail.
   the command validates nothing else (no `public_url` needed), never writes to the database
   directory and opens neither the database nor a port.
 - Logs go to stderr. `CAPSULEBIN_LOG` sets the filter (default `info,tower_http=info,sqlx=warn`).
-  The access log contains method, redacted path (`/api/v1/pastes/{id}`), status and latency —
-  never paste ids, bodies, tokens or report text.
+  The access log contains method, path, status and latency — never paste ids, bodies, tokens or
+  report text. The path is never the one the client sent: it is the template of the matched route
+  (`/api/v1/pastes/{id}/retrieve`, `/de/p/{id}`, `/en/p/{id}` for the redirect from the default
+  language's prefix, `/health/ready`, a configured `/branding/<hash>.<ext>`), the path of a static
+  file the server actually served (`/assets/…`, `/favicon.svg`), or `{unmatched}` for everything
+  that answered the generic `404`. A `429` or `413` on a route logs that route's template.
+- The rate limiter keeps its buckets in memory, at most 100 000 per client and 100 000 per capsule
+  (password attempts); this is fixed, not a setting. A table at its ceiling logs a warning at most
+  once a minute (`rate limiter table full`, with `table` and `ceiling`, never an address or id).
+  For the client table it means a flood of addresses: each new address pushes out the least
+  recently used one, which then starts with a fresh budget. For the capsule table it means wrong
+  passwords on capsules it does not yet track get `429` until budgets refill (about a minute at the
+  default; each `429` says `Retry-After: 6`, the refill time of one attempt, so clients retry
+  sooner than a slot may free up); correct passwords still open.
 - Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
   reason (e.g. `must not contain user information`,
   `must not contain whitespace or control characters`) without repeating the value, and a file

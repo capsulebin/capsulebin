@@ -14,8 +14,14 @@
  * refusing the reveal token.
  */
 
-import { ApiError, MalformedHeaderError, type DescriptorResponse, type PasteApi } from './api';
-import { Capsule, CapsuleError } from './capsule';
+import {
+    ApiError,
+    MalformedHeaderError,
+    MAX_CIPHERTEXT_BYTES,
+    type DescriptorResponse,
+    type PasteApi,
+} from './api';
+import { Capsule, CapsuleError, MAX_CAPSULE_BYTES } from './capsule';
 import { decrypt, derivePasswordKey } from './crypto';
 import { fromBase64url, toBase64url } from './helpers/bytes';
 import { derivePasteKeys, deriveDescribeToken } from './paste';
@@ -134,12 +140,26 @@ export async function openPaste(
         return apiFailure(err);
     }
 
+    let ciphertext: Uint8Array;
+    try {
+        ciphertext = fromBase64url(retrieved.ciphertext);
+    } catch {
+        return { kind: 'decrypt_failed' };
+    }
+    // No valid capsule is larger; refused before spending time on decryption.
+    if (ciphertext.length > MAX_CIPHERTEXT_BYTES) {
+        return {
+            kind: 'invalid_capsule',
+            message: `the ciphertext exceeds the ${MAX_CAPSULE_BYTES} byte capsule limit`,
+        };
+    }
+
     let plaintext: Uint8Array;
     try {
         plaintext = await decrypt(
             keys.contentKey,
             header.nonceBytes(),
-            fromBase64url(retrieved.ciphertext),
+            ciphertext,
             descriptor.public_header_aad,
         );
     } catch {

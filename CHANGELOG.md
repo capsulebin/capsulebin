@@ -32,6 +32,12 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   100 000 iterations or a password salt other than 16 bytes before asking for the password, so the
   issuer of a link cannot choose a KDF cheap enough to guess the password offline.
 - The web client and the CLI follow no redirect on an API request.
+- A hostile or broken server cannot exhaust the web client or the CLI: every API answer is read
+  with a byte limit (64 KiB, a retrieve up to the largest valid capsule) and cancelled above it,
+  each request has a fixed deadline (30 seconds for describe and delete, 10 minutes for create and
+  retrieve) and an answer that stalls for 30 seconds is abandoned. Both show as a network error;
+  the CLI exits with `7` and the reason `response_too_large` or `timeout`. Clients refuse a
+  ciphertext or capsule above the 10 MiB format limit before decrypting or decoding it.
 - A password of only whitespace is refused instead of silently creating an unprotected capsule.
 - PADMÉ padding, so the ciphertext size reveals little more than the order of magnitude.
 
@@ -56,8 +62,12 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   if it cannot read them. The built-in privacy notice says so.
 - Per-client rate limits, a daily byte quota and concurrent-upload limit, with trusted-proxy-aware
   client addresses; a per-paste limit on password attempts (on by default) that only callers
-  holding the link can trigger.
-- Strict security headers and CSP on every response; redacted access logs.
+  holding the link can trigger. The limiter's memory is capped (100 000 client and 100 000
+  per-capsule buckets) with bounded work per request; a flood of addresses evicts the least recently
+  used client, never a password budget.
+- Strict security headers and CSP on every response; the access log records the matched route's
+  template (`/de/p/{id}`), the path of a served static file, or `{unmatched}`, never the request
+  path.
 - Abuse reports and operator moderation without decryption
   ([ADR-013](docs/adr/ADR-013-abuse-reports-and-moderation.md)). Open reports are capped per
   capsule and per instance (`abuse.max_open_reports_per_paste`, default 10;
@@ -130,6 +140,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`
   or `CAPSULEBIN_ALLOW_HTTP=1`.
 - Stable exit codes, `--json` output, safe retries and confirmation before consuming a burn capsule.
+- `put` stops reading its inputs at the 10 MiB capsule limit (regular files are checked by size
+  before any is read) and ends with exit code `2` without sending anything, instead of reading a
+  large file, an endless pipe or `/dev/zero` into memory.
 - `get` writes capsule content only to files, never to stdout: a single item to the current
   directory, several items to a new directory `capsule-<date>-<id prefix>` (`--here`: the current
   directory, `-o DIR`: `DIR`).
