@@ -312,6 +312,11 @@ impl PasteRepository for SqlitePasteRepository {
         // assumed, so each rule selects its ids first. An `ORDER BY` makes the
         // choice deterministic (oldest first, tie-broken by id) so that repeated
         // runs produce reproducible results and tests stay stable.
+        //
+        // Every deleted row - live capsule or tombstone - leaves its id in
+        // `retired_ids`, so `create` never hands it out again. No code here does
+        // that: the `AFTER DELETE` trigger `retire_deleted_paste_id` in
+        // `migrations/0004_retired_ids.sql` inserts it, in the same transaction.
 
         const DELETE_EXPIRED: &str = "\
             DELETE FROM pastes \
