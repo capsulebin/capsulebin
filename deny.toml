@@ -16,8 +16,11 @@ ignore = [
     # cannot be updated yet. Exposure: only a database + WAL pair written by a less
     # trusted party. CapsuleBin opens only its own data directory; the residual
     # case - restoring a backup from an untrusted source - is documented as
-    # unsupported in the README. Remove once sqlx allows libsqlite3-sys >= 0.39.
-    { id = "RUSTSEC-2026-0459", reason = "SQLite WAL page-size bug; only reachable with an untrusted database file; blocked on sqlx-sqlite pinning libsqlite3-sys < 0.38" },
+    # unsupported in the README. Interim measure: restore copies only the backup's
+    # main file and runs verification on a private standalone copy, so a `-wal`
+    # next to the backup never reaches SQLite. Remove once sqlx allows
+    # libsqlite3-sys >= 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "SQLite WAL page-size bug; only reachable with an untrusted database file; interim: restore verifies a private standalone copy of the main file only; remove once sqlx allows libsqlite3-sys >= 0.39" },
 ]
 
 [licenses]

@@ -2,18 +2,19 @@
 
 use std::time::Duration;
 
-use capsulebin_server::config::Resolved;
-use capsulebin_server::healthcheck::{probe, probe_address};
+use capsulebin_server::healthcheck::probe;
 
 /// Below the usual container health check timeout, so a hanging server is
 /// reported by this command rather than killed by the runtime.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) async fn healthcheck(resolved: &Resolved, live: bool, address: Option<String>) -> anyhow::Result<()> {
-    let address = address.unwrap_or_else(|| probe_address(&resolved.config.server.bind));
+/// Probes `address` (`host:port`). Takes the address rather than a validated
+/// configuration: the probe needs nothing else, and validating would fail on
+/// settings the probe never uses (`public_url`, a writable database directory).
+pub(crate) async fn healthcheck(address: &str, live: bool) -> anyhow::Result<()> {
     let path = if live { "/health/live" } else { "/health/ready" };
 
-    probe(&address, path, TIMEOUT).await?;
+    probe(address, path, TIMEOUT).await?;
 
     println!("{path} ok");
     Ok(())

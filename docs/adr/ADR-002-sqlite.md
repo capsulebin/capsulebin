@@ -46,8 +46,21 @@ Operational parameters set at startup:
 
 - One writer at a time. Sufficient for the expected load, but a deliberate limit.
 - Backups go through `VACUUM INTO` (`capsulebin backup`), never by copying an active WAL database.
-  `capsulebin restore` uses only a backup's main file and moves an existing database aside rather
-  than deleting it.
+  The snapshot is written into a private directory next to the output and published with a hard
+  link, because `VACUUM INTO` opens its target by name: a pre-created file could be swapped
+  between creation and use, and a `chmod` afterwards could not revoke a descriptor opened in
+  between. The price: the output's filesystem must support hard links (not FAT/exFAT or some
+  SMB/CIFS mounts); backups for such a destination are made locally and copied there.
+- `capsulebin restore` copies only a backup's main file into a private directory next to the
+  database, verifies and migrates that copy, and only then moves an existing database (with its
+  `-wal`/`-shm`) aside rather than deleting it and renames the copy into place; a failure undoes
+  every move. So exactly the bytes that are installed are checked, a `-wal` next to the backup never
+  reaches SQLite (the bundled SQLite treats database files as trusted input, RUSTSEC-2026-0459), and
+  disk-full or migration errors happen before a live file moves. A missing database next to restore
+  leftovers is a startup error, not a new empty database.
+- CapsuleBin creates the database file itself, exclusively and owner-only (`0600`), instead of
+  leaving that to SQLite: SQLite derives the modes of `-wal` and `-shm` from the main file, so this
+  keeps all three private without changing the process-wide umask.
 - Backups contain ciphertext and, where abuse reports exist, personal free-text data. They must be
   treated as sensitive operational data in their entirety.
 - Deleted capsules can technically survive in disaster-recovery backups. That has to be documented

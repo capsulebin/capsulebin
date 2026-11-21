@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 
 use capsulebin_server::config::Config;
+use capsulebin_server::healthcheck::probe_address;
 
 #[derive(Parser)]
 #[command(name = "capsulebin", about = "CapsuleBin - Paste it. Seal it. Share it.", version)]
@@ -36,7 +37,9 @@ enum Command {
     ///
     /// Meant for container health checks, where no `curl` is available. Probes
     /// `/health/ready` on the address from `server.bind` (`0.0.0.0` and `[::]`
-    /// become loopback). Opens neither the database nor a port.
+    /// become loopback). Needs only that address: it validates nothing else in
+    /// the configuration, writes nothing and opens neither the database nor a
+    /// port.
     Healthcheck {
         /// Probe `/health/live` (the process answers) instead of `/health/ready`
         /// (assets, database and schema are usable). Use this where an unhealthy
@@ -45,7 +48,7 @@ enum Command {
         #[arg(long)]
         live: bool,
         /// Address to probe instead of the one derived from `server.bind`, for a
-        /// server started with `serve --bind`.
+        /// server started with `serve --bind`. No configuration is read then.
         #[arg(long)]
         address: Option<String>,
     },
@@ -83,11 +86,12 @@ enum Command {
         /// Backup file to restore.
         #[arg(long, short = 'i')]
         input: PathBuf,
-        /// Replace an existing database. It is moved to
-        /// `<file>.pre-restore-<timestamp>`, never deleted.
+        /// Replace an existing database. It is kept, together with its -wal and
+        /// -shm, as `<file>.pre-restore-<timestamp>`, never deleted.
         #[arg(long)]
         force: bool,
-        /// Only verify the backup; change nothing.
+        /// Verify the backup and test-migrate a private copy of it; change
+        /// nothing.
         #[arg(long)]
         dry_run: bool,
     },
@@ -184,16 +188,31 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         return commands::token();
     }
 
+    // The health check needs only the address it probes. It must keep working
+    // where validation would fail (no `public_url` in its environment, a
+    // database directory it cannot write) and never write anything itself, so
+    // the configuration is loaded only for `server.bind`, and not at all with
+    // `--address`.
+    if let Command::Healthcheck { live, address } = cli.command {
+        let address = match address {
+            Some(address) => address,
+            None => {
+                let config = Config::load(cli.config.as_deref()).context("could not load the configuration")?;
+                probe_address(&config.server.bind)
+            }
+        };
+        return commands::healthcheck(&address, live).await;
+    }
+
     // Everything else loads and validates first, so a misconfiguration is a
     // startup failure rather than a runtime surprise on the first request.
     let config = Config::load(cli.config.as_deref()).context("could not load the configuration")?;
     let resolved = config.validate().context("configuration is not usable")?;
 
     match cli.command {
-        Command::Token => unreachable!("handled above"),
+        Command::Token | Command::Healthcheck { .. } => unreachable!("handled above"),
         Command::Serve { bind } => commands::serve(resolved, bind).await,
         Command::Check => commands::check(resolved).await,
-        Command::Healthcheck { live, address } => commands::healthcheck(&resolved, live, address).await,
         Command::Migrate => commands::migrate(resolved).await,
         Command::Prune { batch_size } => commands::prune(resolved, batch_size).await,
         Command::Backup { output } => commands::backup(resolved, output).await,

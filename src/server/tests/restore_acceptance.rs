@@ -1,0 +1,201 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+//! Acceptance tests for `capsulebin restore` against the real binary (package
+//! 20261121-operator-files-restore): `restore --dry-run` with a backup at an
+//! older schema prints the backup's contents and the schema version the
+//! staged copy reached, exits 0 and changes nothing (AC12); a successful
+//! `restore --force` keeps the old database with its sidecars aside (AC9).
+
+mod support;
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use support::{tempdir, write_shells};
+
+const BINARY: &str = env!("CARGO_BIN_EXE_capsulebin");
+
+/// A configuration for `<dir>/data/capsulebin.db`. Returns the configuration,
+/// the data directory and the database path.
+fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = tempdir(name);
+    let assets = dir.join("assets");
+    write_shells(&assets);
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let database = data.join("capsulebin.db");
+    let config = dir.join("capsulebin.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\npublic_url = \"https://paste.example\"\nasset_dir = \"{}\"\n\
+             [database]\npath = \"{}\"\n[creation]\nmode = \"public\"\n",
+            assets.display(),
+            database.display()
+        ),
+    )
+    .unwrap();
+    (config, data, database)
+}
+
+fn run(config: &Path, args: &[&str]) -> Output {
+    Command::new(BINARY).arg("--config").arg(config).args(args).output().unwrap()
+}
+
+fn describe(output: &Output) -> String {
+    format!(
+        "exit {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn entries(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+fn with_sidecars(path: &Path) -> Vec<PathBuf> {
+    ["", "-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            PathBuf::from(name)
+        })
+        .collect()
+}
+
+fn contents(paths: &[PathBuf]) -> Vec<Option<Vec<u8>>> {
+    paths.iter().map(|path| std::fs::read(path).ok()).collect()
+}
+
+/// A backup with only the first migration and two paste rows.
+async fn first_migration_backup(path: &Path) {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path).create_if_missing(true))
+        .await
+        .unwrap();
+    capsulebin_server::db::MIGRATOR.run_to(1, &pool).await.unwrap();
+    for id in ["first-row", "second-row"] {
+        sqlx::query(
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
+             VALUES (?, 1, x'00', x'00', x'00', 1, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+/// A database at `path` with its `-wal` and `-shm`, each holding a marker.
+fn old_database(path: &Path) -> Vec<PathBuf> {
+    let files = with_sidecars(path);
+    for (file, content) in files.iter().zip([&b"old database"[..], b"old wal", b"old shm"]) {
+        std::fs::write(file, content).unwrap();
+    }
+    files
+}
+
+/// AC12: the dry run reports the backup (old schema, its rows) and the version
+/// the private copy was migrated to, exits 0, and leaves input, target, its
+/// sidecars and the target directory as they were. A backup that cannot be
+/// used fails the dry run with the same state.
+#[tokio::test]
+async fn dry_run_reports_the_migrated_version_and_changes_nothing() {
+    let (config, data, database) = setup("restore-acc-dry-run");
+    let backup = data.parent().unwrap().join("backup.db");
+    first_migration_backup(&backup).await;
+    let input = std::fs::read(&backup).unwrap();
+    let files = old_database(&database);
+    let before = contents(&files);
+    let listed = entries(&data);
+    let expected = capsulebin_server::db::expected_version();
+    assert!(expected > 1, "the test needs a migration after the first");
+
+    for force in [false, true] {
+        let mut args = vec!["restore", "--input", backup.to_str().unwrap(), "--dry-run"];
+        if force {
+            args.push("--force");
+        }
+        let output = run(&config, &args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "force={force}: {}", describe(&output));
+        assert!(stdout.starts_with("ok:"), "force={force}: {}", describe(&output));
+        assert!(stdout.contains("schema version 1,"), "backup's version missing: {stdout}");
+        assert!(stdout.contains("2 paste row(s)"), "backup's rows missing: {stdout}");
+        assert!(
+            stdout.contains(&format!("migrated to schema version {expected}")),
+            "reached version missing: {stdout}"
+        );
+
+        assert_eq!(std::fs::read(&backup).unwrap(), input, "force={force}: input changed");
+        assert_eq!(contents(&files), before, "force={force}: target changed");
+        assert_eq!(entries(&data), listed, "force={force}: new entry in the target directory");
+    }
+
+    // Edge case: an unusable backup fails the dry run and changes nothing.
+    let garbage = data.parent().unwrap().join("garbage.db");
+    std::fs::write(&garbage, b"this is not a database at all, not even close").unwrap();
+    let output = run(&config, &["restore", "--input", garbage.to_str().unwrap(), "--dry-run", "--force"]);
+    assert!(!output.status.success(), "garbage accepted: {}", describe(&output));
+    assert_eq!(contents(&files), before, "garbage dry run changed the target");
+    assert_eq!(entries(&data), listed, "garbage dry run left an entry");
+}
+
+/// AC9 through the binary: `restore --force` keeps the old database and both
+/// sidecars byte-identical under `<file>.pre-restore-<now>`, names it, and the
+/// target then holds the backup's rows at the current schema version.
+#[tokio::test]
+async fn forced_restore_keeps_the_old_database_with_its_sidecars() {
+    let (config, data, database) = setup("restore-acc-force");
+    let backup = data.parent().unwrap().join("backup.db");
+    first_migration_backup(&backup).await;
+    let files = old_database(&database);
+    let before = contents(&files);
+
+    // Without --force nothing is touched.
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap()]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(contents(&files), before);
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let aside: Vec<String> = entries(&data)
+        .into_iter()
+        .filter(|name| name.starts_with("capsulebin.db.pre-restore-") && !name.ends_with("-wal") && !name.ends_with("-shm"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{:?}", entries(&data));
+    let aside = data.join(&aside[0]);
+    assert!(stdout.contains(&aside.display().to_string()), "aside name not reported: {stdout}");
+    assert_eq!(contents(&with_sidecars(&aside)), before, "old database not kept as a full set");
+    assert!(
+        entries(&data).iter().all(|name| !name.starts_with(".capsulebin.db.restore-")),
+        "stage left: {:?}",
+        entries(&data)
+    );
+
+    let output = run(&config, &["check"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(&database).read_only(true))
+        .await
+        .unwrap();
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pastes").fetch_one(&pool).await.unwrap();
+    assert_eq!(rows, 2, "not the backup's rows");
+    let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, capsulebin_server::db::expected_version());
+    pool.close().await;
+}
