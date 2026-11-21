@@ -7,29 +7,43 @@
  * be an argument for compatibility, but can come from stdin or a file instead.
  */
 
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { CliError, ExitCode, usage } from './exit';
-import type { Io } from './io';
+import { type Io, readFirstLine } from './io';
 import { escapeDiagnostic } from './terminal';
 import { normalizeBase } from './transport';
 
-/** The first line of `content`, without its line ending. */
-function firstLine(content: string): string {
-    return content.split(/\r?\n/, 1)[0] ?? '';
+/**
+ * The most bytes the first line of a link, token or password source may hold.
+ * Fixed: it bounds memory and ends a source without a line ending.
+ */
+const MAX_LINE_BYTES = 16_384;
+
+/**
+ * Text of a first line read from a source. A file keeps a leading byte order
+ * mark (`ignoreBOM`), stdin drops it.
+ */
+function decodeLine(line: Uint8Array, keepBom: boolean): string {
+    return new TextDecoder('utf-8', { ignoreBOM: keepBom }).decode(line);
 }
 
-/** First line of a file, without the trailing newline. */
+/** A first line above {@link MAX_LINE_BYTES}. Names the source, never the content. */
+function lineTooLong(what: string, source: string): CliError {
+    return usage(`the first line of the ${what} from ${source} exceeds ${MAX_LINE_BYTES} bytes`);
+}
+
+/** First line of a file, without its line ending. Nothing beyond it is read. */
 async function readSecretFile(io: Io, path: string, what: string): Promise<string> {
-    let content: string;
+    let line: Uint8Array | null;
     try {
-        content = await readFile(resolve(io.cwd, path), 'utf8');
+        line = await readFirstLine(createReadStream(resolve(io.cwd, path)), MAX_LINE_BYTES);
     } catch {
         throw usage(`cannot read ${what} file ${path}`);
     }
-    const line = firstLine(content);
-    if (!line) throw usage(`${what} file ${path} is empty`);
-    return line;
+    if (line === null) throw lineTooLong(what, `file ${path}`);
+    if (line.length === 0) throw usage(`${what} file ${path} is empty`);
+    return decodeLine(line, true);
 }
 
 /**
@@ -53,18 +67,48 @@ export async function readLink(
         throw usage(`${command} expects a link: an argument, - for stdin, or --link-file PATH`);
     }
     if (given !== '-') return given;
-    const line = firstLine(new TextDecoder().decode(await io.readStdin()));
-    if (!line) throw usage('no link on stdin');
-    return line;
+    const line = await io.readStdinLine(MAX_LINE_BYTES);
+    if (line === null) throw lineTooLong('link', 'stdin');
+    const link = decodeLine(line, false);
+    if (!link) throw usage('no link on stdin');
+    return link;
 }
 
-/** The creation token: `--token-file`, else `CAPSULEBIN_TOKEN`, else none. */
+/**
+ * The creation token for `server`: `--token-file` (for any server), else
+ * `CAPSULEBIN_TOKEN`, else none.
+ *
+ * With `CAPSULEBIN_SERVER` set, `CAPSULEBIN_TOKEN` is that server's token: it
+ * is withheld, with a notice on stderr, when `server` is another one or the
+ * variable is no URL to compare with. Without `CAPSULEBIN_SERVER` the token
+ * goes to whichever server is in use.
+ */
 export async function creationToken(
     io: Io,
     tokenFile: string | undefined,
+    server: string,
 ): Promise<string | undefined> {
-    if (tokenFile) return readSecretFile(io, tokenFile, 'token');
-    return io.env['CAPSULEBIN_TOKEN'] || undefined;
+    if (tokenFile !== undefined) return readSecretFile(io, tokenFile, 'token');
+    const fromEnv = io.env['CAPSULEBIN_TOKEN'];
+    const configured = io.env['CAPSULEBIN_SERVER'];
+    if (!fromEnv || !configured) return fromEnv || undefined;
+
+    let tokenServer: string | undefined;
+    try {
+        tokenServer = normalizeBase(configured);
+    } catch {
+        // Not a URL: the token's server cannot be told, so it matches none.
+    }
+    const used = normalizeBase(server);
+    if (tokenServer === used) return fromEnv;
+    io.stderr.write(
+        `capsulebin: ${escapeDiagnostic(
+            `CAPSULEBIN_TOKEN is only sent to the server in CAPSULEBIN_SERVER ` +
+                `(${tokenServer ?? 'not a usable URL'}); the server in use is ${used}, ` +
+                `so the token is not sent. Use --token-file for this server`,
+        )}\n`,
+    );
+    return undefined;
 }
 
 /**
@@ -78,7 +122,7 @@ export async function newPassword(
     io: Io,
     flags: { password: boolean; passwordFile: string | undefined },
 ): Promise<string | null> {
-    if (flags.passwordFile) {
+    if (flags.passwordFile !== undefined) {
         const line = await readSecretFile(io, flags.passwordFile, 'password');
         if (!line.trim()) {
             throw usage(`password file ${flags.passwordFile} contains only whitespace`);
@@ -119,7 +163,7 @@ export async function existingPassword(
     passwordFile: string | undefined,
     origin: { link: string; anchor: string | undefined },
 ): Promise<string> {
-    if (passwordFile) return readSecretFile(io, passwordFile, 'password');
+    if (passwordFile !== undefined) return readSecretFile(io, passwordFile, 'password');
     const fromEnv = io.env['CAPSULEBIN_PASSWORD'];
     if (fromEnv) {
         const trusted =
