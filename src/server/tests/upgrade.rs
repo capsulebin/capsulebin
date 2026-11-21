@@ -23,8 +23,8 @@ mod support;
 
 use axum::http::StatusCode;
 use capsulebin_server::db;
-use capsulebin_server::domain::Availability;
 use capsulebin_server::domain::abuse::ModerationAction;
+use capsulebin_server::domain::{Availability, PurgePolicy};
 use capsulebin_server::repository::sqlite::SqlitePasteRepository;
 use capsulebin_server::repository::sqlite::abuse::SqliteAbuseRepository;
 use capsulebin_server::repository::{AbuseRepository as _, ModerationOutcome, PasteRepository as _};
@@ -189,4 +189,46 @@ async fn an_upgraded_database_accepts_new_pastes() {
     let created = h.post("/api/v1/pastes", create_body(&id(1))).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
     assert_eq!(h.describe(&id(1).encode()).await.status, StatusCode::OK);
+}
+
+/// Migration `0004` starts with no retired ids (rows purged before it ran left
+/// no record), keeps refusing the 1.0 tombstones' ids and retires every 1.0 row
+/// a purge removes.
+#[tokio::test]
+async fn purged_fixture_ids_stay_retired() {
+    let h = harness_from_dump("upgrade-retired-ids", DUMP, NOW).await;
+    let fixture = [ACTIVE, BURNED, PASSWORD, DISABLED];
+
+    assert_eq!(db::verify(&h.pool).await.unwrap(), 4);
+    let retired = || async {
+        sqlx::query_scalar::<_, String>("SELECT id FROM retired_ids ORDER BY id")
+            .fetch_all(&h.pool)
+            .await
+            .unwrap()
+    };
+    assert!(retired().await.is_empty());
+
+    let tombstone = h.post("/api/v1/pastes", create_body(&id(BURNED))).await;
+    assert_eq!(tombstone.status, StatusCode::CONFLICT, "{}", tombstone.text());
+    assert_eq!(tombstone.code(), "id_conflict");
+
+    let policy = PurgePolicy {
+        never_retrieved_after: 86_400,
+        inactive_after: 86_400,
+    };
+    let outcome = SqlitePasteRepository::new(h.pool.clone())
+        .purge(NOW + 365 * 86_400, &policy, 100)
+        .await
+        .unwrap();
+    assert_eq!(outcome.expired + outcome.never_retrieved + outcome.inactive, fixture.len() as u64);
+
+    let mut expected: Vec<String> = fixture.iter().map(|&byte| id(byte).encode()).collect();
+    expected.sort();
+    assert_eq!(retired().await, expected);
+
+    for byte in fixture {
+        let answer = h.post("/api/v1/pastes", create_body(&id(byte))).await;
+        assert_eq!(answer.status, StatusCode::CONFLICT, "{byte:#x}: {}", answer.text());
+        assert_eq!(answer.code(), "id_conflict");
+    }
 }

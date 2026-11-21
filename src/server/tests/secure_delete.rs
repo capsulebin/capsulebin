@@ -5,7 +5,24 @@
 //!
 //! Without `secure_delete`, SQLite unlinks freed content but leaves the bytes in
 //! free pages and freeblocks until they happen to be reused - readable by anyone
-//! who copies the file. This test searches the raw files after a checkpoint.
+//! who copies the file.
+//!
+//! Removal happens in four steps, and this test checks the last ones only:
+//!
+//! - logically, the ciphertext is unavailable as soon as the delete or burn
+//!   commits;
+//! - the database file has it overwritten by `secure_delete` once a checkpoint
+//!   has copied the zeroed pages into it;
+//! - WAL frames can keep the old ciphertext until they are reused or the WAL
+//!   is truncated;
+//! - the WAL is truncated only on a `TRUNCATE` checkpoint, when the last
+//!   connection closes, or down to the 64 MiB `journal_size_limit` on a WAL
+//!   reset.
+//!
+//! The test runs `PRAGMA wal_checkpoint(TRUNCATE)` and then searches the raw
+//! database file and the WAL. An ordinary checkpoint does not truncate the
+//! WAL: after one, old frames with the ciphertext can still be in the `-wal`
+//! file, so this test does not show that they are gone in normal operation.
 
 use capsulebin_server::config::{DatabaseConfig, Synchronous};
 use capsulebin_server::domain::NewPaste;

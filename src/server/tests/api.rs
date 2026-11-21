@@ -766,7 +766,7 @@ async fn health_ready_reports_the_schema_version() {
     let json = answer.json();
     assert_eq!(json["database"], "ok");
     assert_eq!(json["assets"], "ok");
-    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["schema_version"], 4);
 }
 
 /// The acceptance criterion for the logging rules: a full request cycle must not

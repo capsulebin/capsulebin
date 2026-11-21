@@ -31,6 +31,13 @@ When an insert hits an existing id, the server loads that row and answers `201` 
 
 Every other collision stays `409 id_conflict`.
 
+An id is never freed. Delete, burn and moderation keep a tombstone row; a row the retention rules
+delete leaves its id in the table `retired_ids` (migration `0004`, filled by an `AFTER DELETE`
+trigger on `pastes`, never emptied), and `restore` retires the ids of the replaced database that the
+backup lacks. Create inserts only if the id is not in `retired_ids`, in the same statement as the
+insert; a retired id is the same `409 id_conflict` as an occupied one, byte for byte. A replay of a
+retired id cannot succeed: its row, and with it the original request, is gone.
+
 ## Rejected
 
 - **`Idempotency-Key` header + response table.** A second key with its own lifetime, storage and
@@ -40,6 +47,14 @@ Every other collision stays `409 id_conflict`.
   link) get a `201` for content they did not create, and would hide genuine client bugs.
 - **Re-applying a replay's options.** A retry must not extend the expiry or revive a deleted or burned
   paste; "same request, same result" is the only semantics that is safe to repeat blindly.
+- **Freeing the id of a purged row.** Because the client chooses the id, anyone holding a full link
+  could, after the purge, create a new capsule under the same id and link secret: the old link would
+  open different content without any client noticing, and open reports and the moderation history,
+  which name a paste by its id, would attach to the new capsule. Row generations would not help, as
+  the new row is a legitimate new generation.
+- **Checking `retired_ids` in a separate `SELECT`.** A purge committing between the check and the
+  insert would retire the id after it was checked.
+- **A distinct code for a retired id.** It would tell "was purged" from "is live".
 
 ## Consequences
 
@@ -49,3 +64,12 @@ Every other collision stays `409 id_conflict`.
 - A replay reveals nothing new: the caller already holds every verifier and the ciphertext, and a
   mismatched request receives a plain `409`.
 - Rate limits apply to replays like to any other create request.
+- Anyone allowed to create (every client in `public` mode, token holders in `token` mode) can test
+  whether one specific id is taken or was ever used: creating it answers `409`. Live rows,
+  tombstones and retired ids all answer alike, so the `409` does not say which. Without permission
+  to create, ids stay indistinguishable from unknown ones. Ids are 128-bit random, so this only
+  confirms ids the caller already knows.
+- `retired_ids` holds only the id, with no timestamp, verifier, size or status, and has no retention
+  rule or setting: anything more would be metadata kept forever, and a switch would reopen the gap.
+  It grows by one entry (about 40 bytes) per purged capsule; lookups stay a primary-key probe.
+- Rows purged before migration `0004` left no record; their ids are free.

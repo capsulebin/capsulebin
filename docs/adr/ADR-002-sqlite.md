@@ -24,8 +24,12 @@ Operational parameters set at startup:
 - `synchronous = FULL` by default. At this data volume the cost is small, and losing data after an
   acknowledged write would be unrecoverable for one-time pastes.
 - `secure_delete = ON`, so burned, deleted and purged ciphertext is overwritten with zeros in the
-  file rather than left in free pages; `journal_size_limit` (64 MiB), so the write-ahead log is
-  truncated after a checkpoint instead of keeping its peak size and old ciphertext frames.
+  file rather than left in free pages, once a checkpoint has copied the zeroed pages into it;
+  `journal_size_limit` (64 MiB), so the write-ahead log does not keep its peak size after a burst
+  of large uploads. That limit is what the WAL is truncated to when it is reset; an ordinary
+  checkpoint truncates nothing, and WAL frames can hold old ciphertext until later writes reuse them
+  or a `wal_checkpoint(TRUNCATE)` or the last connection closing truncates the WAL (threat model,
+  physical erasure).
 - Retrievals stay reads: the only retrieval metadata is a coarse `last_retrieved_at`, written at most
   once per granularity window, so the single writer is not a bottleneck for downloads.
 - The burn transaction starts with `BEGIN IMMEDIATE`, so that the write lock is taken before the
@@ -62,6 +66,21 @@ Operational parameters set at startup:
   reaches SQLite (the bundled SQLite treats database files as trusted input, RUSTSEC-2026-0459), and
   disk-full or migration errors happen before a live file moves. A missing database next to restore
   leftovers is a startup error, not a new empty database.
+- Paste ids are never freed. Delete, burn and moderation keep a tombstone row without ciphertext;
+  the retention rules delete the row, and an `AFTER DELETE` trigger on `pastes` puts its id into
+  `retired_ids`, a `WITHOUT ROWID` table with the id as its only column that nothing deletes from
+  ([ADR-011](ADR-011-idempotent-create.md)). The trigger rather than the purge code does it, so no
+  current or future `DELETE FROM pastes` can forget. Before its cutover, `restore` attaches the
+  replaced database read-only to the staged copy's connection and copies its ids (rows and retired
+  ids) that the copy does not hold as a row into the copy's `retired_ids`, inside SQLite so millions
+  of ids never pass through the process; the database path is bound as a parameter, never formatted
+  into SQL. The replaced database is read in exactly one statement, into a scratch table of the
+  staged copy that is created and dropped in the same transaction, so it never reaches the installed
+  database. Not a `TEMP` table: the bundled SQLite keeps those in memory, and a temporary file would
+  lie outside the private stage. If the replaced database cannot be attached or read, the restore
+  still runs and warns: corruption is the typical reason to restore, and refusing would remove the
+  way back. Only that one read can produce the warning; a failure counting or inserting the ids
+  concerns the copy and stops the restore like any other step.
 - CapsuleBin creates the database file itself, exclusively and owner-only (`0600`), instead of
   leaving that to SQLite: SQLite derives the modes of `-wal` and `-shm` from the main file, so this
   keeps all three private without changing the process-wide umask.
@@ -70,3 +89,5 @@ Operational parameters set at startup:
 - Deleted capsules can technically survive in disaster-recovery backups. That has to be documented
   openly by anyone running an instance for others; burn must not be advertised with delete promises
   it cannot keep.
+- `retired_ids` grows by one entry (about 40 bytes) per purged capsule, forever, and with it backup
+  size and `restore`'s carry-over.

@@ -169,6 +169,17 @@ async fn forced_restore_keeps_the_old_database_with_its_sidecars() {
     let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--force"]);
     assert!(output.status.success(), "{}", describe(&output));
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // The old database is garbage: its ids cannot be carried over, which is
+    // a warning on stderr, not a failure.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.starts_with("warning: ") && line.contains("could not be carried over")),
+        "no warning: {}",
+        describe(&output)
+    );
+    assert!(stdout.contains("0 id(s) of the previous database"), "count missing: {stdout}");
 
     let aside: Vec<String> = entries(&data)
         .into_iter()
@@ -198,4 +209,93 @@ async fn forced_restore_keeps_the_old_database_with_its_sidecars() {
         .unwrap();
     assert_eq!(version, capsulebin_server::db::expected_version());
     pool.close().await;
+}
+
+/// Ids of the database at `path` in `table`.
+async fn ids_in(path: &Path, table: &str) -> BTreeSet<String> {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path))
+        .await
+        .unwrap();
+    let ids: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT id FROM {table}")))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    ids.into_iter().collect()
+}
+
+/// Package 20261121-retired-ids, AC7 through the binary: the replaced database
+/// holds A (also in the backup), B (live, not in the backup) and C (retired, not
+/// in the backup). `restore --dry-run` prints that 2 ids would be retired, warns
+/// about nothing and changes nothing; `restore --force` prints the same count,
+/// and afterwards B and C are retired while the backup's rows are installed.
+#[tokio::test]
+async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
+    let (config, data, database) = setup("restore-acc-carry");
+    let backup = data.parent().unwrap().join("backup.db");
+    first_migration_backup(&backup).await;
+
+    let migrated = run(&config, &["migrate"]);
+    assert!(migrated.status.success(), "{}", describe(&migrated));
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(&database))
+        .await
+        .unwrap();
+    for id in ["first-row", "live-b"] {
+        sqlx::query(
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
+             VALUES (?, 1, x'00', x'00', x'00', 1, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("INSERT INTO retired_ids (id) VALUES ('retired-c')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let files = with_sidecars(&database);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--dry-run", "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2 id(s) of the current database not in the backup would be retired"),
+        "count missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(contents(&files), before, "the dry run changed the database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2 id(s) of the previous database not in the backup were retired"),
+        "count missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        ids_in(&database, "pastes").await,
+        BTreeSet::from(["first-row".to_owned(), "second-row".to_owned()])
+    );
+    assert_eq!(
+        ids_in(&database, "retired_ids").await,
+        BTreeSet::from(["live-b".to_owned(), "retired-c".to_owned()])
+    );
 }

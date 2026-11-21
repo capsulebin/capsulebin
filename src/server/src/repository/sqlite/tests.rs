@@ -562,3 +562,91 @@ async fn load_ciphertext_respects_expiry() {
     assert!(repo.load_ciphertext(&id(1), 1_999).await.expect("load").is_some());
     assert!(repo.load_ciphertext(&id(1), 2_000).await.expect("load").is_none());
 }
+
+async fn retired_ids(repo: &SqlitePasteRepository) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM retired_ids ORDER BY id")
+        .fetch_all(&repo.pool)
+        .await
+        .expect("read retired_ids")
+}
+
+/// The trigger of `migrations/0004_retired_ids.sql` retires every deleted id,
+/// whichever statement deletes the row; a tombstone still holds its id as a
+/// row and is not retired.
+#[tokio::test]
+async fn deleting_a_row_retires_its_id() {
+    use crate::domain::abuse::ModerationAction;
+    use crate::repository::{AbuseRepository as _, ModerationOutcome};
+
+    let repo = repository("retire-on-delete").await;
+    let abuse = abuse::SqliteAbuseRepository::new(repo.pool.clone());
+
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('retired_ids')")
+        .fetch_all(&repo.pool)
+        .await
+        .expect("table info");
+    assert_eq!(columns, ["id"]);
+
+    let created = 1_000_000;
+    for byte in 1..=4 {
+        repo.create(&new_paste(id(byte), created, None)).await.expect("create");
+    }
+    repo.create(&new_burn_paste(id(5), created, None)).await.expect("create");
+
+    // Tombstones: deleted by the creator, burned, deleted by moderation.
+    assert!(repo.delete(&id(1)).await.expect("delete"));
+    assert!(repo.retrieve_and_burn(&id(5), created + 1).await.expect("burn").is_some());
+    let outcome = abuse
+        .moderate(&id(2), ModerationAction::Delete, None, None, created + 1)
+        .await
+        .expect("moderate");
+    assert_eq!(outcome, ModerationOutcome::Applied);
+    assert!(retired_ids(&repo).await.is_empty(), "a tombstone keeps its row and is not retired");
+
+    // A delete issued outside the repository retires the id just the same.
+    sqlx::query("DELETE FROM pastes WHERE id = ?1")
+        .bind(id(3).encode())
+        .execute(&repo.pool)
+        .await
+        .expect("raw delete");
+    assert_eq!(retired_ids(&repo).await, [id(3).encode()]);
+    assert!(matches!(
+        repo.create(&new_paste(id(3), created + 2, None)).await,
+        Err(RepositoryError::IdConflict)
+    ));
+
+    // The purge deletes the tombstones and the live row, and retires all of them.
+    repo.purge(created + POLICY.inactive_after + 1, &POLICY, 100).await.expect("purge");
+    let mut expected: Vec<String> = (1..=5).map(|byte| id(byte).encode()).collect();
+    expected.sort();
+    assert_eq!(retired_ids(&repo).await, expected);
+}
+
+/// No retention rule, however far in the future it runs, removes a retired id.
+#[tokio::test]
+async fn retired_ids_outlive_every_retention_rule() {
+    use crate::repository::AbuseRepository as _;
+
+    let repo = repository("retired-ids-retention").await;
+    let abuse = abuse::SqliteAbuseRepository::new(repo.pool.clone());
+
+    let created = 1_000_000;
+    repo.create(&new_paste(id(1), created, Some(created + 60))).await.expect("create");
+    repo.create(&new_paste(id(2), created, None)).await.expect("create");
+    repo.create(&new_paste(id(3), created, None)).await.expect("create");
+    repo.track_retrieval(&id(3), created + 10, EXACT).await.expect("track");
+
+    let outcome = repo.purge(created + POLICY.inactive_after + 10, &POLICY, 100).await.expect("purge");
+    assert_eq!((outcome.expired, outcome.never_retrieved, outcome.inactive), (1, 1, 1));
+    let retired = retired_ids(&repo).await;
+    assert_eq!(retired.len(), 3);
+
+    for years in [1, 10, 1_000] {
+        let now = created + years * 365 * 86_400;
+        repo.purge(now, &POLICY, 100).await.expect("purge");
+        abuse.purge_abuse(now).await.expect("purge abuse");
+        repo.purge(i64::MAX, &POLICY, 100).await.expect("purge at the end of time");
+        abuse.purge_abuse(i64::MAX).await.expect("purge abuse at the end of time");
+        assert_eq!(retired_ids(&repo).await, retired);
+    }
+}

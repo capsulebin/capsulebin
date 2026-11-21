@@ -17,7 +17,7 @@ jurisdiction, and the operator stays responsible for what their instance publish
 | --- | --- | --- |
 | Controller | The operator named in the imprint; a hosting provider as processor (Art. 28 GDPR) | `[legal.operator]`, `[legal.hosting]` |
 | What this service cannot see | Content, title, file names, key and password never reach the server | Fixed by the software |
-| Capsules | The stored data, the legal basis, and when a capsule is deleted | `pastes.maximum_expiry`, `pastes.allow_permanent`, `purge.*` |
+| Capsules | The stored data, the legal basis, when a capsule is deleted, and that afterwards only its identifier is kept so it is never used for another capsule | `pastes.maximum_expiry`, `pastes.allow_permanent`, `purge.*` |
 | IP addresses and server logs | Whether the client address is processed in memory for rate limits; what the log contains | `rate_limits.*` |
 | Reports | What a report stores, the legal basis, how long it is kept | `abuse.enabled`, `abuse.report_retention` |
 | Cookies and third parties | No cookies; the theme and language choice in local storage; no third-party requests | Fixed by the software |
@@ -61,6 +61,7 @@ What it processes:
 | --- | --- | --- |
 | **Encrypted capsule** (ciphertext, public header with the encryption parameters, size) | Delivering the capsule to whoever holds the link | Until it expires, is deleted by its creator, is retrieved once (burn after reading) or is removed by the retention rules; the ciphertext is overwritten on deletion (`secure_delete`) |
 | **Capsule metadata**: id, hashes of the access secrets, creation and expiry time, time of the last retrieval (rounded to `purge.retrieval_timestamp_granularity`), burn flag, moderation status | Lifecycle, access control, retention | With the capsule; a deleted or burned capsule leaves this row without ciphertext until a retention rule removes it |
+| **Identifier of a removed capsule** (the id alone) | Refusing to use it for another capsule, so an old link can never open different content | Permanently, also across a restore that can read the replaced database; nothing else about the capsule is kept |
 | **Client IP address** | Rate limiting, if a limit keyed by client is configured (`rate_limits.*`) | In memory only, never written to disk or logs; gone at the latest on restart |
 | **Abuse reports**: capsule id, reason, description, optional contact | Handling the report (notice and action) | Open reports until closed; closed ones for `abuse.report_retention` (default 90 days) |
 | **Moderation records**: capsule id, action, reason, operator note | Accountability for blocking and deleting | `abuse.report_retention` (default 90 days) |

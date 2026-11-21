@@ -51,6 +51,11 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
                 target.path.display()
             );
         }
+        println!(
+            "    {} id(s) of the current database not in the backup would be retired.",
+            outcome.carried_ids
+        );
+        print_warnings(&outcome.warnings);
         return Ok(());
     }
 
@@ -79,6 +84,10 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
     );
     if let Some(previous) = outcome.previous {
         println!("    The previous database was moved to {}.", previous.display());
+        println!(
+            "    {} id(s) of the previous database not in the backup were retired.",
+            outcome.carried_ids
+        );
     }
     if outcome.schema_version != outcome.info.schema_version {
         println!(
@@ -86,5 +95,13 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
             outcome.info.schema_version, outcome.schema_version
         );
     }
+    print_warnings(&outcome.warnings);
     Ok(())
+}
+
+/// Warnings, not failures: on stderr, like `check`'s, and the exit code stays 0.
+fn print_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
 }
