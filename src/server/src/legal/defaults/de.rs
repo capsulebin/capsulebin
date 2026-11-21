@@ -60,7 +60,8 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
          Wir speichern die verschlüsselte Kapsel zusammen mit den technischen Daten, die nötig sind, \
          um sie auszuliefern und zu löschen: eine ID, Prüfwerte (Hashes) ihrer Zugangsgeheimnisse, \
          ihre Größe, wann sie erstellt wurde und wann sie abläuft, ob sie nach dem ersten Abruf \
-         gelöscht wird, und wann sie zuletzt abgerufen wurde",
+         gelöscht wird, ob, warum und wann sie nach einer Meldung \
+         gesperrt oder entfernt wurde, und wann sie zuletzt abgerufen wurde",
     );
     text.push_str(&format!(
         ", gerundet auf {}. Rechtsgrundlage: Art. 6 Abs. 1 lit. b DSGVO, die Bereitstellung des \
@@ -69,21 +70,22 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
          Eine Kapsel wird gelöscht\n\n",
         d(f.retrieval_granularity)
     ));
+    text.push_str(&format!(
+        "- nachdem sie abgelaufen ist, spätestens {} nach ihrer Erstellung",
+        d(f.maximum_expiry)
+    ));
     if f.allow_permanent {
-        text.push_str(&format!(
-            "- wenn sie abläuft, spätestens {} nach ihrer Erstellung, sofern sie nicht ohne Ablauf \
-             erstellt wurde,\n",
-            d(f.maximum_expiry)
-        ));
+        text.push_str(", sofern sie nicht ohne Ablauf erstellt wurde");
+    }
+    if f.purge {
+        text.push_str(" - ab dann wird sie nicht mehr ausgeliefert und bei der nächsten täglichen Bereinigung entfernt,\n");
     } else {
-        text.push_str(&format!(
-            "- wenn sie abläuft, spätestens {} nach ihrer Erstellung,\n",
-            d(f.maximum_expiry)
-        ));
+        text.push_str(" - ab dann wird sie nicht mehr ausgeliefert und bei der nächsten von uns ausgeführten Bereinigung entfernt,\n");
     }
     text.push_str(
         "- wenn jemand sie mit ihrem Löschlink löscht,\n\
-         - direkt nach ihrem ersten Abruf, wenn das bei der Erstellung gewählt wurde,\n",
+         - direkt nach ihrem ersten Abruf, wenn das bei der Erstellung gewählt wurde,\n\
+         - wenn wir sie nach einer Meldung entfernen,\n",
     );
     if f.purge {
         text.push_str(&format!(

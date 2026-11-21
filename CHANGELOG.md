@@ -64,7 +64,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   client addresses; a per-paste limit on password attempts (on by default) that only callers
   holding the link can trigger. The limiter's memory is capped (100 000 client and 100 000
   per-capsule buckets) with bounded work per request; a flood of addresses evicts the least recently
-  used client, never a password budget.
+  used client, never a password budget. A `server.trusted_proxies` entry without a prefix length
+  (`"127.0.0.1"`) is a startup error, not silently ignored.
 - Strict security headers and CSP on every response; the access log records the matched route's
   template (`/de/p/{id}`), the path of a served static file, or `{unmatched}`, never the request
   path.
@@ -98,7 +99,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   notice and terms of use with built-in English and German texts filled in from the configuration;
   each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
   page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
-  without one the default language's text is shown, marked with its `lang`.
+  without one the default language's text is shown, marked with its `lang`. The built-in privacy
+  notice names moderation (reason and time, removal after a report) and says that an expired
+  capsule is removed by the next clean-up.
 - Operator branding (`[branding]`, [ADR-017](docs/adr/ADR-017-operator-branding.md)): the instance
   name, a slogan (per language with `[branding.<lang>]`), a header logo with an optional dark-theme
   variant and a favicon, without a rebuild. Logos and favicon are PNG, WebP or ICO files checked at

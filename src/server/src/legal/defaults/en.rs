@@ -40,7 +40,8 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
          ## Capsules\n\n\
          We store the encrypted capsule together with the technical data needed to deliver and delete \
          it: an identifier, check values (hashes) of its access secrets, its size, when it was created \
-         and when it expires, whether it is deleted after the first retrieval, and when it was last \
+         and when it expires, whether it is deleted after the first retrieval, \
+         whether, why and when it was blocked or removed after a report, and when it was last \
          retrieved",
     );
     text.push_str(&format!(
@@ -49,21 +50,22 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
          A capsule is deleted\n\n",
         d(f.retrieval_granularity)
     ));
+    text.push_str(&format!(
+        "- after it expires, at the latest {} after it was created",
+        d(f.maximum_expiry)
+    ));
     if f.allow_permanent {
-        text.push_str(&format!(
-            "- when it expires, at the latest {} after it was created, unless it was created without an \
-             expiry,\n",
-            d(f.maximum_expiry)
-        ));
+        text.push_str(", unless it was created without an expiry");
+    }
+    if f.purge {
+        text.push_str(" - it is no longer delivered from then on and removed by the next daily clean-up,\n");
     } else {
-        text.push_str(&format!(
-            "- when it expires, at the latest {} after it was created,\n",
-            d(f.maximum_expiry)
-        ));
+        text.push_str(" - it is no longer delivered from then on and removed the next time we run the clean-up,\n");
     }
     text.push_str(
         "- when someone deletes it with its management link,\n\
-         - right after its first retrieval, if that was chosen when it was created,\n",
+         - right after its first retrieval, if that was chosen when it was created,\n\
+         - when we remove it after a report,\n",
     );
     if f.purge {
         text.push_str(&format!(
