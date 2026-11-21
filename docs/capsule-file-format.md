@@ -61,9 +61,12 @@ PADME(L) = L for L < 2
 ```
 
 PADMÉ leaves only O(log log L) bits of the length visible at an overhead of at
-most about 12 % (3 % at megabyte sizes). Decoders accept any amount of padding
-— including none — as long as every padding byte is `0x00`; a non-zero byte
-after the last item is an error, so nothing can hide there.
+most about 12 % (3 % at megabyte sizes). Decoders accept padding of any length
+up to the format limit — including none — as long as every padding byte is
+`0x00`; a non-zero byte after the last item is an error, so nothing can hide
+there. A decoder refuses input longer than `MAX_CAPSULE_BYTES` before looking at
+it, so it never scans more than that. This refuses nothing a valid encoder
+produces: `L` is at most `MAX_CAPSULE_BYTES` and the padding is capped there.
 
 ## Manifest
 
@@ -121,7 +124,7 @@ match the bytes actually present, is always an error.
 | Items per capsule (`MAX_ITEMS`) | 16 | On encode and decode |
 | Item name length | 255 UTF-8 bytes | On encode and decode |
 | Manifest size (`MAX_MANIFEST_BYTES`) | 64 KiB | On encode and decode, before the JSON is parsed |
-| Total capsule size (`MAX_CAPSULE_BYTES`) | 10 MiB | On encode; the server enforces its own configured `pastes.max_plaintext_size` independently (`capsulebin.example.toml`) |
+| Total capsule size (`MAX_CAPSULE_BYTES`) | 10 MiB | On encode, and on decode before anything else; the server enforces its own configured `pastes.max_plaintext_size` independently (`capsulebin.example.toml`) |
 
 The manifest length is validated against the limit *and* against the number of
 bytes actually remaining in the buffer before any allocation happens, so a
@@ -132,6 +135,7 @@ causing an over-read.
 
 Every one of these must be rejected, not warned about or silently corrected:
 
+- Input longer than `MAX_CAPSULE_BYTES` (checked first, before the header).
 - Wrong magic bytes.
 - An unrecognized framing version.
 - A manifest length exceeding `MAX_MANIFEST_BYTES`, or exceeding the bytes

@@ -194,9 +194,15 @@ export class Capsule {
      *
      * Validates magic, framing version, manifest JSON and item size
      * consistency before returning any data. Throws {@link CapsuleError} on
-     * any mismatch.
+     * any mismatch, and on input longer than `MAX_CAPSULE_BYTES` before
+     * looking at it: no encoder produces more, because padding is capped there.
      */
     public static decode(bytes: Uint8Array): Capsule {
+        if (bytes.length > MAX_CAPSULE_BYTES) {
+            throw new CapsuleError(
+                `capsule is ${bytes.length} bytes, exceeds the ${MAX_CAPSULE_BYTES} byte limit`,
+            );
+        }
         if (bytes.length < 14) {
             throw new CapsuleError('capsule too short: missing header');
         }

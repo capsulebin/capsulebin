@@ -7,7 +7,7 @@
  * all of them identically (ADR-001), and so does the CLI.
  */
 
-import { ApiError, REDIRECT_REFUSED } from '@capsulebin/core';
+import { ApiError, REDIRECT_REFUSED, RESPONSE_TOO_LARGE, TIMEOUT } from '@capsulebin/core';
 
 export const ExitCode = {
     Ok: 0,
@@ -62,6 +62,18 @@ export function fromApiError(err: ApiError): CliError {
             ExitCode.Unreachable,
             REDIRECT_REFUSED,
         );
+    }
+    // Before the status too: both come with status 0, like a network error,
+    // but keep their own reason so scripts can tell them apart.
+    if (err.code === RESPONSE_TOO_LARGE) {
+        return new CliError(
+            'the server sent a larger response than any valid answer; check the server URL',
+            ExitCode.Unreachable,
+            RESPONSE_TOO_LARGE,
+        );
+    }
+    if (err.code === TIMEOUT) {
+        return new CliError('the server did not answer in time', ExitCode.Unreachable, TIMEOUT);
     }
     if (err.status === 0) {
         return new CliError('could not reach the server', ExitCode.Unreachable, 'network_error');
