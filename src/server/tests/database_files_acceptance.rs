@@ -7,7 +7,7 @@
 //! owner-only whatever the umask (AC1); permissive existing files are reported
 //! by `check` and `serve` but left alone (AC2); the write probe follows no
 //! planted entry (AC3); a missing database next to restore leftovers is
-//! refused, not recreated (AC4).
+//! refused, not recreated, and not restored over (AC4).
 
 mod support;
 
@@ -300,9 +300,11 @@ fn write_probe_follows_no_planted_entry() {
 }
 
 /// AC4: a missing database next to a `<file>.pre-restore-*` entry or a
-/// `.<file>.restore-*` directory stops `serve`, `check` and `migrate`, naming
-/// the leftovers and the way out, and creates no database file. Without
-/// leftovers the database is created; with it present, leftovers do not block.
+/// `.<file>.restore-*` directory stops `serve`, `check`, `migrate` and
+/// `restore --force` of a valid backup, naming the leftovers and telling the
+/// operator to move the old database back first, and creates no database file.
+/// Without leftovers the database is created; with it present, leftovers do
+/// not block.
 #[test]
 fn missing_database_with_restore_leftovers_is_not_recreated() {
     for (case, leftover, is_dir) in [
@@ -319,26 +321,49 @@ fn missing_database_with_restore_leftovers_is_not_recreated() {
             std::fs::write(&path, b"old database").unwrap();
         }
 
+        // A valid backup, written by another instance.
+        let (fresh_config, fresh) = setup(&format!("db-files-leftover-{case}-fresh"));
+        assert_ok(&run(&fresh_config, "check"));
+        assert!(fresh.exists(), "{case}: no database created without leftovers");
+        let backup = fresh.parent().unwrap().parent().unwrap().join("backup.db");
+        let output = Command::new(BINARY)
+            .arg("--config")
+            .arg(&fresh_config)
+            .args(["backup", "--output"])
+            .arg(&backup)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{case}: backup: {}", stderr(&output));
+
         let check = run(&config, "check");
         let migrate = run(&config, "migrate");
+        let restore = Command::new(BINARY)
+            .arg("--config")
+            .arg(&config)
+            .args(["restore", "--input"])
+            .arg(&backup)
+            .arg("--force")
+            .output()
+            .unwrap();
         for (command, status, message) in [
             ("check", Some(check.status), stderr(&check)),
             ("migrate", Some(migrate.status), stderr(&migrate)),
+            ("restore", Some(restore.status), stderr(&restore)),
             ("serve", None, serve_refused(&config)),
         ] {
             if let Some(status) = status {
                 assert!(!status.success(), "{case}: {command} succeeded");
             }
             assert!(message.contains(&path.display().to_string()), "{case}: {command}: {message}");
-            assert!(message.contains("restore again"), "{case}: {command}: {message}");
-            assert!(message.contains("move the old database back"), "{case}: {command}: {message}");
+            assert!(message.contains("move the old database"), "{case}: {command}: {message}");
+            assert!(!message.contains("Run the restore again, or"), "{case}: {command}: {message}");
         }
         assert_eq!(names(&directory), [leftover], "{case}: database files created");
+        if is_dir {
+            assert!(names(&path).is_empty(), "{case}: entries created in the stage");
+        }
 
         // Once the database is back, the leftover no longer blocks anything.
-        let (fresh_config, fresh) = setup(&format!("db-files-leftover-{case}-fresh"));
-        assert_ok(&run(&fresh_config, "check"));
-        assert!(fresh.exists(), "{case}: no database created without leftovers");
         // `check` may exit before its last connection checkpoints, leaving
         // pages in the `-wal`: copy the sidecars too, or the copy is torn.
         std::fs::copy(&fresh, &database).unwrap();

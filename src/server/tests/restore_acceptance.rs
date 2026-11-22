@@ -7,6 +7,8 @@
 //! database with its sidecars aside (AC9).
 //! Package 20261122-creation-tokens-db (AC16): creation tokens issued and
 //! revoked after the backup survive `restore --force`.
+//! Package 20261122-restore-protection (AC2): a capsule of the backup purged
+//! from the current database is removed by `restore --force`.
 
 mod support;
 
@@ -421,4 +423,63 @@ async fn restore_keeps_creation_tokens_and_revocations_made_after_the_backup() {
             ("token-b".to_owned(), "bob".to_owned(), None)
         ]
     );
+}
+
+/// Package 20261122-restore-protection, AC2 through the binary: the backup
+/// holds the capsule `first-row`, which the current database has since purged
+/// (only its id is left in `retired_ids`). `restore --dry-run` prints that one
+/// purged capsule would be removed, warns about nothing and changes nothing;
+/// `restore --force` prints that it was removed, and afterwards `first-row`
+/// has no row and stays retired.
+#[tokio::test]
+async fn restore_removes_the_backup_capsules_purged_from_the_current_database() {
+    let (config, data, database) = setup("restore-acc-purged");
+    let backup = data.parent().unwrap().join("backup.db");
+    two_paste_backup(&backup).await;
+
+    let migrated = run(&config, &["migrate"]);
+    assert!(migrated.status.success(), "{}", describe(&migrated));
+    execute(
+        &database,
+        "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+         VALUES (?1, 1, x'00', x'00', x'00', x'00', 1, 1)",
+        &[&["second-row"]],
+    )
+    .await;
+    execute(&database, "INSERT INTO retired_ids (id) VALUES (?1)", &[&["first-row"]]).await;
+    let files = with_sidecars(&database);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--dry-run", "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 capsule(s) of the backup purged from the current database would be removed."),
+        "purge count missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(contents(&files), before, "the dry run changed the database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 capsule(s) of the backup purged from the previous database were removed."),
+        "purge count missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(ids_in(&database, "pastes").await, BTreeSet::from(["second-row".to_owned()]));
+    assert_eq!(ids_in(&database, "retired_ids").await, BTreeSet::from(["first-row".to_owned()]));
 }

@@ -14,9 +14,11 @@
 //! (with its own `-wal`/`-shm`, which may hold committed data) aside and renames
 //! the copy into place. A failure before or during that cutover undoes every
 //! move. Before the cutover, the ids of the replaced database that the backup
-//! lacks are retired in the copy, so a restore never frees an id, and its
-//! creation tokens and revocations are carried into the copy, so a restore
-//! never brings back a revoked token or loses one issued after the backup.
+//! lacks are retired in the copy, so a restore never frees an id; the backup's
+//! capsules whose ids it has retired (purged after the backup) are removed from
+//! the copy, so a restore never brings back a purged capsule; and its creation
+//! tokens and revocations are carried into the copy, so a restore never brings
+//! back a revoked token or loses one issued after the backup.
 //!
 //! Backups hold ciphertext, verifiers and abuse reports with contact details.
 //! They are written into a private stage directory with owner-only permissions
@@ -230,6 +232,10 @@ pub struct RestoreOutcome {
     /// disabled while the backup holds them in an earlier state, now in the
     /// previous database's state (see [`CARRY_STATES`]).
     pub carried_states: i64,
+    /// Capsules of the backup whose ids the previous database has retired
+    /// (purged after the backup), now removed from the restored database with
+    /// their ciphertext; their ids stay retired.
+    pub carried_purges: i64,
     /// Problems that did not stop the restore, such as a previous database
     /// whose ids, capsule states and creation tokens could not be read.
     pub warnings: Vec<String>,
@@ -256,6 +262,8 @@ pub struct DryRunOutcome {
     pub carried_last_uses: i64,
     /// [`RestoreOutcome::carried_states`] the restore would carry over.
     pub carried_states: i64,
+    /// [`RestoreOutcome::carried_purges`] the restore would remove.
+    pub carried_purges: i64,
     /// The warnings the restore would report.
     pub warnings: Vec<String>,
 }
@@ -265,7 +273,8 @@ pub struct DryRunOutcome {
 /// The server must be stopped: SQLite cannot tell whether another process will
 /// open the file next. With `replace = false` an existing database is an error;
 /// with `replace = true` it is moved to `<file>.pre-restore-<now>` together
-/// with its `-wal`/`-shm`, never deleted.
+/// with its `-wal`/`-shm`, never deleted. A missing database next to restore
+/// leftovers is refused before anything is created, like `serve` does.
 ///
 /// Only the backup's main file is copied, into a private stage directory next
 /// to the database, and verified and migrated there like `serve` would. Then
@@ -276,11 +285,13 @@ pub struct DryRunOutcome {
 /// Before the cutover, every id of the old database that the backup does not
 /// hold as a row is retired in the staged copy, so the
 /// restore frees no id; capsules the old database burned, deleted or disabled
-/// keep that state; and its creation tokens and revocations are carried
+/// keep that state; capsules whose ids it has retired (purged after the
+/// backup) are removed; and its creation tokens and revocations are carried
 /// into the copy (see [`carry_from_replaced`]). An old database that cannot be read only
 /// adds a warning: corruption is the typical reason to restore.
 pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<RestoreOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
+    refuse_leftovers(&plan, target)?;
     if plan.existing && !replace {
         return Err(BackupError::Exists(target.path.clone()));
     }
@@ -301,15 +312,18 @@ pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: 
         carried_revocations: copy.carried.tokens.revoked,
         carried_last_uses: copy.carried.tokens.last_used,
         carried_states: copy.carried.states,
+        carried_purges: copy.carried.purges,
         warnings: copy.carried.warning.into_iter().collect(),
     })
 }
 
 /// Runs [`restore`] up to and including the migration of the staged copy and
-/// counts the ids, capsule states and creation tokens it would carry over, then removes the
-/// stage. Nothing outside the stage is created or changed.
+/// counts the ids, capsule states, purged capsules and creation tokens it
+/// would carry over, then removes the stage. Nothing outside the stage is
+/// created or changed.
 pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<DryRunOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
+    refuse_leftovers(&plan, target)?;
     let needs_replace = plan.existing && !replace;
     if !needs_replace {
         plan.check_collisions()?;
@@ -327,8 +341,23 @@ pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: boo
         carried_revocations: copy.carried.tokens.revoked,
         carried_last_uses: copy.carried.tokens.last_used,
         carried_states: copy.carried.states,
+        carried_purges: copy.carried.purges,
         warnings: copy.carried.warning.into_iter().collect(),
     })
+}
+
+/// Refuses a restore over a missing database next to restore leftovers, with
+/// the same rule as `serve` (`db::refuse_restore_leftovers`): the old database
+/// of an interrupted restore lies aside, and a restore now would carry none of
+/// its ids, capsule states or revocations. Whether the database is there is
+/// [`Plan::replaced`]'s answer, so refusal and carry-over cannot disagree.
+/// Runs before [`Stage::for_restore`] creates this restore's own stage, which
+/// has a leftover's name.
+fn refuse_leftovers(plan: &Plan, target: &DatabaseConfig) -> Result<(), BackupError> {
+    if plan.replaced().is_some() {
+        return Ok(());
+    }
+    Ok(db::refuse_restore_leftovers(&target.path, target.directory())?)
 }
 
 /// The files a restore moves: the target and its sidecars, and the names they
@@ -519,6 +548,9 @@ struct Carried {
     ids: i64,
     /// Capsules of the copy moved to `old`'s later state, see [`CARRY_STATES`].
     states: i64,
+    /// Capsules of the copy removed because `old` has retired their ids, see
+    /// [`CARRY_PURGES`].
+    purges: i64,
     tokens: CarriedTokens,
     /// Why the replaced database could not be read.
     warning: Option<String>,
@@ -540,9 +572,9 @@ impl Carried {
         Self {
             warning: Some(format!(
                 "the ids, capsule states and creation tokens of the replaced database could not be carried over \
-                 ({reason}); its ids that are not in the backup can be used again, capsules it burned, deleted or \
-                 disabled after the backup are available again, its creation tokens that are not in the backup are \
-                 lost, and tokens it revoked are active again if the backup holds them unrevoked"
+                 ({reason}); its ids that are not in the backup can be used again, capsules it burned, deleted, \
+                 disabled or purged after the backup are available again, its creation tokens that are not in the \
+                 backup are lost, and tokens it revoked are active again if the backup holds them unrevoked"
             )),
             ..Self::default()
         }
@@ -556,8 +588,10 @@ impl Carried {
 const REPLACED_IDS: &str = "SELECT id FROM old.pastes UNION ALL SELECT id FROM old.retired_ids";
 
 /// Retires, in the staged copy behind `pool`, every id of `replaced` that the
-/// copy does not hold as a row, and carries its creation tokens over (see
-/// [`carry_tokens`]); `Carry::Count` only counts both.
+/// copy does not hold as a row, removes the copy's capsules whose ids
+/// `replaced` has retired (see [`CARRY_PURGES`]), carries its later capsule
+/// states (see [`carry_states`]) and its creation tokens over (see
+/// [`carry_tokens`]); `Carry::Count` only counts them.
 ///
 /// Everything stays inside SQLite: `replaced` is attached read-only to one
 /// connection of the copy, so millions of ids never pass through this
@@ -599,7 +633,8 @@ const SCRATCH_TABLE: &str = "main.restore_carried_ids";
 /// `retired_ids` or `creation_tokens` is not one this binary wrote, so a
 /// missing table fails the probe like any other unreadable database. Then, in
 /// one transaction, the ids are copied into a scratch table in the copy
-/// ([`SCRATCH_TABLE`]), counted and inserted, the capsule states carried over
+/// ([`SCRATCH_TABLE`]), counted and inserted, the capsules `old` has purged
+/// removed ([`CARRY_PURGES`]), the capsule states carried over
 /// ([`carry_states`]) and the tokens carried over. Any failure there is an
 /// error (the transaction rolls back), also a read failure of `old` that shows
 /// up only then: it cannot be told apart from a failure writing the copy, and
@@ -671,6 +706,7 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         .await
         .map_err(BackupError::Database)?;
     }
+    let purges = carry_purges(&mut transaction, carry).await.map_err(BackupError::Database)?;
     let states = carry_states(&mut transaction, carry).await.map_err(BackupError::Database)?;
     let tokens = carry_tokens(&mut transaction, carry).await.map_err(BackupError::Database)?;
     if carry == Carry::Insert {
@@ -686,9 +722,36 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
     Ok(Carried {
         ids: count,
         states,
+        purges,
         tokens,
         warning: None,
     })
+}
+
+/// The capsules [`carry_purges`] removes: rows of the copy whose id `old` has
+/// retired, so `old` purged that capsule after the backup was taken. Matches
+/// the `WHERE` clause of [`CARRY_PURGES`].
+const COUNT_PURGES: &str = "SELECT count(*) FROM main.pastes WHERE id IN (SELECT id FROM old.retired_ids)";
+
+/// The write of [`carry_purges`]: removes the rows [`COUNT_PURGES`] counts,
+/// whatever their state. Purged is the latest state a capsule can reach, so a
+/// restore only moves it forward. The copy's own `AFTER DELETE` trigger
+/// retires the ids, and `secure_delete` (set by [`db::connect`]) zeroes the
+/// freed pages, so the ciphertext does not reach the installed file.
+const CARRY_PURGES: &str = "DELETE FROM main.pastes WHERE id IN (SELECT id FROM old.retired_ids)";
+
+/// Removes the capsules of the copy that the attached `old` purged after the
+/// backup, inside the caller's transaction (`Carry::Count`: only counts), see
+/// [`CARRY_PURGES`]. Without it a restore would bring back a capsule burned or
+/// deleted and then purged after the backup was taken, with its ciphertext.
+/// `old.retired_ids` and `old.pastes` never share an id, so these rows are
+/// never also changed by [`carry_states`].
+async fn carry_purges(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<i64, sqlx::Error> {
+    let count: i64 = sqlx::query_scalar(COUNT_PURGES).fetch_one(&mut *connection).await?;
+    if carry == Carry::Insert {
+        sqlx::query(CARRY_PURGES).execute(&mut *connection).await?;
+    }
+    Ok(count)
 }
 
 /// The capsules [`carry_states`] changes: rows the copy and `old` both hold
@@ -874,8 +937,8 @@ enum Step {
     Verify,
     Migrate,
     Checkpoint,
-    /// The ids, capsule states and creation tokens of the replaced database are carried over
-    /// and checkpointed.
+    /// The ids, capsule states, purges and creation tokens of the replaced database are
+    /// carried over and checkpointed.
     Carry,
     MoveDatabase,
     MoveWal,
