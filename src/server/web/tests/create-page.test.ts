@@ -1671,6 +1671,23 @@ describe('create page after an unclear outcome', () => {
                     }),
                 ),
         ],
+        [
+            'a 201 with an empty body',
+            async (forward) => {
+                await forward();
+                return new Response('', { status: 201 });
+            },
+        ],
+        [
+            'a 201 with a body that is no JSON',
+            async (forward) => {
+                await forward();
+                return new Response('<html>Bad Gateway</html>', {
+                    status: 201,
+                    headers: { 'Content-Type': 'text/html' },
+                });
+            },
+        ],
         ['a 500', () => Promise.resolve(problem(500, 'internal_error'))],
         ['a 502 without a body', () => Promise.resolve(new Response('', { status: 502 }))],
         ['a 503', () => Promise.resolve(problem(503, 'unavailable'))],
@@ -1879,6 +1896,85 @@ describe('create page after an unclear outcome', () => {
         expect(el('delete-link').textContent).toBe(first);
         expect([...server.pastes.keys()]).toEqual([id]);
     }, 30_000);
+
+    /**
+     * The first create stores the capsule and its answer is lost; every later
+     * create is answered by `retry` (or the fake server once it returns `null`).
+     */
+    function storedThenRetry(retry: () => Response | null): void {
+        let creates = 0;
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            const isCreate = init?.method === 'POST' && String(input).endsWith('/api/v1/pastes');
+            if (!isCreate) return server.fetch(input, init);
+            createBodies.push(String(init.body));
+            creates += 1;
+            if (creates === 1) {
+                await server.fetch(input, init);
+                throw new TypeError('Failed to fetch');
+            }
+            return retry() ?? server.fetch(input, init);
+        });
+    }
+
+    // A retry refused for its token (revoked meanwhile) keeps the delete link of
+    // the capsule the first attempt may have stored; a new token resends it.
+    it('keeps the delete link when the retry is refused for its token', async () => {
+        server.creationToken = TOKEN;
+        localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+        await loadPage('en', 'token');
+        storedThenRetry(() => null);
+        type('content');
+        submit();
+        await failed();
+        const shown = el('unclear-delete-link').textContent!;
+        const id = JSON.parse(createBodies[0]!).id as string;
+        expect(server.pastes.has(id)).toBe(true);
+
+        server.creationToken = 'new-token_456';
+        el<HTMLButtonElement>('try-again').click();
+        await vi.waitFor(() => expect(el('token-input')).not.toBeNull(), { timeout: 15_000 });
+        expect(el('error-message').textContent).toBe(en['create.token.refused']);
+        expect(visible('unclear')).toBe(true);
+        expect(el('unclear-delete-link').textContent).toBe(shown);
+        expect(visible('try-again')).toBe(false);
+
+        el<HTMLInputElement>('token-input').value = 'new-token_456';
+        el<HTMLFormElement>('token-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+        const share = await sealedShareLink();
+        expect(createBodies).toEqual([createBodies[0], createBodies[0], createBodies[0]]);
+        expect(parseLink(share, 'share').id).toBe(id);
+        expect(el('delete-link').textContent).toBe(shown);
+        expect([...server.pastes.keys()]).toEqual([id]);
+    }, 30_000);
+
+    // A retry with a definite refusal keeps the delete link too, without "Try again".
+    it.each([
+        ['a 403', () => problem(403, 'creation_disabled')],
+        ['a 400', () => problem(400, 'invalid_request')],
+    ] satisfies [string, () => Response][])(
+        'keeps the delete link when the retry meets %s',
+        async (_case, refusal) => {
+            await loadPage('en', 'public');
+            storedThenRetry(refusal);
+            type('content');
+            submit();
+            await failed();
+            const shown = el('unclear-delete-link').textContent!;
+            const id = JSON.parse(createBodies[0]!).id as string;
+
+            el<HTMLButtonElement>('try-again').click();
+            await vi.waitFor(() => expect(createBodies).toHaveLength(2), { timeout: 15_000 });
+            await failed();
+            expect(visible('try-again')).toBe(false);
+            expect(visible('unclear')).toBe(true);
+            expect(el('unclear-delete-link').textContent).toBe(shown);
+            expect(parseLink(shown, 'manage').id).toBe(id);
+            expect(visible('retry-btn')).toBe(true);
+        },
+        30_000,
+    );
 
     // Acceptance (AC6): "Back to editing" stays after an unclear outcome and brings
     // back the draft.

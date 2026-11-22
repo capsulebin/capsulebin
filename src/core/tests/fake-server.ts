@@ -35,9 +35,11 @@ export interface FakeServer {
     failNextBurnWithRace: boolean;
     /**
      * Answers every create success like a broken proxy in front of the server:
-     * `204` with no body, or JSON `null`. The paste is still stored.
+     * `204` with no body, `201` with an empty body, `201` with a body that is
+     * no JSON, JSON `null`, or an expiry too large for a number. The paste is
+     * still stored.
      */
-    malformedCreate: 'no_content' | 'null' | null;
+    malformedCreate: 'no_content' | 'empty' | 'not_json' | 'null' | 'infinite_expiry' | null;
     fetch: typeof fetch;
 }
 
@@ -193,7 +195,21 @@ async function handle(
 
 function createSuccess(server: FakeServer, id: string, paste: StoredPaste): Response {
     if (server.malformedCreate === 'no_content') return new Response(null, { status: 204 });
+    if (server.malformedCreate === 'empty') return new Response('', { status: 201 });
+    if (server.malformedCreate === 'not_json') {
+        return new Response('<html>Bad Gateway</html>', {
+            status: 201,
+            headers: { 'Content-Type': 'text/html' },
+        });
+    }
     if (server.malformedCreate === 'null') return json(201, null);
+    if (server.malformedCreate === 'infinite_expiry') {
+        const answer = JSON.stringify({ ...createResponse(id, paste), expires_at: 0 });
+        return new Response(answer.replace('"expires_at":0', '"expires_at":1e999'), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
     return json(201, createResponse(id, paste));
 }
 

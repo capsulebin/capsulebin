@@ -508,7 +508,7 @@ describe('put without --delete-link-file, after a failed create', () => {
 describe('put after a malformed create success', () => {
     const MESSAGE = 'the server sent a success without the expected answer; check the server URL';
 
-    for (const variant of ['no_content', 'null'] as const) {
+    for (const variant of ['no_content', 'empty', 'not_json', 'null', 'infinite_expiry'] as const) {
         it(`ends with exit 7, no retry and the delete link kept (${variant})`, async () => {
             server.malformedCreate = variant;
 

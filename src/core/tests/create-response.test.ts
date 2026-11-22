@@ -1,7 +1,8 @@
 /**
  * `PasteApi.create` resolves only with the answer for the paste it sent: a
- * success without a usable body (a proxy's `204`, JSON `null`, another id, a
- * wrong field type) is an `INVALID_RESPONSE` error, so callers treat it as an
+ * success without a usable body (a proxy's `204`, an empty or unreadable
+ * body, JSON `null`, another id, a wrong field type, an expiry that is no safe
+ * integer) is an `INVALID_RESPONSE` error, so callers treat it as an
  * unclear outcome instead of failing later on a missing field.
  */
 
@@ -35,8 +36,21 @@ describe('create response check', () => {
     });
 
     const valid = (id: string) => ({ id, expires_at: 1_900_000_000, burn_after_retrieval: false });
+    /** `valid(id)` as JSON text with `expires_at` written as `literal`. */
+    const expiry = (literal: string) => (id: string) =>
+        JSON.stringify({ ...valid(id), expires_at: 0 }).replace(
+            '"expires_at":0',
+            `"expires_at":${literal}`,
+        );
     const malformed: [string, number, (id: string) => string | null][] = [
         ['204 without a body', 204, () => null],
+        ['201 with an empty body', 201, () => ''],
+        ['201 with a body that is no JSON', 201, () => '<html>Bad Gateway</html>'],
+        ['201 with cut-off JSON', 201, (id) => JSON.stringify(valid(id)).slice(0, -2)],
+        ['200 with an empty body', 200, () => ''],
+        ['an expiry beyond the range of a number', 201, expiry('1e999')],
+        ['an expiry with a fraction', 201, expiry('1900000000.5')],
+        ['an expiry above the safe integers', 201, expiry('9007199254740993')],
         ['JSON null', 201, () => 'null'],
         ['a string', 201, () => '"ok"'],
         ['a number', 201, () => '1'],

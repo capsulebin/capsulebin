@@ -49,8 +49,9 @@ export const RESPONSE_TOO_LARGE = 'response_too_large';
  *  response body stalled. */
 export const TIMEOUT = 'timeout';
 
-/** {@link ApiError} code for a create success whose body is not the expected
- *  answer for the sent paste (no body, `null`, another id, wrong field types). */
+/** {@link ApiError} code for a success whose body is not readable JSON, or a
+ *  create success whose body is not the expected answer for the sent paste
+ *  (no body, `null`, another id, wrong field types). */
 export const INVALID_RESPONSE = 'invalid_response';
 
 /** Length of the AES-GCM authentication tag appended to the ciphertext. */
@@ -161,8 +162,9 @@ export class PasteApi {
      * `id_conflict`, because the server treats an identical re-submission of
      * an id as a replay (ADR-011).
      *
-     * A success whose body is not that answer (a proxy's `204`, JSON `null`,
-     * another id, a wrong field type) rejects with {@link INVALID_RESPONSE},
+     * A success whose body is not that answer (a proxy's `204`, an empty or
+     * unreadable body, JSON `null`, another id, a wrong field type, an expiry
+     * that is no safe integer) rejects with {@link INVALID_RESPONSE},
      * status `0`: the outcome is unclear, the paste may have been stored.
      */
     public async create(sealed: SealedPaste): Promise<CreateResponse> {
@@ -347,6 +349,16 @@ export class PasteApi {
             try {
                 body = JSON.parse(text);
             } catch {
+                // A success without readable JSON (an empty or cut-off body, a
+                // proxy's page) did not answer the request: for a create the
+                // paste may have been stored, so it is an unclear outcome.
+                if (response.ok) {
+                    throw new ApiError(
+                        `unreadable response: ${response.status}`,
+                        0,
+                        INVALID_RESPONSE,
+                    );
+                }
                 throw new ApiError(
                     `unexpected response: ${response.status}`,
                     response.status,
@@ -470,6 +482,6 @@ function isCreateResponse(value: unknown, id: string): value is CreateResponse {
     return (
         response['id'] === id &&
         typeof response['burn_after_retrieval'] === 'boolean' &&
-        (response['expires_at'] === null || typeof response['expires_at'] === 'number')
+        (response['expires_at'] === null || Number.isSafeInteger(response['expires_at']))
     );
 }

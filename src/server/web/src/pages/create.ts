@@ -1043,10 +1043,24 @@ function showError(message: string, draft: Draft): void {
 /**
  * The creation token was refused (and is forgotten). A new one sends the same
  * sealed `paste` again: no new encryption, the same id (idempotent, ADR-011).
+ * If an earlier attempt may have stored `paste` (`mayExist`), its delete link
+ * stays on the page.
  */
-function showTokenRefused(paste: Paste, draft: Draft): void {
+function showTokenRefused(paste: Paste, draft: Draft, mayExist: boolean): void {
     showError(t('create.token.refused'), draft);
-    mountTokenForm('create.token.create', () => void publish(paste, draft));
+    if (mayExist) showMaybeStored(paste);
+    mountTokenForm('create.token.create', () => void publish(paste, draft, mayExist));
+}
+
+/**
+ * The delete link of `paste`, which an attempt may have stored: shown on every
+ * error after such an attempt, for the creator who gives up instead.
+ */
+function showMaybeStored(paste: Paste): void {
+    const deleteUrl = paste.deleteUrl(window.location.origin);
+    byAttr('unclear').hidden = false;
+    setText('unclear-delete-link', deleteUrl);
+    mountCopyButtons([[byAttr<HTMLButtonElement>('unclear-copy'), deleteUrl]]);
 }
 
 /**
@@ -1057,15 +1071,11 @@ function showTokenRefused(paste: Paste, draft: Draft): void {
  */
 function showUnclearOutcome(message: string, paste: Paste, draft: Draft): void {
     showError(message, draft);
-    const deleteUrl = paste.deleteUrl(window.location.origin);
-    byAttr('unclear').hidden = false;
-    setText('unclear-delete-link', deleteUrl);
-
-    mountCopyButtons([[byAttr<HTMLButtonElement>('unclear-copy'), deleteUrl]]);
+    showMaybeStored(paste);
 
     const tryAgain = byAttr<HTMLButtonElement>('try-again');
     tryAgain.hidden = false;
-    tryAgain.addEventListener('click', () => void publish(paste, draft));
+    tryAgain.addEventListener('click', () => void publish(paste, draft, true));
     // "Try again" is the one filled action.
     byAttr('retry-btn').classList.add('cb-btn-ghost');
 }
@@ -1074,9 +1084,11 @@ function showUnclearOutcome(message: string, paste: Paste, draft: Draft): void {
 
 /**
  * Seals `paste` (once; a sealed one is sent as it is) and creates it, with the
- * creation token as the bearer in `token` mode.
+ * creation token as the bearer in `token` mode. `mayExist`: an earlier attempt
+ * with this `paste` had an unclear outcome, so whatever this one answers, its
+ * delete link stays on an error page.
  */
-async function publish(paste: Paste, draft: Draft): Promise<void> {
+async function publish(paste: Paste, draft: Draft, mayExist = false): Promise<void> {
     showEncrypting();
     const creationToken = mode === 'token' ? (token.value ?? undefined) : undefined;
     try {
@@ -1089,11 +1101,12 @@ async function publish(paste: Paste, draft: Draft): Promise<void> {
         console.error(err);
         if (mode === 'token' && isTokenRefused(err)) {
             token.forget();
-            showTokenRefused(paste, draft);
+            showTokenRefused(paste, draft, mayExist);
         } else if (isUnclearOutcome(err)) {
             showUnclearOutcome(apiErrorText(err), paste, draft);
         } else {
             showError(apiErrorText(err), draft);
+            if (mayExist) showMaybeStored(paste);
         }
     }
 }
