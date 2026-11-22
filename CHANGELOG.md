@@ -159,7 +159,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - A create whose outcome is unclear (no answer, a timeout, an unreadable answer, a server error or
   too many requests) offers "Try again", which sends the same encrypted capsule, so a capsule the
   first attempt stored is not created twice, and shows that capsule's delete link with a copy
-  button in the meantime.
+  button in the meantime. The link stays on the page when a later attempt is refused, also for a
+  token revoked meanwhile.
 - Markdown (sanitized) and code (highlight.js) rendering; copy, download and source view per item.
 - A wrong password keeps the password prompt open. Its message does not claim more than the server
   says - a wrong password and a capsule that went away look alike - and too many attempts show
@@ -197,7 +198,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - A failed `put` never loses the delete link once the upload was attempted: the
   `--delete-link-file` file is kept, otherwise the link is printed on stderr, and the `--json`
   error carries `delete_link_file` or `delete_url`. A create success without the expected answer
-  (a proxy's empty `204`, JSON `null`, another id) counts as such a failure: exit code `7` with the
+  (a proxy's empty `204`, an empty or unreadable body, JSON `null`, another id, an expiry that is
+  no whole number) counts as such a failure: exit code `7` with the
   reason `invalid_response`, not retried.
 - `CAPSULEBIN_PASSWORD` is used by `get` only for links to the server named with `--server` (or
   `CAPSULEBIN_SERVER`).
