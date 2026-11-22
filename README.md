@@ -235,7 +235,11 @@ node src/cli/dist/cli.js delete --link-file notes.link
   directory `get` runs in. `--here` writes the items directly into the current directory, `-o DIR`
   into `DIR`, created with its parents if missing; `--here` and `-o` together are a usage error
   (exit code `2`). Only the last path component of an item's name is used; characters in it that
-  are controls (C0, DEL, C1) or not allowed on common file systems become `_`.
+  are controls (C0, DEL, C1) or not allowed on common file systems become `_`, and so do leading
+  dots, wherever the items go: an item named `.bash_profile` is written as `_bash_profile`, also
+  with `--here` or `-o`. A name is shortened to 249 UTF-8 bytes (between characters, keeping an
+  extension of up to 32 bytes), so a suffix ` (999)` still fits the usual 255-byte limit; a file
+  system that refuses the name as too long all the same gets `item-<n>`.
 - **Decrypted files are private and never overwrite anything.** Every file is created new with
   mode `0600`; the new `capsule-…` directory and a directory created for `-o` (parents too) get
   `0700`, an existing `-o` directory keeps its mode. A name that is taken by anything — a file, a

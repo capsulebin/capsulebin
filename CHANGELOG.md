@@ -186,7 +186,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   large file, an endless pipe or `/dev/zero` into memory.
 - `get` writes capsule content only to files, never to stdout: every capsule, a single item
   included, to a new directory `capsule-<date>-<id prefix>`, so a sender cannot place a file such as
-  `.envrc` in the current directory (`--here`: the current directory, `-o DIR`: `DIR`).
+  `.envrc` in the current directory (`--here`: the current directory, `-o DIR`: `DIR`). No item is
+  written under a name starting with a dot, wherever it goes (`.envrc` becomes `_envrc`), and names
+  are shortened so that a ` (n)` suffix still fits the 255-byte name limit.
 - Decrypted files are owner-only (`0600`, new directories `0700`) from the first byte and created
   exclusively: an existing file, directory or symlink at the name is never overwritten or followed,
   the item gets a free name (`name (1).ext`) instead; a failed write removes the files

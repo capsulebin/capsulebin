@@ -12,8 +12,10 @@
  * an existing entry does not stop the output (it tries up to 1000 names,
  * `name`, `name (1)`, …, before failing with `no_free_name`). Without `-o`
  * or `--here` every capsule, a single item included, lands in a new private
- * directory, so a sender cannot place a file such as `.envrc` in the current
- * directory. Item content only ever goes to files, never to stdout.
+ * directory, so a sender cannot place a file in the current directory; no
+ * item is ever written under a name starting with a dot (such as `.envrc`),
+ * whatever the output location. Item content only ever goes to files, never
+ * to stdout.
  */
 
 import { mkdir, open, rmdir, unlink } from 'node:fs/promises';
@@ -164,21 +166,68 @@ async function confirmBurn(io: Io, yes: boolean): Promise<void> {
     }
 }
 
+/** Attempts at a free name (`name`, `name (1)`, …) before giving up. */
+const MAX_NAME_ATTEMPTS = 1000;
+
+/** The longest file name most file systems take (`NAME_MAX`), in UTF-8 bytes. */
+const MAX_NAME_BYTES = 255;
+
+/** Room kept for the longest suffix `withSuffix` adds, ` (999)`. */
+const SUFFIX_BYTES = ` (${MAX_NAME_ATTEMPTS - 1})`.length;
+
+/** An extension up to this many bytes survives when a name is shortened. */
+const MAX_KEPT_EXTENSION_BYTES = 32;
+
 /**
  * Reduces an item name from the (untrusted) manifest to a plain file name:
- * no directories, no control characters, no dot-only names. The manifest
- * name is display metadata, never a path (capsule-file-format.md).
+ * no directories, no control characters, no dot-only names, no leading dot
+ * (`.bash_profile` becomes `_bash_profile`, so a sender cannot place a
+ * dotfile even with `--here` or `-o`), and short enough that `withSuffix`
+ * stays within `MAX_NAME_BYTES`. The manifest name is display metadata, never
+ * a path (capsule-file-format.md).
  */
 export function safeFileName(name: string, index: number): string {
     const base = name.split(/[/\\]/).at(-1) ?? '';
     // eslint-disable-next-line no-control-regex
     const cleaned = base.replace(/[\u0000-\u001f\u007f-\u009f<>:"|?*]/g, '_').trim();
-    if (!cleaned || /^\.+$/.test(cleaned)) return `item-${index + 1}`;
-    return cleaned;
+    if (!cleaned || /^\.+$/.test(cleaned)) return fallbackName(index);
+    const visible = cleaned.replace(/^\.+/, (dots) => '_'.repeat(dots.length));
+    return shorten(visible, MAX_NAME_BYTES - SUFFIX_BYTES);
 }
 
-/** Attempts at a free name (`name`, `name (1)`, …) before giving up. */
-const MAX_NAME_ATTEMPTS = 1000;
+/** The name of an item whose own name cannot be used. */
+function fallbackName(index: number): string {
+    return `item-${index + 1}`;
+}
+
+/**
+ * `name` cut to at most `limit` UTF-8 bytes on a code point boundary,
+ * keeping a short extension.
+ */
+function shorten(name: string, limit: number): string {
+    if (utf8Length(name) <= limit) return name;
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 ? name.slice(dot) : '';
+    const kept = utf8Length(extension) <= MAX_KEPT_EXTENSION_BYTES ? extension : '';
+    const stem = kept ? name.slice(0, dot) : name;
+    return truncateUtf8(stem, limit - utf8Length(kept)).trimEnd() + kept;
+}
+
+function utf8Length(text: string): number {
+    return Buffer.byteLength(text, 'utf8');
+}
+
+/** The longest prefix of `text` of at most `limit` UTF-8 bytes, whole code points only. */
+function truncateUtf8(text: string, limit: number): string {
+    let bytes = 0;
+    let end = 0;
+    for (const char of text) {
+        bytes += utf8Length(char);
+        if (bytes > limit) break;
+        end += char.length;
+    }
+    return text.slice(0, end);
+}
 
 /**
  * The directory the items go to: `-o DIR` (created `0700` with its parents
@@ -227,15 +276,26 @@ async function writeItems(items: readonly CapsuleItem[], dir: string): Promise<s
     try {
         for (const [index, item] of items.entries()) {
             const name = safeFileName(item.name, index);
-            paths.push(
-                await createUnderFreeName(
+            const write = (candidate: string) =>
+                createUnderFreeName(
                     dir,
-                    name,
-                    (n) => withSuffix(name, n),
+                    candidate,
+                    (n) => withSuffix(candidate, n),
                     (path) => writeNew(path, item.bytes),
-                    `item ${index + 1} (${name})`,
-                ),
-            );
+                    `item ${index + 1} (${candidate})`,
+                );
+            let path;
+            try {
+                path = await write(name);
+            } catch (err) {
+                // A file system with a shorter name limit than NAME_MAX: the
+                // content may not be retrievable again, so fall back to a
+                // short name instead of failing.
+                const fallback = fallbackName(index);
+                if (!isNameTooLong(err) || name === fallback) throw err;
+                path = await write(fallback);
+            }
+            paths.push(path);
         }
     } catch (err) {
         for (const path of paths) await unlink(path).catch(() => {});
@@ -291,6 +351,11 @@ async function writeNew(path: string, bytes: Uint8Array): Promise<void> {
     }
 }
 
+function isNameTooLong(err: unknown): boolean {
+    return (err as NodeJS.ErrnoException | undefined)?.code === 'ENAMETOOLONG';
+}
+
+/** `name (n).ext`; `safeFileName` leaves room for it within `MAX_NAME_BYTES`. */
 function withSuffix(name: string, n: number): string {
     const dot = name.lastIndexOf('.');
     return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`;
