@@ -86,10 +86,22 @@ test.describe('in a German browser', () => {
         }
         const { share, manage } = await create(
             page,
-            { password, items: [{ type: 'plain', text: 'Geheimer Inhalt' }] },
+            {
+                password,
+                items: [
+                    { type: 'plain', name: 'besprechungsnotizen.txt', text: 'Geheimer Inhalt' },
+                    { type: 'markdown', name: 'liesmich-zuerst.md', text: '# Überschrift' },
+                    { type: 'code', name: 'hauptprogramm.rs', lang: 'rust', text: 'fn main() {}' },
+                ],
+            },
             'de',
         );
-        await expectGerman(page, 'Deine Kapsel ist fertig');
+        // The sealed page: heading, summary, key note, delete link row.
+        await expect(page.locator('[data-summary]')).toContainText('3 Elemente');
+        await expect(page.locator('[data-summary]')).toContainText('Mit Passwort');
+        await expectGerman(page, 'Versiegelt.');
+        await expectGerman(page, 'Der hervorgehobene Teil ist der Schlüssel.');
+        await expectGerman(page, 'Nur für dich.');
 
         const view = await context.newPage();
         await view.goto(share);
@@ -108,6 +120,22 @@ test.describe('in a German browser', () => {
             timeout: 30_000,
         });
         await expectGerman(view, 'Die Entschlüsselung findet lokal statt.');
+        // Chips, the previous/next row and "Alle 3": the long names make the three tabs overflow at
+        // 400 px whatever fonts the machine has.
+        await expectGerman(view, 'Lokal entschlüsselt');
+        await expectGerman(view, '3 Elemente');
+        await expectGerman(view, '1 von 3');
+        await expect(view.getByRole('button', { name: 'Nächstes Element' })).toHaveText(
+            'liesmich-zuerst.md',
+        );
+        await view.getByRole('button', { name: 'Nächstes Element' }).click();
+        await expectGerman(view, '2 von 3');
+        await expect(view.getByRole('button', { name: 'Voriges Element' })).toHaveText(
+            'besprechungsnotizen.txt',
+        );
+        await view.setViewportSize({ width: 400, height: 800 });
+        await expect(view.locator('[data-items-all]')).toBeVisible();
+        await expectGerman(view, 'Alle 3');
 
         const managePage = await context.newPage();
         managePage.on('dialog', (dialog) => void dialog.accept());
@@ -124,6 +152,34 @@ test.describe('in a German browser', () => {
         await view.fill('[data-report-description]', 'Prüfung des Meldeformulars.');
         await view.click('[data-report-submit]');
         await expectGerman(view, 'Meldung eingegangen');
+    });
+
+    test('the burn warning, the burn chip and an opened capsule stay German', async ({
+        page,
+        context,
+    }) => {
+        const { share } = await create(
+            page,
+            { burn: true, items: [{ type: 'plain', text: 'Nur einmal' }] },
+            'de',
+        );
+        await expectGerman(page, 'Nach erstem Abruf gelöscht');
+
+        const view = await context.newPage();
+        await view.goto(share);
+        await expectGerman(view, 'Diese Kapsel lässt sich nur einmal öffnen');
+        await view.getByRole('button', { name: 'Ja, öffnen und löschen' }).click();
+        await expect(view.locator('.cb-item-panel')).toContainText('Nur einmal', {
+            timeout: 30_000,
+        });
+        await expectGerman(view, 'Nach diesem Abruf gelöscht');
+
+        const again = await context.newPage();
+        await again.goto(share);
+        await expect(again.locator('main [data-hexagon="empty"]')).toBeVisible({
+            timeout: 30_000,
+        });
+        await expectGerman(again, 'Kapsel');
     });
 
     test('every internal link keeps the /de/ prefix', async ({ page, context }) => {

@@ -114,7 +114,7 @@ const fn token(key: &'static str, light: u32, dark: u32) -> Token {
 /// values. Kept equal to all four palette blocks of `tokens.css` by a test;
 /// `--cb-shadow-card` is not a plain colour and stays built-in.
 const TOKENS: [Token; 18] = [
-    token("bg", 0xfbfcfc, 0x0c1413),
+    token("bg", 0xf2f6f5, 0x0c1413),
     token("surface", 0xffffff, 0x131e1d),
     token("surface_sunken", 0xf2f5f5, 0x0f1a19),
     token("border", 0xdbe3e2, 0x263735),
@@ -142,6 +142,7 @@ struct ContrastPair {
 }
 
 const GROUNDS: &[&str] = &["bg", "surface", "surface_sunken"];
+const TINTS: &[&str] = &["tint_accent", "tint_danger", "tint_warning", "tint_success"];
 
 /// The pairs and thresholds the built-in theme is held to (WCAG 2.2: 4.5:1
 /// for text, 3:1 for control outlines and the focus ring). Kept equal to
@@ -156,6 +157,31 @@ const CONTRAST_PAIRS: &[ContrastPair] = &[
     ContrastPair {
         foregrounds: &["accent_text"],
         backgrounds: &["accent"],
+        min_ratio: 4.5,
+    },
+    ContrastPair {
+        foregrounds: &["accent"],
+        backgrounds: &["tint_accent"],
+        min_ratio: 4.5,
+    },
+    ContrastPair {
+        foregrounds: &["danger"],
+        backgrounds: &["tint_danger"],
+        min_ratio: 4.5,
+    },
+    ContrastPair {
+        foregrounds: &["warning"],
+        backgrounds: &["tint_warning"],
+        min_ratio: 4.5,
+    },
+    ContrastPair {
+        foregrounds: &["success"],
+        backgrounds: &["tint_success"],
+        min_ratio: 4.5,
+    },
+    ContrastPair {
+        foregrounds: &["text"],
+        backgrounds: TINTS,
         min_ratio: 4.5,
     },
     ContrastPair {
@@ -404,6 +430,22 @@ mod tests {
         assert_eq!(Colors::default().contrast_warnings(), Vec::new());
     }
 
+    /// A tint as dark as its status colour leaves the status text unreadable
+    /// on it.
+    #[test]
+    fn a_tint_equal_to_its_status_colour_is_warned_about() {
+        let colors = parse("[light]\ntint_warning = \"#b45309\"\n").expect("valid colours");
+        let warnings: Vec<String> = colors.contrast_warnings().iter().map(ToString::to_string).collect();
+        assert!(
+            warnings.contains(
+                &"light theme: branding.colors.light.warning on branding.colors.light.tint_warning has a contrast of 1.00:1, below 4.5:1"
+                    .to_owned()
+            ),
+            "{warnings:?}"
+        );
+        assert!(colors.contrast_warnings().iter().all(|warning| warning.theme == Theme::Light));
+    }
+
     /// A configured colour is checked against the built-in values of the
     /// tokens left out, in its own theme only.
     #[test]
@@ -413,9 +455,13 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.09:1, below 4.5:1",
                 "light theme: branding.colors.light.text on branding.colors.light.surface has a contrast of 1.00:1, below 4.5:1",
                 "light theme: branding.colors.light.text on branding.colors.light.surface_sunken has a contrast of 1.10:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.tint_accent has a contrast of 1.15:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.tint_danger has a contrast of 1.14:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.tint_warning has a contrast of 1.10:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.tint_success has a contrast of 1.13:1, below 4.5:1",
                 "dark theme: branding.colors.dark.accent_text on branding.colors.dark.accent has a contrast of 1.42:1, below 4.5:1",
             ]
         );

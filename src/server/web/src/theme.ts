@@ -12,6 +12,7 @@
  */
 
 import { type TextKey, t } from './language';
+import { type IconName, icon } from './pages/icons';
 
 const STORAGE_KEY = 'capsulebin.theme';
 
@@ -85,9 +86,20 @@ const LABEL: Record<ThemeChoice, TextKey> = {
     auto: 'theme.auto',
 };
 
+/** Contrast for the system preference, sun and moon for an explicit choice. */
+const ICON: Record<ThemeChoice, IconName> = {
+    light: 'sun',
+    dark: 'moon',
+    auto: 'theme',
+};
+
 /**
  * Wires up a toggle. The order is auto -> light -> dark -> auto, so that the
  * system preference stays reachable instead of being lost after the first click.
+ *
+ * The button's name stays "Switch theme"; the current choice is its icon and its
+ * description (`title`, also shown on hover). The icon is an inline SVG, never a
+ * glyph, whose rendering would depend on the fonts installed.
  */
 export function mountThemeToggle(button: HTMLButtonElement): void {
     const next: Record<ThemeChoice, ThemeChoice> = {
@@ -98,8 +110,9 @@ export function mountThemeToggle(button: HTMLButtonElement): void {
 
     const render = (choice: ThemeChoice): void => {
         button.dataset.theme = choice;
-        button.setAttribute('aria-label', t(LABEL[choice]));
-        button.textContent = choice === 'auto' ? '◐' : choice === 'light' ? '☀' : '☾';
+        button.setAttribute('aria-label', t('theme.switch'));
+        button.title = t(LABEL[choice]);
+        button.replaceChildren(icon(ICON[choice]));
     };
 
     button.addEventListener('click', () => {

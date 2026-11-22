@@ -38,18 +38,21 @@
             <span class="cb-claim">{{manage.claim}}</span>
             <span class="cb-push cb-head-tools">
                 <nav
-                    class="cb-segmented"
+                    class="cb-lang"
                     aria-label="{{shell.language}}"
                     data-language-switch
                     hidden
                 ></nav>
                 <button
                     type="button"
-                    class="cb-btn-icon"
+                    class="cb-quiet"
                     data-theme-toggle
                     aria-label="{{theme.switch}}"
                 >
-                    ◐
+                    <svg class="cb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="8" r="5.8" />
+                        <path class="cb-icon-solid" d="M8 2.2v11.6A5.8 5.8 0 0 0 8 2.2Z" />
+                    </svg>
                 </button>
             </span>
         </header>
@@ -74,44 +77,59 @@
         </footer>
 
         <template id="tmpl-loading">
-            <h1 class="cb-h1">{{manage.title}}</h1>
-            <p class="cb-lede">{{manage.lede}}</p>
+            <div class="cb-state">
+                <h1 class="cb-h1">{{manage.title}}</h1>
+                <p class="cb-lede">{{manage.lede}}</p>
+            </div>
         </template>
 
         <template id="tmpl-ready">
-            <h1 class="cb-h1">{{manage.confirm}}</h1>
-            <p class="cb-lede">{{manage.confirmLede}}</p>
-            <ul class="cb-status">
-                <li data-meta-expires></li>
-                <li data-meta-burn></li>
-                <li data-meta-size></li>
-            </ul>
-            <div class="cb-callout cb-callout-danger">
-                <strong>{{manage.warning}}</strong>
-                {{manage.warningDetail}}
+            <div class="cb-state">
+                <h1 class="cb-h1">{{manage.confirm}}</h1>
+                <p class="cb-lede">{{manage.confirmLede}}</p>
+                <ul class="cb-chips">
+                    <li class="cb-chip" data-meta-burn></li>
+                    <li class="cb-chip" data-meta-expires></li>
+                    <li class="cb-chip" data-meta-size></li>
+                </ul>
+                <p class="cb-state-note">
+                    <strong>{{manage.warning}}</strong>
+                    {{manage.warningDetail}}
+                </p>
+                <div class="cb-state-actions">
+                    <button type="button" class="cb-btn cb-btn-danger" data-delete-btn>
+                        {{manage.delete}}
+                    </button>
+                    <a href="{{prefix}}/" class="cb-btn cb-btn-ghost">{{manage.cancel}}</a>
+                </div>
             </div>
-            <p>
-                <button type="button" class="cb-btn" data-delete-btn>{{manage.delete}}</button>
-                <a href="{{prefix}}/" class="cb-btn cb-btn-ghost">{{manage.cancel}}</a>
-            </p>
         </template>
 
         <template id="tmpl-deleting">
-            <h1 class="cb-h1">{{manage.deleting}}</h1>
-            <div class="cb-spinner"></div>
-            <p class="cb-lede cb-pulse">{{manage.deletingLede}}</p>
+            <div class="cb-state">
+                <h1 class="cb-h1">{{manage.deleting}}</h1>
+                <p class="cb-lede">{{manage.deletingLede}}</p>
+            </div>
         </template>
 
         <template id="tmpl-done">
-            <h1 class="cb-h1">{{manage.deleted}}</h1>
-            <p class="cb-lede">{{manage.deletedLede}}</p>
-            <p><a href="{{prefix}}/" class="cb-btn">{{manage.createOwn}}</a></p>
+            <div class="cb-state">
+                <h1 class="cb-h1">{{manage.deleted}}</h1>
+                <p class="cb-lede">{{manage.deletedLede}}</p>
+                <div class="cb-state-actions">
+                    <a href="{{prefix}}/" class="cb-btn">{{manage.createOwn}}</a>
+                </div>
+            </div>
         </template>
 
         <template id="tmpl-error">
-            <h1 class="cb-h1">{{manage.unavailable}}</h1>
-            <p class="cb-lede" data-error-message>{{manage.unavailableLede}}</p>
-            <p><a href="{{prefix}}/" class="cb-btn">{{manage.createOwn}}</a></p>
+            <div class="cb-state">
+                <h1 class="cb-h1">{{manage.unavailable}}</h1>
+                <p class="cb-lede" data-error-message>{{manage.unavailableLede}}</p>
+                <div class="cb-state-actions">
+                    <a href="{{prefix}}/" class="cb-btn">{{manage.createOwn}}</a>
+                </div>
+            </div>
         </template>
     </body>
 </html>

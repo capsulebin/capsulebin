@@ -16,6 +16,7 @@ import {
 } from '@capsulebin/core';
 import { formatDateTime, formatSize, t } from '../language';
 import { apiErrorText, linkErrorText } from './errors';
+import { type HexagonState, hexagon } from './hexagon';
 import {
     byAttr,
     initShell,
@@ -28,12 +29,18 @@ import {
 
 // --- phases ------------------------------------------------------------------
 
+/** Shows a phase's template with the state hexagon above its heading. */
+function showState(template: string, state: HexagonState): void {
+    showTemplate(template, 'data-manage-root');
+    document.querySelector('[data-manage-root] .cb-state')!.prepend(hexagon(state));
+}
+
 function showLoading(): void {
-    showTemplate('tmpl-loading', 'data-manage-root');
+    showState('tmpl-loading', 'running');
 }
 
 function showReady(descriptor: DescriptorResponse, onDelete: () => void): void {
-    showTemplate('tmpl-ready', 'data-manage-root');
+    showState('tmpl-ready', 'warning');
 
     setText(
         'meta-expires',
@@ -44,21 +51,22 @@ function showReady(descriptor: DescriptorResponse, onDelete: () => void): void {
               }),
     );
     setText('meta-burn', t(descriptor.burn_after_retrieval ? 'manage.burn' : 'manage.noBurn'));
+    byAttr('meta-burn').classList.toggle('cb-chip-warning', descriptor.burn_after_retrieval);
     setText('meta-size', t('manage.ciphertextSize', { size: formatSize(descriptor.payload_size) }));
 
     byAttr('delete-btn').addEventListener('click', onDelete);
 }
 
 function showDeleting(): void {
-    showTemplate('tmpl-deleting', 'data-manage-root');
+    showState('tmpl-deleting', 'running');
 }
 
 function showDone(): void {
-    showTemplate('tmpl-done', 'data-manage-root');
+    showState('tmpl-done', 'empty');
 }
 
 function showError(message: string): void {
-    showTemplate('tmpl-error', 'data-manage-root');
+    showState('tmpl-error', 'empty');
     if (message) setText('error-message', message);
 }
 

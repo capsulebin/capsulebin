@@ -521,12 +521,16 @@ fn colors_refused_keys_and_values_stop_check_and_serve() {
 }
 
 /// The contrast warnings of the colours below, as `check` and `serve` word
-/// them: the light text on the three grounds, and the dark accent text on the
-/// dark accent configured from the environment.
-const CONTRAST_WARNINGS: [&str; 4] = [
-    "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1, below 4.5:1",
+/// them: the light text on the three grounds and the four tints, and the dark
+/// accent text on the dark accent configured from the environment.
+const CONTRAST_WARNINGS: [&str; 8] = [
+    "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.09:1, below 4.5:1",
     "light theme: branding.colors.light.text on branding.colors.light.surface has a contrast of 1.00:1, below 4.5:1",
     "light theme: branding.colors.light.text on branding.colors.light.surface_sunken has a contrast of 1.10:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.tint_accent has a contrast of 1.15:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.tint_danger has a contrast of 1.14:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.tint_warning has a contrast of 1.10:1, below 4.5:1",
+    "light theme: branding.colors.light.text on branding.colors.light.tint_success has a contrast of 1.13:1, below 4.5:1",
     "dark theme: branding.colors.dark.accent_text on branding.colors.dark.accent has a contrast of 1.42:1, below 4.5:1",
 ];
 

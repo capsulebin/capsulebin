@@ -7,6 +7,15 @@
             "min_ratio": 4.5
         },
         { "foreground": ["accent_text"], "background": ["accent"], "min_ratio": 4.5 },
+        { "foreground": ["accent"], "background": ["tint_accent"], "min_ratio": 4.5 },
+        { "foreground": ["danger"], "background": ["tint_danger"], "min_ratio": 4.5 },
+        { "foreground": ["warning"], "background": ["tint_warning"], "min_ratio": 4.5 },
+        { "foreground": ["success"], "background": ["tint_success"], "min_ratio": 4.5 },
+        {
+            "foreground": ["text"],
+            "background": ["tint_accent", "tint_danger", "tint_warning", "tint_success"],
+            "min_ratio": 4.5
+        },
         {
             "foreground": ["border_strong"],
             "background": ["bg", "surface", "surface_sunken"],

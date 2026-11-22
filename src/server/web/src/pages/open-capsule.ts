@@ -34,7 +34,7 @@ export type PasswordRetry =
     { reason: 'rejected' } | { reason: 'rate_limited'; retryAfter: number | null };
 
 export interface OpenCapsuleHooks {
-    /** About to derive keys and decrypt; lets the caller show a spinner. */
+    /** About to derive keys and decrypt; lets the caller show progress. */
     onDecrypting(): void;
     /**
      * Right before the retrieve request, also when neither pause below came
@@ -56,6 +56,8 @@ export type OpenCapsuleOutcome =
           title: string | null;
           items: readonly CapsuleItem[];
           expiresAt: number | null;
+          /** From the descriptor: this retrieval deleted the capsule. */
+          burnAfterRetrieval: boolean;
       }
     | { kind: 'burned' }
     | {
@@ -124,6 +126,7 @@ export async function openCapsule(hooks: OpenCapsuleHooks): Promise<OpenCapsuleO
                 title: outcome.capsule.title,
                 items: outcome.capsule.items,
                 expiresAt: outcome.expiresAt,
+                burnAfterRetrieval: outcome.burnAfterRetrieval,
             };
         case 'burned':
         case 'aborted':

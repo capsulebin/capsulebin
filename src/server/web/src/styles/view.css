@@ -1,0 +1,207 @@
+/* View page (/p/{id}): the sheet, chip row, item panel and navigation rows.
+ * Shared components (quiet buttons, tab bar, chips, sheet frame, hexagon) are
+ * in base.css. */
+
+/* --- state phases (opening, decrypting, password, burn warning, gone) --- */
+
+/* The hexagon leads the centred column of a state phase. */
+cb-view-page > .cb-hex {
+    align-self: center;
+}
+
+.cb-kdf-progress .cb-hex {
+    width: 1.5rem;
+    height: 1.7rem;
+}
+
+/* --- display phase ------------------------------------------------------ */
+
+/* Title and chip row. */
+.cb-view-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cb-space-2);
+}
+
+.cb-view-head .cb-h1 {
+    font-size: 1.5rem;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    overflow-wrap: anywhere;
+}
+
+/* The sheet's head row stays in view while a long item scrolls, so another
+ * item is always one click away. Opaque, so scrolled content does not show
+ * through. */
+.cb-view-sheet > .cb-sheet-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--cb-surface);
+    border-radius: var(--cb-radius-surface) var(--cb-radius-surface) 0 0;
+}
+
+/* One item: its name and size where the tabs would be. */
+.cb-view-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--cb-space-3);
+    min-width: 0;
+    padding: var(--cb-space-2);
+}
+
+/* "All N": the list of every item; shown by fitTabs when a tab does not fit. */
+.cb-all-btn {
+    flex: 0 0 auto;
+    font-weight: 600;
+    color: var(--cb-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.cb-all-btn[aria-expanded="true"] {
+    background: var(--cb-surface-sunken);
+}
+
+.cb-all-btn .cb-icon {
+    width: 0.75rem;
+    height: 0.75rem;
+}
+
+.cb-all-menu {
+    right: var(--cb-space-2);
+    width: min(22rem, calc(100% - var(--cb-space-4)));
+    max-height: 16rem;
+}
+
+/* Preview | Source: a quiet switch, the pressed half lifted, never accent. */
+.cb-view-switch {
+    display: inline-flex;
+    padding: 2px;
+    margin-right: var(--cb-space-1);
+    background: var(--cb-surface-sunken);
+    border-radius: var(--cb-radius-control);
+}
+
+.cb-view-switch button {
+    padding: var(--cb-space-1) var(--cb-space-3);
+    font: inherit;
+    font-size: 0.8125rem;
+    color: var(--cb-text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: calc(var(--cb-radius-control) - 2px);
+    cursor: pointer;
+    transition:
+        background-color var(--cb-duration-quick) ease,
+        color var(--cb-duration-quick) ease;
+}
+
+.cb-view-switch button:hover {
+    color: var(--cb-text);
+}
+
+.cb-view-switch button[aria-pressed="true"] {
+    color: var(--cb-text);
+    font-weight: 600;
+    background: var(--cb-surface);
+}
+
+/* The item panel: content straight on the sheet, no card, border or shadow. */
+.cb-view-sheet .cb-item-panel {
+    min-width: 0;
+}
+
+.cb-view-sheet .cb-prose {
+    /* Padding outside the measure, so the text column is --cb-measure wide. */
+    box-sizing: content-box;
+    padding: var(--cb-space-5) clamp(var(--cb-space-4), 4vw, var(--cb-space-6)) var(--cb-space-6);
+}
+
+.cb-view-sheet .cb-prose pre {
+    border: 0;
+}
+
+.cb-view-sheet .cb-item-panel > .cb-pre {
+    padding: var(--cb-space-4) clamp(var(--cb-space-4), 4vw, var(--cb-space-6));
+}
+
+.cb-view-sheet .cb-file-card {
+    padding: var(--cb-space-6) clamp(var(--cb-space-4), 4vw, var(--cb-space-6));
+}
+
+/* Code: line numbers in a column of their own, the code scrolls sideways. Both
+ * share font and line height, so the numbers stay level with the lines. */
+.cb-code {
+    display: flex;
+    align-items: flex-start;
+}
+
+.cb-code-gutter,
+.cb-code .cb-code-block {
+    padding-top: var(--cb-space-4);
+    padding-bottom: var(--cb-space-4);
+    font-family: var(--cb-font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    white-space: pre;
+}
+
+.cb-code-gutter {
+    flex: 0 0 auto;
+    min-width: 2.75em;
+    padding-left: var(--cb-space-3);
+    padding-right: var(--cb-space-4);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--cb-text-muted);
+    user-select: none;
+}
+
+.cb-code .cb-code-block {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 0;
+    padding-right: var(--cb-space-4);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+
+/* The browser's own monospace for <code> would give the lines another height. */
+.cb-code .cb-code-block code {
+    font: inherit;
+}
+
+/* Previous/next below the content, with the position between them. */
+.cb-item-nav {
+    display: flex;
+    align-items: center;
+    gap: var(--cb-space-2);
+    padding: var(--cb-space-1);
+    border-top: 1px solid var(--cb-border);
+    font-size: 0.8125rem;
+    color: var(--cb-text-muted);
+}
+
+.cb-item-nav .cb-quiet {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 40%;
+}
+
+.cb-item-nav .cb-bar-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* At the ends the button keeps its place but is not shown. */
+.cb-item-nav .cb-quiet:disabled {
+    visibility: hidden;
+}
+
+.cb-item-nav-position {
+    margin: 0 auto;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}

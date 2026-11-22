@@ -115,19 +115,21 @@ export function renderItemContent(item: DisplayItem, options: RenderOptions): Te
         // value: lit-html re-brands it through its own 'lit-html' Trusted Types
         // policy right before the real innerHTML assignment, so trustedHtml()
         // (for this project's own innerHTML sinks) does not apply here.
-        return html`<div class="cb-card">
-            <div class="cb-prose">${unsafeHTML(renderMarkdown(item.text))}</div>
-        </div>`;
+        return html`<div class="cb-prose">${unsafeHTML(renderMarkdown(item.text))}</div>`;
     }
     if (item.presentation === 'code') {
-        return html`<div class="cb-card">
+        // The line numbers are a column of their own next to <code>, not part of
+        // the highlighted text: tokens spanning lines stay whole, and copying or
+        // selecting the code never picks up a number.
+        return html`<div class="cb-code">
+            <div class="cb-code-gutter" aria-hidden="true">${lineNumbers(item.text)}</div>
             <pre
                 class="cb-code-block"
             ><code>${unsafeHTML(highlightCode(item.text, item.language || 'plaintext'))}</code></pre>
         </div>`;
     }
     if (item.presentation === 'download') {
-        return html`<div class="cb-card cb-file-card">
+        return html`<div class="cb-file-card">
             <p class="cb-lede">${t('item.filePreviewNote')}</p>
             <button type="button" class="cb-btn" @click=${() => downloadItem(item, options.index)}>
                 ${t('item.downloadFile', {
@@ -138,5 +140,15 @@ export function renderItemContent(item: DisplayItem, options: RenderOptions): Te
         </div>`;
     }
     // plain, Markdown source, or unknown — shown as text, never interpreted.
-    return html`<div class="cb-card"><pre class="cb-pre">${item.text}</pre></div>`;
+    return html`<pre class="cb-pre">${item.text}</pre>`;
+}
+
+/**
+ * The gutter text for `text`: the numbers 1…N, one per line, where N is the
+ * number of lines as `<pre>` shows them (a final newline starts no line).
+ */
+function lineNumbers(text: string): string {
+    const breaks = text.split('\n').length - 1;
+    const lines = text.endsWith('\n') ? breaks : breaks + 1;
+    return Array.from({ length: Math.max(lines, 1) }, (_, i) => String(i + 1)).join('\n');
 }

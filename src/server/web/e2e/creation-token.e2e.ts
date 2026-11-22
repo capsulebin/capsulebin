@@ -5,7 +5,7 @@ import {
     type Request,
     test as base,
 } from '@playwright/test';
-import { create } from './create';
+import { create, sealedLinks } from './create';
 import { expectGerman } from './german';
 import { type Guard, expect, installGuard } from './guard';
 import { creationToken, withInstance } from './instance';
@@ -150,13 +150,6 @@ async function submitCreate(page: Page, button: string): Promise<number> {
     return response.status();
 }
 
-/** The two links of the done page. */
-async function doneLinks(page: Page): Promise<{ share: string; manage: string }> {
-    const share = page.locator('#share-link');
-    await expect(share).not.toHaveValue('', { timeout: 30_000 });
-    return { share: await share.inputValue(), manage: await page.inputValue('#delete-link') };
-}
-
 test.describe('token mode', () => {
     test('without a token the page asks for one and checks it before use', async ({
         page,
@@ -203,7 +196,7 @@ test.describe('token mode', () => {
         await page.fill('[data-item-text]', 'sent with a bearer');
         await page.fill('#create-password', password);
         expect(await submitCreate(page, '[data-create-submit]')).toBe(201);
-        const { share, manage } = await doneLinks(page);
+        const { share, manage } = await sealedLinks(page);
 
         const view = await context.newPage();
         await view.goto(share);
@@ -252,7 +245,7 @@ test.describe('token mode', () => {
 
         await page.fill('[data-item-text]', 'created with a page-only token');
         expect(await submitCreate(page, '[data-create-submit]')).toBe(201);
-        await doneLinks(page);
+        await sealedLinks(page);
         expect((await requests()).filter(isCreate).map((r) => r.authorization)).toEqual([
             `Bearer ${tokenInstance.token}`,
         ]);
@@ -314,7 +307,7 @@ test.describe('token mode', () => {
 
             await page.fill('#creation-token', tokenInstance.token);
             expect(await submitCreate(page, '[data-token-submit]')).toBe(201);
-            const { share } = await doneLinks(page);
+            const { share } = await sealedLinks(page);
             expect(await stored(page)).toBe(tokenInstance.token);
 
             // No new encryption: the very same request body each time, so the same id.
@@ -497,6 +490,6 @@ test.describe('in a German browser', () => {
 
         await page.fill('#creation-token', tokenInstance.token);
         expect(await submitCreate(page, '[data-token-submit]')).toBe(201);
-        await expectGerman(page, 'Deine Kapsel ist fertig');
+        await expectGerman(page, 'Versiegelt.');
     });
 });

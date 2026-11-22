@@ -98,13 +98,44 @@ describe('toggle', () => {
         expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
     });
 
-    it('labels its state for screen readers', () => {
+    /** The name stays the action; the state is the description (`title`) and the icon. */
+    it('keeps its name and describes its state', () => {
         const button = document.createElement('button');
         mountThemeToggle(button);
 
-        expect(button.getAttribute('aria-label')).toContain('automatic');
+        expect(button.getAttribute('aria-label')).toBe('Switch theme');
+        expect(button.title).toContain('automatic');
         button.click();
-        expect(button.getAttribute('aria-label')).toContain('light');
+        expect(button.getAttribute('aria-label')).toBe('Switch theme');
+        expect(button.title).toContain('light');
+    });
+
+    /** A glyph like U+25D0 depends on the installed fonts and rendered as a speck. */
+    it('shows an inline SVG icon per state and no text', () => {
+        const button = document.createElement('button');
+        button.textContent = 'old content';
+        mountThemeToggle(button);
+
+        const icons = (): string[] =>
+            [...button.children].map((child) => (child as SVGElement).dataset.icon ?? '');
+        const only = (): SVGSVGElement => {
+            expect(button.children).toHaveLength(1);
+            const svg = button.firstElementChild as SVGSVGElement;
+            expect(svg.namespaceURI).toBe('http://www.w3.org/2000/svg');
+            expect(svg.getAttribute('aria-hidden')).toBe('true');
+            expect(button.textContent!.trim()).toBe('');
+            return svg;
+        };
+
+        only();
+        expect(icons()).toEqual(['theme']);
+        button.click();
+        only();
+        expect(icons()).toEqual(['sun']);
+        button.click();
+        expect(icons()).toEqual(['moon']);
+        button.click();
+        expect(icons()).toEqual(['theme']);
     });
 
     it('stores nothing besides the theme choice', () => {

@@ -47,6 +47,22 @@ describe('catalogues', () => {
         }
     });
 
+    /** The burn checkbox sits under its label (create page options row). */
+    it.each(languages)('%s does not repeat the burn label in the checkbox text', (lang) => {
+        const catalogue = readCatalogue(lang);
+        const label = catalogue['create.burnLabel']!;
+        const text = catalogue['create.burn']!;
+        expect(text).not.toBe(label);
+        expect(text).not.toContain(label);
+        // No second name for the option in brackets either.
+        expect(text).not.toMatch(/[()]/);
+    });
+
+    it('names the burn option alike in en and de', () => {
+        expect(readCatalogue('en')['create.burn']).toBe('Delete after first retrieval');
+        expect(readCatalogue('de')['create.burn']).toBe('Nach dem ersten Abruf löschen');
+    });
+
     it.each(languages)('%s has no empty text', (lang) => {
         for (const [key, value] of Object.entries(readCatalogue(lang))) {
             expect(value.trim(), key).not.toBe('');

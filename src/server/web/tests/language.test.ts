@@ -304,6 +304,20 @@ describe('language switch', () => {
         );
     });
 
+    /** A quiet text button per language: no fill, the current one only marked. */
+    it('renders every language as a quiet text button', async () => {
+        await setPage('de');
+        const { buttons } = await mount('en de');
+        for (const button of buttons) {
+            expect(button.type).toBe('button');
+            expect(button.className).toBe('cb-quiet');
+            expect(button.children).toHaveLength(0);
+        }
+        expect(buttons.filter((b) => b.getAttribute('aria-current') === 'true')).toEqual([
+            buttons[1],
+        ]);
+    });
+
     it('stays hidden with a single language', async () => {
         expect((await mount('en')).container.hidden).toBe(true);
     });

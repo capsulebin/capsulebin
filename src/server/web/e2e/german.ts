@@ -17,7 +17,7 @@ export const catalogue = (language: string): Record<string, string> =>
  * Values with placeholders (`Expires in {count} minutes`) never appear verbatim,
  * so they are split at the placeholders and each literal part is checked on its
  * own; leaving them out would miss most error and status texts. A part that the
- * German value contains as well (`☰`, a unit) says nothing about the language.
+ * German value contains as well (a symbol, a unit) says nothing about the language.
  *
  * A part only counts as whole words (`Capsule` is in `CapsuleBin` on every page)
  * and case-insensitively, since `innerText` follows CSS `text-transform`.
@@ -42,13 +42,15 @@ const ENGLISH_ONLY: RegExp[] = (() => {
 
 /**
  * The visible text of the page has German in it and nothing from the English catalogue.
- * `<code>` is left out: identifiers such as the storage key `capsulebin.language` are no language.
+ * `<code>` and the sealed page's links are left out: identifiers such as the storage key
+ * `capsulebin.language`, or `/manage/` in a URL, are no language.
  */
 export async function expectGerman(page: Page, expected: string): Promise<void> {
     const body = page.locator('body');
     await expect(body).toContainText(expected, { timeout: 30_000 });
     let text = await body.innerText();
-    for (const code of await body.locator('code').allInnerTexts()) text = text.replace(code, ' ');
+    const literal = body.locator('code, [data-share-link], [data-delete-link]');
+    for (const code of await literal.allInnerTexts()) text = text.replace(code, ' ');
     text = text.replace(/\s+/g, ' ');
     expect(ENGLISH_ONLY.filter((english) => english.test(text)).map(String)).toEqual([]);
 }

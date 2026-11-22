@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     derivePasswordKeyFor,
+    MAX_ITEM_BYTES,
+    MAX_ITEMS,
     openPaste,
     parseLink,
     PasteApi,
@@ -40,6 +42,14 @@ function type(text: string): void {
 function add(kind: 'plain' | 'code' | 'markdown' | 'download'): void {
     el<HTMLButtonElement>('item-add').click();
     document.querySelector<HTMLButtonElement>(`[data-add-type="${kind}"]`)!.click();
+}
+
+/** Waits for the sealed page and returns the share link shown on it. */
+async function sealedShareLink(): Promise<string> {
+    await vi.waitFor(() => expect(document.querySelector('[data-share-link]')).not.toBeNull(), {
+        timeout: 15_000,
+    });
+    return el('share-link').textContent!;
 }
 
 async function loadPage(lang: 'en' | 'de' = 'en', mode: CreationMode = 'public'): Promise<void> {
@@ -373,11 +383,10 @@ describe('create page password', () => {
         ).length;
     }
 
-    /** Submits and waits for the done view; returns the share link. */
+    /** Submits and waits for the sealed page; returns the share link. */
     async function create(): Promise<string> {
         submit();
-        await vi.waitFor(() => expect(input('share-link')).not.toBeNull(), { timeout: 15_000 });
-        return input<HTMLInputElement>('share-link').value;
+        return sealedShareLink();
     }
 
     async function header(shareUrl: string): Promise<PublicHeader> {
@@ -411,7 +420,7 @@ describe('create page password', () => {
                 expect(server.requests).toHaveLength(0);
                 // Still the form: neither the encrypting nor the error view.
                 expect(el('create-form')).not.toBeNull();
-                expect(document.querySelector('.cb-spinner')).toBeNull();
+                expect(document.querySelector('[data-hexagon]')).toBeNull();
                 expect(document.querySelector('[data-error-message]')).toBeNull();
 
                 const message = el('password-error');
@@ -461,8 +470,7 @@ describe('create page password', () => {
         submit();
         // The form gives way to the encrypting view, without the message.
         expect(document.querySelector('[data-password-error]:not([hidden])')).toBeNull();
-        await vi.waitFor(() => expect(input('share-link')).not.toBeNull(), { timeout: 15_000 });
-        const share = input<HTMLInputElement>('share-link').value;
+        const share = await sealedShareLink();
         expect(creates()).toBe(1);
         expect(await opensWith(share, 'correct horse')).toBe(true);
     }, 30_000);
@@ -515,9 +523,8 @@ describe('create page creation modes', () => {
         return localStorage.getItem(CREATION_TOKEN_KEY);
     }
 
-    async function done(): Promise<string> {
-        await vi.waitFor(() => expect(field('share-link')).not.toBeNull(), { timeout: 15_000 });
-        return field<HTMLInputElement>('share-link').value;
+    function done(): Promise<string> {
+        return sealedShareLink();
     }
 
     async function failed(): Promise<string> {
@@ -913,5 +920,571 @@ describe('create page creation modes', () => {
             expect(el<HTMLSelectElement>('item-type').value).toBe('code');
             expect(el<HTMLSelectElement>('item-lang').value).toBe('rust');
         }, 30_000);
+    });
+});
+
+describe('create page layout', () => {
+    it('starts with the editor: a screen-reader-only heading, no visible heading or lede', () => {
+        const form = el('create-form');
+        const headings = [...document.querySelectorAll('main h1')];
+        expect(headings).toHaveLength(1);
+        expect(headings[0]!.classList.contains('cb-sr-only')).toBe(true);
+        expect(headings[0]!.textContent).toBe(en['create.heading']);
+        expect(document.querySelector('main .cb-lede')).toBeNull();
+        for (const node of document.querySelectorAll('main > *')) {
+            if (node === form) break;
+            if (node.matches('[hidden], .cb-sr-only')) continue;
+            // Only the token notice and line may stand before the form, and they are hidden here.
+            throw new Error(`visible element before the form: ${node.outerHTML}`);
+        }
+    });
+
+    it('keeps the title input borderless but labelled', () => {
+        const title = document.getElementById('create-title')!;
+        expect(title.classList.contains('cb-create-title')).toBe(true);
+        expect(document.querySelector('label[for="create-title"]')!.textContent).toBe(
+            en['create.titleLabel'],
+        );
+    });
+
+    it('puts tabs, type, name, language, text and size into one editor frame', () => {
+        const editor = el('editor');
+        expect(editor.classList.contains('cb-editor-frame')).toBe(true);
+        for (const part of [
+            '[data-item-tabs]',
+            '#create-item-type',
+            '#create-item-name',
+            '#create-item-lang',
+            '[data-item-text]',
+            '[data-size-meter]',
+            '[data-size-bar]',
+        ]) {
+            expect(editor.querySelector(part), part).not.toBeNull();
+        }
+    });
+
+    it('shows the remove action as an icon with a label narrow screens hide', () => {
+        type('a');
+        add('plain');
+        const remove = el<HTMLButtonElement>('item-remove');
+        expect(remove.hidden).toBe(false);
+        expect(remove.querySelector('svg[data-icon="remove"]')).not.toBeNull();
+        expect(remove.querySelector('.cb-bar-label')!.textContent).toBe(en['create.remove']);
+    });
+
+    it('puts expiry, burn and password in one options row, each with its label', () => {
+        const fields = [...document.querySelectorAll('.cb-create-options > .cb-create-field')];
+        expect(fields).toHaveLength(3);
+        expect(fields[0]!.querySelector('label[for="create-expiry"]')!.textContent).toBe(
+            en['create.expires'],
+        );
+        expect(fields[0]!.querySelector('#create-expiry')).not.toBeNull();
+        const burn = fields[1]!;
+        expect(burn.getAttribute('role')).toBe('group');
+        expect(document.getElementById(burn.getAttribute('aria-labelledby')!)!.textContent).toBe(
+            en['create.burnLabel'],
+        );
+        expect(burn.querySelector('#create-burn')).not.toBeNull();
+        expect(fields[2]!.querySelector('label[for="create-password"]')!.textContent).toBe(
+            en['create.password'],
+        );
+        expect(fields[2]!.querySelector('#create-password')).not.toBeNull();
+    });
+
+    it('shows the password hint only while the password field has content', () => {
+        const note = el('password-note');
+        const password = document.getElementById('create-password') as HTMLInputElement;
+        expect(note.textContent!.trim()).toBe(en['create.passwordNote']);
+        expect(note.hidden).toBe(true);
+        password.value = 's';
+        password.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(note.hidden).toBe(false);
+        password.value = '';
+        password.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(note.hidden).toBe(true);
+    });
+
+    it('puts the trust line next to the submit button', () => {
+        const row = el('create-submit').parentElement!;
+        expect(row.classList.contains('cb-create-submit')).toBe(true);
+        expect(row.querySelector('[data-trust-line]')!.textContent).toBe(en['create.lede']);
+    });
+});
+
+describe('create page size bar', () => {
+    function fill(): string {
+        return el('size-fill').getAttribute('width')!;
+    }
+
+    it('fills its share of the limit, as an attribute and never as a style', () => {
+        expect(fill()).toBe('0.0%');
+        type('x'.repeat(Math.round(MAX_ITEM_BYTES / 4)));
+        expect(fill()).toBe('25.0%');
+        expect(el('size-meter').textContent).toMatch(/ of 9\.9 MiB$/);
+        expect(el('size-bar').getAttribute('aria-hidden')).toBe('true');
+        expect(document.querySelector('[data-editor] [style]')).toBeNull();
+    });
+
+    it('turns to the danger colour over the limit and stays full', () => {
+        type('x'.repeat(MAX_ITEM_BYTES + 1));
+        expect(fill()).toBe('100.0%');
+        expect(el('size-bar').classList.contains('cb-size-bar-over')).toBe(true);
+        expect(el('size-meter').classList.contains('cb-size-meter-over')).toBe(true);
+        expect(el('size-meter').textContent).toContain('over the limit by 1 B');
+        expect(el<HTMLButtonElement>('create-submit').disabled).toBe(true);
+
+        type('x');
+        expect(el('size-bar').classList.contains('cb-size-bar-over')).toBe(false);
+    });
+});
+
+describe('create page "+ Add item"', () => {
+    function fillUp(count: number): void {
+        type('0');
+        for (let i = 1; i < count; i++) {
+            add('plain');
+            type(String(i));
+        }
+    }
+
+    it('stays right of "All N"', () => {
+        const more = el('more');
+        const addButton = el('item-add');
+        expect(more.compareDocumentPosition(addButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+    });
+
+    it('is disabled and reads "16 of 16" at the limit, and comes back after a removal', () => {
+        fillUp(MAX_ITEMS - 1);
+        const addButton = el<HTMLButtonElement>('item-add');
+        expect(addButton.disabled).toBe(false);
+        expect(addButton.textContent).toBe(en['create.addItem']);
+
+        add('plain');
+        expect(tabs()).toHaveLength(MAX_ITEMS);
+        expect(addButton.disabled).toBe(true);
+        expect(addButton.textContent).toBe('16 of 16');
+        addButton.click();
+        expect(el('add-menu').hidden).toBe(true);
+
+        document.querySelector<HTMLButtonElement>('[data-remove-id]')!.click();
+        expect(addButton.disabled).toBe(false);
+        expect(addButton.textContent).toBe(en['create.addItem']);
+    });
+
+    it('reads "16 von 16" in German', async () => {
+        await loadPage('de');
+        fillUp(MAX_ITEMS);
+        expect(el('item-add').textContent).toBe('16 von 16');
+    });
+});
+
+describe('create page with one item', () => {
+    const bar = () => el('tabs-row');
+    const inBar = () => bar().contains(el('item-add'));
+
+    it('shows no tab bar and names the item only in its row', () => {
+        expect(bar().hidden).toBe(true);
+        expect(el('more').hidden).toBe(true);
+        expect(el<HTMLInputElement>('item-name').value).toBe('text.txt');
+        // The only other place holding the name is the hidden bar.
+        const named = [...el('editor').querySelectorAll('*')].filter(
+            (node) => node.children.length === 0 && node.textContent === 'text.txt',
+        );
+        expect(named.every((node) => bar().contains(node))).toBe(true);
+    });
+
+    it('keeps the add button in reach, at the end of the item actions', () => {
+        const addButton = el<HTMLButtonElement>('item-add');
+        expect(inBar()).toBe(false);
+        expect(el('item-actions').lastElementChild!.contains(addButton)).toBe(true);
+        expect(el('editor-head').contains(addButton)).toBe(true);
+        expect(addButton.disabled).toBe(false);
+
+        addButton.click();
+        expect(el('add-menu').hidden).toBe(false);
+        expect(addButton.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('brings the tab bar back with the second item and hides it after a removal', () => {
+        type('one');
+        add('plain');
+        expect(bar().hidden).toBe(false);
+        expect(inBar()).toBe(true);
+        expect(bar().lastElementChild!.contains(el('item-add'))).toBe(true);
+        expect(tabs()).toEqual(['text.txt', 'text-2.txt *']);
+
+        el<HTMLButtonElement>('item-remove').click();
+        expect(tabs()).toEqual(['text.txt *']);
+        expect(bar().hidden).toBe(true);
+        expect(inBar()).toBe(false);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('one');
+    });
+
+    it('moves the focus to the item row when the tab close button leaves one item', () => {
+        type('one');
+        add('plain');
+        const close = document.querySelector<HTMLButtonElement>('[data-remove-id]')!;
+        close.focus();
+        close.click();
+        expect(tabs()).toEqual(['text-2.txt *']);
+        expect(bar().hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
+    });
+
+    it('moves the focus to the item row when "Remove" leaves one item', () => {
+        type('one');
+        add('plain');
+        const remove = el<HTMLButtonElement>('item-remove');
+        remove.focus();
+        remove.click();
+        expect(remove.hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
+    });
+
+    it('keeps one bar-less item when the untouched item changes its kind', () => {
+        add('markdown');
+        expect(tabs()).toEqual(['notes.md *']);
+        expect(bar().hidden).toBe(true);
+        expect(inBar()).toBe(false);
+    });
+
+    it('shows the bar again for a restored draft with several items', async () => {
+        vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+        type('one');
+        add('plain');
+        type('two');
+        el<HTMLFormElement>('create-form').requestSubmit();
+        await vi.waitFor(() => expect(document.querySelector('[data-retry-btn]')).not.toBeNull(), {
+            timeout: 15_000,
+        });
+        el<HTMLButtonElement>('retry-btn').click();
+        expect(bar().hidden).toBe(false);
+        expect(inBar()).toBe(true);
+        expect(tabs()).toEqual(['text.txt', 'text-2.txt *']);
+    });
+});
+
+describe('create page "All N" list', () => {
+    /** Width of the tab list; every tab and the "All N" button are 100 px wide. */
+    let barWidth = 250;
+
+    beforeEach(() => {
+        barWidth = 250;
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (
+            this: HTMLElement,
+        ) {
+            return this.matches('[data-item-tabs]') ? barWidth : 0;
+        });
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+            () => ({ width: 100 }) as DOMRect,
+        );
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    /** Four items (text, Markdown, code, file name), the first one active. */
+    function fourItems(): void {
+        type('one');
+        add('markdown');
+        type('# two');
+        add('code');
+        type('three');
+        add('plain');
+        type('four');
+        document.querySelector<HTMLElement>('[role="tab"]')!.click();
+    }
+
+    function open(): void {
+        el<HTMLButtonElement>('more-btn').click();
+    }
+
+    function rows(): string[] {
+        return [...el('more-menu').querySelectorAll<HTMLElement>('[data-more-id]')].map(
+            (row) =>
+                [...row.children].map((part) => part.textContent).join(' ') +
+                (row.getAttribute('aria-checked') === 'true' ? ' *' : ''),
+        );
+    }
+
+    function visibleTabs(): string[] {
+        return [...document.querySelectorAll<HTMLElement>('[data-item-tabs] > *')]
+            .filter((wrap) => !wrap.hidden)
+            .map((wrap) => wrap.querySelector('.cb-itemtab-name')!.textContent!);
+    }
+
+    it('is absent while every tab fits', () => {
+        barWidth = 1000;
+        fourItems();
+        expect(el('more').hidden).toBe(true);
+    });
+
+    it('lists every item in creation order with kind, name and a remove control', () => {
+        fourItems();
+        const button = el('more-btn');
+        expect(el('more').hidden).toBe(false);
+        expect(button.textContent).toBe('All 4');
+        expect(button.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
+        expect(rows()).toEqual([
+            'Text text.txt *',
+            'MD notes.md',
+            'Code snippet.txt',
+            'Text text-2.txt',
+        ]);
+        const removes = [...el('more-menu').querySelectorAll('[data-menu-remove-id]')];
+        expect(removes.map((remove) => remove.getAttribute('aria-label'))).toEqual([
+            'Remove text.txt',
+            'Remove notes.md',
+            'Remove snippet.txt',
+            'Remove text-2.txt',
+        ]);
+    });
+
+    it('has the same contents at every width', () => {
+        fourItems();
+        const wide = el('more-menu').innerHTML;
+        barWidth = 120;
+        el<HTMLButtonElement>('item-name').dispatchEvent(new Event('input'));
+        expect(visibleTabs()).toEqual(['text.txt']);
+        expect(el('more-menu').innerHTML).toBe(wide);
+    });
+
+    it('selects the chosen item, keeps it visible as a tab and closes', () => {
+        fourItems();
+        expect(visibleTabs()).toEqual(['text.txt']);
+        open();
+        expect(el('more-menu').hidden).toBe(false);
+        expect(el('more-btn').getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement!.getAttribute('aria-checked')).toBe('true');
+
+        el('more-menu').querySelectorAll<HTMLElement>('[data-more-id]')[3]!.click();
+        expect(el('more-menu').hidden).toBe(true);
+        expect(tabs()[3]).toBe('text-2.txt *');
+        expect(visibleTabs()).toEqual(['text-2.txt']);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('four');
+    });
+
+    it('moves with the arrow keys and closes with Escape, back on the button', () => {
+        fourItems();
+        open();
+        const keydown = (key: string) =>
+            document.activeElement!.dispatchEvent(
+                new KeyboardEvent('keydown', { key, bubbles: true }),
+            );
+        const buttons = [...el('more-menu').querySelectorAll('button')];
+        expect(document.activeElement).toBe(buttons[0]);
+        keydown('ArrowDown');
+        expect(document.activeElement).toBe(buttons[1]);
+        keydown('ArrowUp');
+        expect(document.activeElement).toBe(buttons[0]);
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(el('more-menu').hidden).toBe(true);
+        expect(document.activeElement).toBe(el('more-btn'));
+    });
+
+    it('removes an item with its remove control and keeps the draft logic', () => {
+        fourItems();
+        open();
+        el('more-menu').querySelector<HTMLButtonElement>('[aria-label="Remove notes.md"]')!.click();
+        expect(tabs()).toEqual(['text.txt *', 'snippet.txt', 'text-2.txt']);
+        expect(rows()).toEqual(['Text text.txt *', 'Code snippet.txt', 'Text text-2.txt']);
+        // Still open: a click inside the menu does not close it.
+        expect(el('more-menu').hidden).toBe(false);
+        expect(document.activeElement!.getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('moves the focus to the item row when a removal from the list leaves one item', () => {
+        barWidth = 120;
+        type('one');
+        add('markdown');
+        expect(el('more-btn').textContent).toBe('All 2');
+        open();
+        const remove = el('more-menu').querySelector<HTMLButtonElement>(
+            '[aria-label="Remove notes.md"]',
+        )!;
+        remove.focus();
+        remove.click();
+        expect(tabs()).toEqual(['text.txt *']);
+        expect(el('tabs-row').hidden).toBe(true);
+        expect(el('more-menu').hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
+    });
+
+    it('offers no remove control with one item', () => {
+        barWidth = 50;
+        expect(tabs()).toEqual(['text.txt *']);
+        expect(el('more-menu').querySelectorAll('[data-more-id]')).toHaveLength(1);
+        expect(el('more-menu').querySelector('[data-menu-remove-id]')).toBeNull();
+    });
+});
+
+describe('create page states and sealed page', () => {
+    let server: FakeServer;
+    const writeText = vi.fn<(text: string) => Promise<void>>();
+
+    beforeEach(() => {
+        server = createFakeServer(window.location.origin);
+        vi.stubGlobal('fetch', server.fetch);
+        writeText.mockReset();
+        writeText.mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText },
+        });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function submit(): void {
+        el<HTMLFormElement>('create-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+    }
+
+    function field<T extends HTMLElement>(id: string): T {
+        return document.getElementById(id) as T;
+    }
+
+    function chips(): string[] {
+        return [...el('summary').querySelectorAll('li')].map((chip) => chip.textContent!);
+    }
+
+    it('shows the running hexagon while encrypting, without a spinner', async () => {
+        type('content');
+        submit();
+        expect(document.querySelector('[data-hexagon="running"]')).not.toBeNull();
+        expect(document.querySelector('main h1')!.textContent).toBe(en['create.encrypting']);
+        expect(document.querySelector('.cb-spinner')).toBeNull();
+        await sealedShareLink();
+    });
+
+    it('shows the empty hexagon on an error, and "Back to editing" still restores', async () => {
+        vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+        type('content');
+        submit();
+        await vi.waitFor(() =>
+            expect(document.querySelector('[data-error-message]')).not.toBeNull(),
+        );
+        expect(document.querySelector('[data-hexagon="empty"]')).not.toBeNull();
+        expect(document.querySelector('main h1')!.textContent).toBe(en['create.error']);
+        el<HTMLButtonElement>('retry-btn').click();
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('content');
+    });
+
+    it('shows the share link as text with the key highlighted, and one filled button', async () => {
+        type('content');
+        submit();
+        const share = await sealedShareLink();
+
+        const main = document.querySelector('main')!;
+        expect(main.querySelector('h1')!.textContent).toBe('Sealed.');
+        expect(main.querySelector('[data-hexagon="sealed"]')).not.toBeNull();
+        expect(main.querySelector('input')).toBeNull();
+
+        const link = parseLink(share, 'share');
+        expect(server.pastes.has(link.id)).toBe(true);
+        const key = el('share-key');
+        expect(el('share-link').contains(key)).toBe(true);
+        expect(key.textContent).toBe(share.slice(share.indexOf('#')));
+        expect(key.textContent).toMatch(/^#v1\./);
+        expect(main.querySelector('.cb-link-panel')!.textContent).toContain(en['create.keyNote']);
+
+        const filled = [...main.querySelectorAll('.cb-btn:not(.cb-btn-ghost)')];
+        expect(filled).toHaveLength(1);
+        expect(filled[0]!.textContent!.trim()).toBe(en['create.copyLink']);
+        expect(filled[0]!.querySelector('svg[data-icon="copy"]')).not.toBeNull();
+        expect(main.querySelector('a.cb-btn')).toBeNull();
+        expect(main.querySelector(`a[href="/"]`)!.textContent).toBe(en['create.another']);
+    });
+
+    it('shows the delete link in a dashed row with its own copy button and note', async () => {
+        type('content');
+        submit();
+        await sealedShareLink();
+        const manage = el('delete-link').textContent!;
+        const { id } = parseLink(manage, 'manage');
+        expect(server.pastes.has(id)).toBe(true);
+
+        const row = el('delete-row');
+        expect(row.classList.contains('cb-sealed-delete')).toBe(true);
+        expect(row.contains(el('delete-link'))).toBe(true);
+        expect(row.textContent).toContain(en['create.deleteLinkNote']);
+        const copy = row.querySelector<HTMLButtonElement>('[data-copy]')!;
+        expect(copy.textContent!.trim()).toBe(en['create.copy']);
+    });
+
+    it('sums up the submitted capsule: items, size, expiry, password and burn', async () => {
+        type('abc');
+        add('code');
+        type('de');
+        field<HTMLSelectElement>('create-expiry').value = '3600';
+        field<HTMLInputElement>('create-password').value = 'pass phrase';
+        field<HTMLInputElement>('create-burn').checked = true;
+        submit();
+        await vi.waitFor(() => expect(document.querySelector('[data-summary]')).not.toBeNull(), {
+            timeout: 30_000,
+        });
+        expect(chips()).toEqual([
+            '2 items · 5 B',
+            'Expires in 1 hour',
+            'With password',
+            'Deleted after first retrieval',
+        ]);
+    }, 30_000);
+
+    it('sums up a capsule without password, expiry or burn, leaving out empty items', async () => {
+        type('abc');
+        add('plain');
+        field<HTMLSelectElement>('create-expiry').value = '';
+        submit();
+        await sealedShareLink();
+        expect(chips()).toEqual(['1 item · 3 B', en['expiry.none'], 'Without password']);
+    });
+
+    it('sums up in German', async () => {
+        await loadPage('de');
+        type('abc');
+        submit();
+        await sealedShareLink();
+        expect(document.querySelector('main h1')!.textContent).toBe('Versiegelt.');
+        expect(chips()).toEqual(['1 Element · 3 B', 'Läuft in 7 Tagen ab', 'Ohne Passwort']);
+    });
+
+    it.each([
+        ['share link', 'share-link', 'create.copyLink'],
+        ['delete link', 'delete-link', 'create.copy'],
+    ] as const)('copies the %s and shows "Copied" for 2 s', async (_name, target, label) => {
+        type('content');
+        submit();
+        await sealedShareLink();
+        const url = el(target).textContent!;
+        const button = document.querySelector<HTMLButtonElement>(`[data-copy="${target}"]`)!;
+        const region = document.querySelector('main [role="status"][aria-live="polite"]')!;
+
+        vi.useFakeTimers();
+        button.click();
+        // Lets the clipboard's promise settle without moving the clock.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(writeText).toHaveBeenCalledWith(url);
+        expect(button.classList.contains('cb-copied')).toBe(true);
+        // The button's own content waits in a hidden element while it shows "Copied".
+        const shown = button.querySelector(':scope > span:not([hidden])')!;
+        expect(shown.textContent).toBe(en['shell.copied']);
+        expect(button.querySelector('svg[data-icon="check"]')).not.toBeNull();
+        expect(region.textContent).toBe(en['shell.copiedToClipboard']);
+
+        vi.advanceTimersByTime(1999);
+        expect(button.classList.contains('cb-copied')).toBe(true);
+        vi.advanceTimersByTime(1);
+        expect(button.classList.contains('cb-copied')).toBe(false);
+        expect(button.textContent!.trim()).toBe(en[label]);
+        expect(button.querySelector('svg[data-icon="copy"]')).not.toBeNull();
+        expect(region.textContent).toBe('');
     });
 });

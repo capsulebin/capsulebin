@@ -9,6 +9,10 @@
 import { KNOWN_LANGUAGES } from '@capsulebin/core';
 import { describe, expect, it } from 'vitest';
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { icon } from '../src/pages/icons';
 import {
     CREATION_TOKEN,
     DEFAULT_BRANDING,
@@ -42,7 +46,6 @@ const CASES = LANGUAGES.flatMap((lang) => SHELLS.map((shell) => [lang, shell] as
  */
 const ALLOWED_LITERALS = new Set([
     '·',
-    '◐',
     '#',
     'Bash',
     'CSS',
@@ -123,6 +126,34 @@ describe('templates', () => {
             .filter((text) => text !== '' && !ALLOWED_LITERALS.has(text));
 
         expect(leftovers).toEqual([]);
+    });
+
+    /**
+     * The toggle's icon is an inline SVG: a glyph such as U+25D0 depends on the
+     * installed fonts (it rendered as a speck). The name comes from the catalogue;
+     * the drawing is the one theme.ts puts there for the automatic theme.
+     */
+    it.each(SHELLS)('%s.html draws the theme toggle as an inline SVG without text', (shell) => {
+        const toggles = parse(readTemplate(shell)).querySelectorAll('[data-theme-toggle]');
+        expect(toggles).toHaveLength(1);
+        const toggle = toggles[0]!;
+        expect(toggle.getAttribute('aria-label')).toBe('{{theme.switch}}');
+        expect(toggle.children).toHaveLength(1);
+        const svg = toggle.firstElementChild!;
+        expect(svg.tagName.toLowerCase()).toBe('svg');
+        expect(svg.getAttribute('aria-hidden')).toBe('true');
+        expect(toggle.textContent!.trim()).toBe('');
+
+        const shapes = (root: Element): string[] =>
+            [...root.children].map((shape) =>
+                [
+                    shape.tagName.toLowerCase(),
+                    ...[...shape.attributes].map((a) => `${a.name}=${a.value}`).sort(),
+                ].join(' '),
+            );
+        expect(shapes(svg)).toEqual(shapes(icon('theme')));
+        expect(svg.getAttribute('viewBox')).toBe(icon('theme').getAttribute('viewBox'));
+        expect(svg.getAttribute('class')).toBe(icon('theme').getAttribute('class'));
     });
 
     it.each(SHELLS)('%s.html does not name the product', (shell) => {
@@ -495,5 +526,31 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         const tools = doc.querySelector('.cb-head-tools')!;
         expect(tools.querySelector('[data-language-switch][hidden]')).not.toBeNull();
         expect(tools.querySelector('[data-theme-toggle]')).not.toBeNull();
+    });
+
+    /** Header and footer controls are quiet: no filled or segmented control. */
+    it('keeps the header tools quiet', () => {
+        const tools = doc.querySelector('.cb-head-tools')!;
+        expect(tools.querySelector('[data-language-switch]')!.className).toBe('cb-lang');
+        expect(tools.querySelector('[data-theme-toggle]')!.className).toBe('cb-quiet');
+        expect(doc.querySelector('header .cb-segmented, header .cb-btn')).toBeNull();
+    });
+});
+
+/** Files of `dir` (relative to this file), recursively, whose name ends in one of `endings`. */
+function filesIn(dir: string, endings: readonly string[]): string[] {
+    const root = fileURLToPath(new URL(dir, import.meta.url));
+    return readdirSync(root, { withFileTypes: true, recursive: true })
+        .filter((entry) => entry.isFile() && endings.some((ending) => entry.name.endsWith(ending)))
+        .map((entry) => `${entry.parentPath}/${entry.name}`);
+}
+
+describe('theme toggle glyph', () => {
+    it('appears in no shell template and no source file', () => {
+        const glyph = '\u25D0';
+        expect(SHELLS.filter((shell) => readTemplate(shell).includes(glyph))).toEqual([]);
+        const files = filesIn('../src', ['.ts', '.css', '.json', '.html']);
+        expect(files.length).toBeGreaterThan(0);
+        expect(files.filter((file) => readFileSync(file, 'utf8').includes(glyph))).toEqual([]);
     });
 });

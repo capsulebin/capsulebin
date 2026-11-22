@@ -7,6 +7,9 @@
 
 import '../styles/tokens.css';
 import '../styles/base.css';
+import '../styles/view.css';
+import '../styles/create.css';
+import '../styles/states.css';
 
 import {
     type Language,
@@ -60,9 +63,10 @@ export interface LanguageSwitch {
 }
 
 /**
- * Fills `container` with one button per offered language, named in that language,
- * the page language marked with `aria-current`. With a single language there is
- * nothing to choose and the switch stays hidden.
+ * Fills `container` with one quiet text button per offered language, named in
+ * that language, the page language marked with `aria-current` (and shown in the
+ * text colour, base.css `.cb-lang`). With a single language there is nothing to
+ * choose and the switch stays hidden.
  */
 export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
     const current = pageLanguage();
@@ -76,6 +80,7 @@ export function mountLanguageSwitch(container: HTMLElement): LanguageSwitch {
         ...offered.map((language) => {
             const button = document.createElement('button');
             button.type = 'button';
+            button.className = 'cb-quiet';
             button.lang = language;
             button.dataset.language = language;
             button.textContent = endonym(language);

@@ -6,7 +6,9 @@ import { installGuard } from './guard';
  * passes for the wrong reason. This provokes each kind of violation once on a
  * real page and expects the guard to have recorded it.
  */
-test('the guard records CSP, Trusted Types and XSS canary violations', async ({ context }) => {
+test('the guard records CSP, Trusted Types, XSS canary and inline style violations', async ({
+    context,
+}) => {
     const guard = await installGuard(context);
     const page = await context.newPage();
     await page.goto('/');
@@ -28,9 +30,12 @@ test('the guard records CSP, Trusted Types and XSS canary violations', async ({ 
             // Expected: Trusted Types throws.
         }
         window.__capsulebinXss?.('self-test');
+        // An inline style through the CSSOM, which the CSP lets through.
+        document.querySelector('main')?.style.setProperty('color', 'red');
     });
 
     await expect.poll(() => guard.problems.join('\n')).toContain('style-src');
     await expect.poll(() => guard.problems.join('\n')).toContain('require-trusted-types-for');
     await expect.poll(() => guard.problems.join('\n')).toContain('XSS canary executed: self-test');
+    await expect.poll(() => guard.problems.join('\n')).toContain('inline style attribute: <main>');
 });
