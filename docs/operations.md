@@ -331,6 +331,14 @@ on (the default `proxy_request_buffering on`), so a slow client ties up the prox
 their own address for rate limiting by sending `X-Forwarded-For`; empty behind a proxy makes every
 client share the proxy's bucket.
 
+CapsuleBin reads every `X-Forwarded-For` line, in order, as one list (a proxy may append its own
+line instead of extending the client's) and walks it from the right, skipping trusted proxies. The
+walk stops at the first entry that is not a bare IP address (`203.0.113.7:5678`, `unknown`, an
+empty entry): the requests of such a client are counted under the last proxy reached, never under an
+entry the client could have written. Let the proxy send bare addresses (nginx
+`$proxy_add_x_forwarded_for`, Caddy's default). A listener on `[::]` sees IPv4 proxies as
+`::ffff:a.b.c.d`; these addresses are compared as IPv4, so `trusted_proxies` takes the IPv4 range.
+
 ## Settings that matter
 
 | Setting | Recommendation |
@@ -555,6 +563,13 @@ The server must be stopped. `restore` never opens the input file with SQLite and
    retired id, that the backup does not hold as a capsule; then it checkpoints the copy again.
    Paste ids are never used twice: a capsule created after the backup still has its links in
    circulation, and freeing its id would let a link holder put different content behind them.
+   A capsule both databases hold keeps the later of the two states: one the current database holds
+   burned (consumed), deleted (by its owner or by moderation) or disabled while the backup holds it
+   in an earlier state takes the current database's state, moderation reason and time, and loses its
+   ciphertext wherever the current database has none. A restore therefore never makes a burned or
+   deleted capsule readable again and never lifts a moderation made after the backup. It only moves
+   a capsule forward: one disabled in the backup and re-enabled (`moderation restore`) after it
+   stays disabled; run `moderation restore` again if that is still wanted.
    In the same step it carries the current database's [creation tokens](#creation-tokens) into
    the copy, matched by their hash: a token the backup lacks is added (with its id, label, dates
    and revocation), a token revoked in the current database stays revoked even if the backup holds
@@ -564,16 +579,19 @@ The server must be stopped. `restore` never opens the input file with SQLite and
 5. Only then, with `--force`, the current database and its `-wal`/`-shm` move to
    `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
 
-`restore` prints how many ids of the previous database it retired, and how many creation tokens,
-revocations and last-use days it carried over. If the current database cannot be read (it is
+`restore` prints how many ids of the previous database it retired, how many capsules kept the
+previous database's burned, deleted or disabled state, and how many creation tokens, revocations and
+last-use days it carried over. If the current database cannot be read (it is
 corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would create), the restore
 still installs the backup and prints
-`warning: the ids and creation tokens of the replaced database could not be carried over (…)` on
-stderr, with exit code 0: those ids can then be used again, its tokens the backup lacks are lost,
+`warning: the ids, capsule states and creation tokens of the replaced database could not be carried
+over (…)` on stderr, with exit code 0: those ids can then be used again, capsules it burned,
+deleted or disabled after the backup are available again (delete or disable them again with
+`moderation` if you know their ids), its tokens the backup lacks are lost,
 and tokens it revoked are active again if the backup holds them unrevoked — check `token list` and
 revoke them again. Only a failure to attach the current database or to read it in a first
 read-only probe gives this warning. A current database from before creation tokens existed simply
-has none to carry. A failure while writing the ids or tokens into the copy (the disk full, for
+has none to carry. A failure while writing the ids, states or tokens into the copy (the disk full, for
 example), or a read failure that shows up only then, stops the restore before the cutover like any
 other step.
 
@@ -583,8 +601,9 @@ one, never neither. If moving a file back fails as well, the error lists what to
 Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed working.
 
 `--dry-run` runs steps 1 to 4 on a private copy, prints the backup's contents, the schema version
-the migration reached, how many ids would be retired and how many creation tokens, revocations
-and last-use days would be carried over (with the same warning if the current
+the migration reached, how many ids would be retired, how many capsules would keep their burned,
+deleted or disabled state, and how many creation tokens, revocations and last-use days would be
+carried over (with the same warning if the current
 database cannot be read), then removes the copy; nothing else is created or changed. Without
 `--force` it also says when the restore would need `--force`.
 

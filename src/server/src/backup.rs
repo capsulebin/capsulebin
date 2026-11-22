@@ -227,8 +227,12 @@ pub struct RestoreOutcome {
     /// Creation tokens in both whose `last_used_on` was later in the previous
     /// database, now set to that later day.
     pub carried_last_uses: i64,
+    /// Capsules in both that the previous database holds burned, deleted or
+    /// disabled while the backup holds them in an earlier state, now in the
+    /// previous database's state (see [`CARRY_STATES`]).
+    pub carried_states: i64,
     /// Problems that did not stop the restore, such as a previous database
-    /// whose ids and creation tokens could not be read.
+    /// whose ids, capsule states and creation tokens could not be read.
     pub warnings: Vec<String>,
 }
 
@@ -251,6 +255,8 @@ pub struct DryRunOutcome {
     pub carried_revocations: i64,
     /// [`RestoreOutcome::carried_last_uses`] the restore would carry over.
     pub carried_last_uses: i64,
+    /// [`RestoreOutcome::carried_states`] the restore would carry over.
+    pub carried_states: i64,
     /// The warnings the restore would report.
     pub warnings: Vec<String>,
 }
@@ -270,7 +276,8 @@ pub struct DryRunOutcome {
 ///
 /// Before the cutover, every id of the old database that the backup does not
 /// hold as a row is retired in the staged copy, so the
-/// restore frees no id, and its creation tokens and revocations are carried
+/// restore frees no id; capsules the old database burned, deleted or disabled
+/// keep that state; and its creation tokens and revocations are carried
 /// into the copy (see [`carry_from_replaced`]). An old database that cannot be read only
 /// adds a warning: corruption is the typical reason to restore.
 pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<RestoreOutcome, BackupError> {
@@ -294,12 +301,13 @@ pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: 
         carried_tokens: copy.carried.tokens.inserted,
         carried_revocations: copy.carried.tokens.revoked,
         carried_last_uses: copy.carried.tokens.last_used,
+        carried_states: copy.carried.states,
         warnings: copy.carried.warning.into_iter().collect(),
     })
 }
 
 /// Runs [`restore`] up to and including the migration of the staged copy and
-/// counts the ids and creation tokens it would carry over, then removes the
+/// counts the ids, capsule states and creation tokens it would carry over, then removes the
 /// stage. Nothing outside the stage is created or changed.
 pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<DryRunOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
@@ -319,6 +327,7 @@ pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: boo
         carried_tokens: copy.carried.tokens.inserted,
         carried_revocations: copy.carried.tokens.revoked,
         carried_last_uses: copy.carried.tokens.last_used,
+        carried_states: copy.carried.states,
         warnings: copy.carried.warning.into_iter().collect(),
     })
 }
@@ -349,7 +358,7 @@ impl Plan {
         })
     }
 
-    /// The database the restore replaces, whose ids and creation tokens it
+    /// The database the restore replaces, whose ids, capsule states and creation tokens it
     /// carries over: the target, if a file is there (sidecars alone hold no
     /// readable database).
     fn replaced(&self) -> Option<&Path> {
@@ -493,7 +502,8 @@ async fn checkpoint(pool: &SqlitePool) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// What [`carry_from_replaced`] does with the ids and creation tokens it finds.
+/// What [`carry_from_replaced`] does with the ids, capsule states and creation
+/// tokens it finds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Carry {
     /// Count them only (dry run).
@@ -508,6 +518,8 @@ enum Carry {
 struct Carried {
     /// Ids retired in the copy.
     ids: i64,
+    /// Capsules of the copy moved to `old`'s later state, see [`CARRY_STATES`].
+    states: i64,
     tokens: CarriedTokens,
     /// Why the replaced database could not be read.
     warning: Option<String>,
@@ -528,8 +540,9 @@ impl Carried {
     fn unreadable(reason: impl std::fmt::Display) -> Self {
         Self {
             warning: Some(format!(
-                "the ids and creation tokens of the replaced database could not be carried over ({reason}); its ids \
-                 that are not in the backup can be used again, its creation tokens that are not in the backup are \
+                "the ids, capsule states and creation tokens of the replaced database could not be carried over \
+                 ({reason}); its ids that are not in the backup can be used again, capsules it burned, deleted or \
+                 disabled after the backup are available again, its creation tokens that are not in the backup are \
                  lost, and tokens it revoked are active again if the backup holds them unrevoked"
             )),
             ..Self::default()
@@ -583,12 +596,13 @@ const SCRATCH_TABLE: &str = "main.restore_carried_ids";
 /// The part of [`carry_from_replaced`] that runs while `old` is attached.
 ///
 /// First a read probe: whether `old` has `retired_ids` and `creation_tokens`,
-/// and a count over the same ids and tokens the inserts read. It writes
-/// nothing into the copy, so its failure can only come from `old`; it is the
-/// only failure here that becomes the warning, and then neither ids nor tokens
-/// are carried. Then, in one transaction, the ids are copied into a scratch
-/// table in the copy ([`SCRATCH_TABLE`]), counted and inserted, and the tokens
-/// carried over. Any failure there is an error (the transaction rolls back),
+/// and a count over the same ids, capsule states and tokens the writes read.
+/// It writes nothing into the copy, so its failure can only come from `old`;
+/// it is the only failure here that becomes the warning, and then neither ids
+/// nor states nor tokens are carried. Then, in one transaction, the ids are
+/// copied into a scratch table in the copy ([`SCRATCH_TABLE`]), counted and
+/// inserted, the capsule states carried over ([`carry_states`]) and the
+/// tokens carried over. Any failure there is an error (the transaction rolls back),
 /// also a read failure of `old` that shows up only then: it cannot be told
 /// apart from a failure writing the copy, and installing the backup without
 /// the ids would free them, without the revocations would revive tokens.
@@ -601,6 +615,14 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM ({old_ids})")))
             .fetch_one(&mut *connection)
             .await?;
+        // The lifecycle columns [`CARRY_STATES`] reads, so the rows themselves
+        // are scanned, not only the primary key index.
+        sqlx::query(
+            "SELECT count(*), max(consumed_at), max(last_retrieved_at), max(availability_status), \
+             max(moderation_reason), max(moderated_at) FROM old.pastes",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
         // From schema version 5 on. Without the table there is nothing to
         // carry, which is no reason for a warning.
         let has_tokens = old_has_table(connection, "creation_tokens").await?;
@@ -659,6 +681,7 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         .await
         .map_err(BackupError::Database)?;
     }
+    let states = carry_states(&mut transaction, carry).await.map_err(BackupError::Database)?;
     let tokens = if has_tokens {
         carry_tokens(&mut transaction, carry).await.map_err(BackupError::Database)?
     } else {
@@ -676,6 +699,7 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
     }
     Ok(Carried {
         ids: count,
+        states,
         tokens,
         warning: None,
     })
@@ -687,6 +711,56 @@ async fn old_has_table(connection: &mut sqlx::SqliteConnection, name: &str) -> R
         .bind(name)
         .fetch_one(connection)
         .await
+}
+
+/// The capsules [`carry_states`] changes: rows the copy and `old` both hold
+/// (same id) where `old` is in a later lifecycle state. Matches the `WHERE`
+/// clauses of [`CARRY_STATES`].
+const COUNT_STATES: &str = "SELECT count(*) FROM main.pastes AS m JOIN old.pastes AS o ON o.id = m.id \
+     WHERE (o.consumed_at IS NOT NULL AND m.consumed_at IS NULL) \
+     OR (o.availability_status = 'deleted' AND m.availability_status != 'deleted') \
+     OR (o.availability_status = 'disabled' AND m.availability_status = 'active')";
+
+/// The writes of [`carry_states`], in order. Each moves a capsule of the copy
+/// only forward, to the state `old` holds it in, and only ever clears its
+/// ciphertext, never copies one from `old`:
+/// - consumed in `old` (burned after retrieval): `consumed_at` and
+///   `last_retrieved_at` from `old`, ciphertext dropped;
+/// - deleted in `old` (by its owner or by moderation): deleted, ciphertext
+///   dropped, the moderation reason and time from `old`;
+/// - disabled in `old` but active in the copy: disabled with `old`'s reason
+///   and time.
+///
+/// A capsule `old` holds in an earlier state than the copy (re-enabled with
+/// `moderation restore` after the backup) keeps the copy's state: the copy
+/// never becomes more available than either database.
+const CARRY_STATES: [&str; 3] = [
+    "UPDATE main.pastes AS m SET consumed_at = o.consumed_at, \
+     last_retrieved_at = coalesce(o.last_retrieved_at, m.last_retrieved_at), ciphertext = NULL \
+     FROM old.pastes AS o WHERE o.id = m.id AND o.consumed_at IS NOT NULL AND m.consumed_at IS NULL",
+    "UPDATE main.pastes AS m SET availability_status = 'deleted', ciphertext = NULL, \
+     moderation_reason = o.moderation_reason, moderated_at = o.moderated_at \
+     FROM old.pastes AS o WHERE o.id = m.id AND o.availability_status = 'deleted' \
+     AND m.availability_status != 'deleted'",
+    "UPDATE main.pastes AS m SET availability_status = 'disabled', \
+     moderation_reason = o.moderation_reason, moderated_at = o.moderated_at \
+     FROM old.pastes AS o WHERE o.id = m.id AND o.availability_status = 'disabled' \
+     AND m.availability_status = 'active'",
+];
+
+/// Carries the later lifecycle state of the capsules both the copy and the
+/// attached `old` hold into the copy, inside the caller's transaction
+/// (`Carry::Count`: only counts), see [`CARRY_STATES`]. Without it a restore
+/// would bring back a capsule burned, deleted or moderated after the backup
+/// was taken, with its ciphertext.
+async fn carry_states(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<i64, sqlx::Error> {
+    let count: i64 = sqlx::query_scalar(COUNT_STATES).fetch_one(&mut *connection).await?;
+    if carry == Carry::Insert {
+        for statement in CARRY_STATES {
+            sqlx::query(statement).execute(&mut *connection).await?;
+        }
+    }
+    Ok(count)
 }
 
 /// Counts of [`carry_tokens`], each over the same rows its statement in
@@ -822,7 +896,7 @@ enum Step {
     Verify,
     Migrate,
     Checkpoint,
-    /// The ids and creation tokens of the replaced database are carried over
+    /// The ids, capsule states and creation tokens of the replaced database are carried over
     /// and checkpointed.
     Carry,
     MoveDatabase,

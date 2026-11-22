@@ -56,6 +56,10 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
             outcome.carried_ids
         );
         println!(
+            "    {} capsule(s) burned, deleted or disabled in the current database would keep that state.",
+            outcome.carried_states
+        );
+        println!(
             "    {} of the current database not in the backup would be carried over.",
             tokens(outcome.carried_tokens, outcome.carried_revocations, outcome.carried_last_uses)
         );
@@ -91,6 +95,10 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
         println!(
             "    {} id(s) of the previous database not in the backup were retired.",
             outcome.carried_ids
+        );
+        println!(
+            "    {} capsule(s) burned, deleted or disabled in the previous database kept that state.",
+            outcome.carried_states
         );
         println!(
             "    {} of the previous database not in the backup were carried over.",

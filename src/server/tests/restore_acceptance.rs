@@ -232,6 +232,8 @@ async fn ids_in(path: &Path, table: &str) -> BTreeSet<String> {
 /// in the backup). `restore --dry-run` prints that 2 ids would be retired, warns
 /// about nothing and changes nothing; `restore --force` prints the same count,
 /// and afterwards B and C are retired while the backup's rows are installed.
+/// A, deleted in the replaced database after the backup, stays deleted (both
+/// runs print one capsule that keeps its state).
 #[tokio::test]
 async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
     let (config, data, database) = setup("restore-acc-carry");
@@ -258,6 +260,11 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
         .execute(&pool)
         .await
         .unwrap();
+    // Deleted after the backup was taken, which holds it active.
+    sqlx::query("UPDATE pastes SET availability_status = 'deleted' WHERE id = 'first-row'")
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
     let files = with_sidecars(&database);
     let before = contents(&files);
@@ -269,6 +276,11 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
     assert!(
         stdout.contains("2 id(s) of the current database not in the backup would be retired"),
         "count missing: {}",
+        describe(&output)
+    );
+    assert!(
+        stdout.contains("1 capsule(s) burned, deleted or disabled in the current database would keep that state"),
+        "state count missing: {}",
         describe(&output)
     );
     assert!(
@@ -288,6 +300,11 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
         describe(&output)
     );
     assert!(
+        stdout.contains("1 capsule(s) burned, deleted or disabled in the previous database kept that state"),
+        "state count missing: {}",
+        describe(&output)
+    );
+    assert!(
         !String::from_utf8_lossy(&output.stderr).contains("warning:"),
         "{}",
         describe(&output)
@@ -300,6 +317,16 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
         ids_in(&database, "retired_ids").await,
         BTreeSet::from(["live-b".to_owned(), "retired-c".to_owned()])
     );
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(&database))
+        .await
+        .unwrap();
+    let status: String = sqlx::query_scalar("SELECT availability_status FROM pastes WHERE id = 'first-row'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    assert_eq!(status, "deleted", "the deletion after the backup was undone");
 }
 
 /// Runs `sql` once per entry of `rows`, binding its values, on the database at `path`.
