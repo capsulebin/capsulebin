@@ -24,8 +24,9 @@ tagline, logo, favicon and theme colours (`[branding]`); every page says "Powere
 with "CapsuleBin" linked to the source code. The pages put the capsule content first: quiet chrome
 and controls in one column with the content, surfaces with a shadow on a tinted light background,
 the view page as one sheet with lifecycle chips under the title, an editor-first create page whose
-editor fills the window (no tab bar for a single item), a "Sealed" page showing the share link with its key part highlighted, and one state
-hexagon on every progress/password/warning/gone page ([`docs/web-interface.md`](docs/web-interface.md)).
+editor fills the window (no tab bar for a single item), a "Sealed" page showing the share link with
+its key part highlighted, and one state hexagon on every progress/password/warning/gone page
+([`docs/web-interface.md`](docs/web-interface.md)).
 
 ## Repository layout
 
@@ -39,7 +40,7 @@ capsulebin/
 │   ├── cli/            @capsulebin/cli — standalone command-line client (esbuild, Node.js)
 │   └── core/           @capsulebin/core — platform-neutral capsule format, crypto, API client
 │                         (no DOM, no build step; shared by web client and CLI)
-├── migrations/         SQLite migrations (0001–0005), embedded into server binary
+├── migrations/         SQLite schema (`0001_init.sql`, the only migration), embedded in the binary
 ├── docs/
 │   ├── adr/            19 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
@@ -292,11 +293,14 @@ ADR-018. Only the create page handles a token (`src/server/web/src/creation-toke
 
 ### Creation tokens in the database
 
-ADR-019. `migrations/0005_creation_tokens.sql` (schema 5): table `creation_tokens` with `id` (ULID
-text, primary key), `verifier` (BLOB, the 32 bytes of `Verifier::for_creation_token`, `UNIQUE`),
-`label` (`''` = none), `created_at`, `last_used_on` (Unix seconds of 00:00 UTC, or `NULL`),
-`revoked_at` (or `NULL`). Never store the token; never delete a row (revoked rows are kept forever,
-no retention: restore needs them); no un-revoke; never link a capsule to a token.
+ADR-019. Table `creation_tokens` (`migrations/0001_init.sql`) with `id` (ULID text, primary key),
+`verifier` (BLOB, the 32 bytes of `Verifier::for_creation_token`, `UNIQUE`), `label` (`''` =
+none), `created_at`, `last_used_on` (Unix seconds of 00:00 UTC, or `NULL`), `revoked_at` (or
+`NULL`); the partial index `idx_creation_tokens_active` on `(created_at, id) WHERE revoked_at IS
+NULL` is exactly the filter and order of `active()` (SQL in the constant `ACTIVE`, pinned by an
+`EXPLAIN QUERY PLAN` test), so revoked rows cost a create nothing; it orders the scan of active
+rows and is no lookup by verifier. Never store the token; never delete a row (revoked rows are kept
+forever, no retention: restore needs them); no un-revoke; never link a capsule to a token.
 - **Authorization** (`authorize_creation` in `api/pastes/handlers.rs`, async): in `token` mode it
   reads `CreationTokenRepository::active()` on every create (no cache, so another process's
   `token create`/`revoke` applies from the next request) and compares the bearer against one
@@ -346,27 +350,29 @@ Three independent rules, each deletes the whole row (metadata + payload):
 Runs at startup and every 24h. `prune` subcommand applies once on demand.
 `purge.enabled = false` disables the scheduled job.
 
-**Ids are never freed** (`migrations/0004_retired_ids.sql`, ADR-011). Delete, burn and moderation
-keep a tombstone row; every `DELETE FROM pastes` puts the id into `retired_ids` (only column `id`,
-`WITHOUT ROWID`) via the `AFTER DELETE` trigger — never move this into the purge code, and never
-delete from `retired_ids` (no retention, no setting, no command). `SqlitePasteRepository::create`
-checks `retired_ids` inside the `INSERT … SELECT … WHERE NOT EXISTS` statement (a separate `SELECT`
-would race a purge); no row inserted → `IdConflict` → the same `409 id_conflict` as an occupied id.
-`restore` and `--dry-run` carry the replaced database's ids (`pastes` and, if present,
-`retired_ids`) missing from the backup into the staged copy's `retired_ids` with `ATTACH` (path as a
-bound read-only `file:` URI, never SQL text) and `INSERT … SELECT`, never through process memory.
-First a read probe (whether `old` has `retired_ids`, and a `count(*)` over the same ids) writes
-nothing into the copy; then the ids go into the scratch table `restore_carried_ids` of the staged
-copy (not `TEMP`: in memory, or a temporary file outside the stage), created and dropped in the
-same transaction. Only a failure of `ATTACH` or of the probe is a warning
-(`RestoreOutcome::warnings`) and leaves the copy unchanged; every later failure, also a read of
-`old` that fails only in the insert, is an error that stops the restore before the cutover.
+**Ids are never freed** (`retired_ids` in `migrations/0001_init.sql`, ADR-011). Delete, burn and
+moderation keep a tombstone row; every `DELETE FROM pastes` puts the id into `retired_ids` (only
+column `id`, `WITHOUT ROWID`) via the `AFTER DELETE` trigger — never move this into the purge code,
+and never delete from `retired_ids` (no retention, no setting, no command).
+`SqlitePasteRepository::create` checks `retired_ids` inside the `INSERT … SELECT … WHERE NOT
+EXISTS` statement (a separate `SELECT` would race a purge); no row inserted → `IdConflict` → the
+same `409 id_conflict` as an occupied id.
+`restore` and `--dry-run` carry the replaced database's ids (`pastes` and `retired_ids`) missing
+from the backup into the staged copy's `retired_ids` with `ATTACH` (path as a bound read-only
+`file:` URI, never SQL text) and `INSERT … SELECT`, never through process memory. First a read
+probe (a `count(*)` over the same ids) writes nothing into the copy; then the ids go into the
+scratch table `restore_carried_ids` of the staged copy (not `TEMP`: in memory, or a temporary file
+outside the stage), created and dropped in the same transaction. Only a failure of `ATTACH` or of
+the probe is a warning (`RestoreOutcome::warnings`) and leaves the copy unchanged; every later
+failure, also a read of `old` that fails only in the insert, is an error that stops the restore
+before the cutover. A replaced database without `retired_ids` or `creation_tokens` was not written
+by CapsuleBin: the probe fails on it like on any unreadable one (the warning, nothing carried),
+with no branch of its own.
 Creation tokens travel in the same `ATTACH`, probe and transaction (`carry_tokens` in `backup.rs`):
-the probe also checks whether `old` has `creation_tokens` and, if so, reads every column of it (a
-plain `count(*)` could be answered from the verifier index and miss a damaged table); a probe or
-`ATTACH` failure carries neither ids nor tokens and gives one warning naming both. Without the table
-(schema < 5) nothing is carried, without a warning. Matched by `verifier`, never by id, in this
-order: counts, revocations (`old` revoked, copy active → `old`'s `revoked_at`), the later
+the probe also reads every column of `old.creation_tokens` (a plain `count(*)` could be answered
+from the verifier index and miss a damaged table); a probe or `ATTACH` failure carries neither ids
+nor tokens and gives one warning naming both. Matched by `verifier`, never by id, in this order:
+counts, revocations (`old` revoked, copy active → `old`'s `revoked_at`), the later
 `last_used_on`, then `INSERT` of the rows whose verifier the copy lacks (id, label, dates,
 revocation). Tokens only in the copy stay. An inserted id the copy already uses for another verifier
 fails on the primary key and stops the restore (no special handling). `RestoreOutcome` and
@@ -395,6 +401,14 @@ logs one warning per minute at most, without id, text or contact; the throttle i
 
 ### Database files, backup and restore
 
+- **One released migration.** `migrations/0001_init.sql` creates the whole schema
+  (`db::expected_version()` = 1, also `schema_version` of `/health/ready`). Never edit it: sqlx
+  refuses a database whose recorded checksum differs (`db.rs` tests a changed version 1; the 1.0
+  fixture in `tests/upgrade.rs` checks the checksum explicitly). A schema change is a new migration;
+  restore keeps running the migrator on its staged copy for it. `pastes.describe_verifier` is
+  `NOT NULL`, so no row lacks the describe capability. Databases written before the migrations were
+  merged (pre-release, versions 1–5 recorded) get no special handling: `serve`/`check`/`migrate`
+  fail with sqlx's error, `restore` with `BackupError::TooNew`.
 - **Private from the first byte.** `db::connect` creates a missing database file itself
   (`db::create_private_file`: `create_new`, `0600` on Unix) and then opens it with
   `create_if_missing(false)` (`:memory:` excepted); SQLite gives `-wal`/`-shm` the main file's mode.
@@ -538,14 +552,14 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/retired_ids_acceptance.rs` | Against the real binary: after its `prune` removed a reported capsule, `reports list` (text and `--json`) and `reports show` print the paste as `gone`, `moderation disable`/`delete` answer "no paste" and record nothing, re-creating the id is `409 id_conflict`, a new report is answered `202` and not stored. |
 | `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text; the access log's `path` is a route template (also on `429`/`413`/`401`), a served asset or `{unmatched}`, also for seeded random paths; correct, wrong and revoked database creation tokens leave no token, verifier encoding, id or label in the log, nor does a failed `last_used_on` write (a test trigger) that still answers `201`. **Mandatory CI gate.** |
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
-| Handler tests inside the crate (`src/server/src/test_support.rs`: helpers only, no tests) | Requests through `router()` over an `AppState` the test may change (e.g. a small limiter ceiling), next to the code they cover. `api/rate_limit.rs`: `a_saturated_retrieve_answers_correct_and_wrong_passwords_alike` (a full paste table's overflow budget answers correct and wrong passwords with the same status, `Retry-After` and body; a burn paste is not consumed by a `429`), `correct_retrieves_with_room_spend_neither_slots_nor_overflow`. `api/pastes/handlers.rs`: `a_conflict_is_decided_before_the_payload_is_read`, `replays_of_unretrievable_pastes_read_no_payload`, `a_foreign_request_on_a_taken_id_reads_no_payload` (conflicting creates read no ciphertext, a possible replay at most once; counted by the `#[cfg(test)]` `payload_reads` counter of `SqlitePasteRepository`); `a_row_without_a_describe_verifier_is_never_described` (a row from before migration 0002 answers describe and retrieve with the dummy's preimage like an unknown id). `api/client_ip.rs`: every `X-Forwarded-For` line counts, an unparsable entry stops the walk, IPv4-mapped peers count as IPv4. |
+| Handler tests inside the crate (`src/server/src/test_support.rs`: helpers only, no tests) | Requests through `router()` over an `AppState` the test may change (e.g. a small limiter ceiling), next to the code they cover. `api/rate_limit.rs`: `a_saturated_retrieve_answers_correct_and_wrong_passwords_alike` (a full paste table's overflow budget answers correct and wrong passwords with the same status, `Retry-After` and body; a burn paste is not consumed by a `429`), `correct_retrieves_with_room_spend_neither_slots_nor_overflow`. `api/pastes/handlers.rs`: `a_conflict_is_decided_before_the_payload_is_read`, `replays_of_unretrievable_pastes_read_no_payload`, `a_foreign_request_on_a_taken_id_reads_no_payload` (conflicting creates read no ciphertext, a possible replay at most once; counted by the `#[cfg(test)]` `payload_reads` counter of `SqlitePasteRepository`). `api/client_ip.rs`: every `X-Forwarded-For` line counts, an unparsable entry stops the walk, IPv4-mapped peers count as IPv4. |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
-| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables), but stops (restore and dry run, old database and directory unchanged) when writing the ids into the copy fails (`SQLITE_FULL` from a test-only `max_page_count`); dry-run counts them and changes nothing. Creation tokens: carried by verifier (missing token inserted with its id, label, dates and revocation; revocation of a token active in the backup; the later `last_used_on`; backup-only tokens unchanged), none and no warning from a database without the table, neither ids nor tokens (one warning) when the table cannot be read, a stop before the cutover when the copy cannot take them. Capsule states: burned, owner-deleted, moderation-disabled and moderation-deleted after the backup keep that state (ciphertext gone from the installed file, `load_ciphertext` empty), one re-enabled after the backup stays disabled, an untouched one unchanged; the dry run counts them and changes nothing. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables, a hand-made database without `creation_tokens` or without `retired_ids`: one warning, no ids, states or tokens carried, also in the dry run), but stops (restore and dry run, old database and directory unchanged) when writing the ids into the copy fails (`SQLITE_FULL` from a test-only `max_page_count`); dry-run counts them and changes nothing. Creation tokens: carried by verifier (missing token inserted with its id, label, dates and revocation; revocation of a token active in the backup; the later `last_used_on`; backup-only tokens unchanged), neither ids nor tokens (one warning) when the table cannot be read, a stop before the cutover when the copy cannot take them. Capsule states: burned, owner-deleted, moderation-disabled and moderation-deleted after the backup keep that state (ciphertext gone from the installed file, `load_ciphertext` empty), one re-enabled after the backup stays disabled, an untouched one unchanged; the dry run counts them and changes nothing. |
 | `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
-| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`; a capsule deleted after the backup stays deleted (one kept state printed by both runs); a creation token issued and a revocation made after the backup survive `restore --force` (counts printed by `--dry-run` and the restore). |
-| `src/server/tests/upgrade.rs` | A database at schema 3 (migrations 0001–0003, `tests/fixtures/capsulebin-1.0.sql`, never regenerated) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; migration 0004 starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired; migration 0005 starts with an empty `creation_tokens`, from schema 3 and from a used schema-4 database. Fails when an existing migration is edited (sqlx checksum). |
+| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup on the current schema prints its contents and the schema version the staged copy was migrated to, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`; a capsule deleted after the backup stays deleted (one kept state printed by both runs); a creation token issued and a revocation made after the backup survive `restore --force` (counts printed by `--dry-run` and the restore). |
+| `src/server/tests/upgrade.rs` | `tests/fixtures/capsulebin-1.0.sql`, a dump of a database the 1.0 binary wrote through its own commands and the HTTP API (generating script in its header; regenerated only before the 1.0 tag, never after), opens at the current schema and stays usable: its recorded checksum of version 1 equals `MIGRATOR`'s for `0001_init.sql` (an edited migration fails with a clear message), capabilities describe/retrieve/delete, the burn tombstone stays burned, the password header comes back byte for byte, moderation and the closed report are kept, the retired id is `409 id_conflict`, in `token` mode the active database token creates and the revoked one gets `401`, new pastes can be created. |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
 | `src/server/tests/http.rs` | Security headers on every response; `/p/{id}` and `/<lang>/p/{id}` answer byte-identically for every id, whichever language is the default. |
 | `src/server/tests/language_paths_acceptance.rs`, `legal_languages.rs` | Edge cases of the language paths; legal pages per language (`[legal.<lang>.*]`, fallback per section, `lang` marking, titles from the shell). |
@@ -619,13 +633,13 @@ npm run e2e -w @capsulebin/web
 | `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with id, capsule state and creation token carry-over (`carry_from_replaced`, `carry_states`, `carry_tokens`) and rollback, `restore_dry_run` (tests in `backup/tests.rs`) |
 | `src/domain.rs` | Domain module root; re-exports `PasteId` (`domain/id.rs`: 128 bits, 22-char base64url), `Verifier`, `Clock`/`SystemClock` (`domain/clock.rs`, also `FixedClock` for tests), `Availability`/`NewPaste`/`Paste`, `PurgePolicy`/`PurgeOutcome`, `CreationToken`/`ActiveCreationToken`/`Label`/`utc_day_start` |
 | `src/domain/creation_token.rs` | Creation tokens kept in the database (ADR-019): `Label` (≤ 64 chars, no control characters, redacted `Debug`), `CreationToken` (as listed, no verifier), `ActiveCreationToken` (id, verifier, `last_used_on`), `utc_day_start` |
-| `src/domain/paste.rs` | `Paste` struct — the full row representation; `describe_matches` (constant time, never true for a row without a describe verifier) |
+| `src/domain/paste.rs` | `Paste` struct — the full row representation; `describe_verifier` is a `Verifier` (the column is `NOT NULL`); `describe_matches` (constant time) |
 | `src/domain/capability.rs` | Capability verification (constant-time via `subtle`); `any_matches`, `matching_index` (position of the first match, every entry visited) |
 | `src/domain/purge.rs` | Retention rule evaluation |
 | `src/domain/abuse.rs` | Report validation, reason/resolution/action codes (ADR-013) |
 | `src/repository.rs` | `PasteRepository`, `AbuseRepository` and `CreationTokenRepository` traits (the last without a lookup by verifier), `ReportCeilings`, `ReportEntry`, `SubmitOutcome`, `AbusePurgeOutcome`, `RevokeOutcome` |
 | `src/repository/sqlite.rs` | SQLite implementation (SQLx queries) |
-| `src/repository/sqlite/creation_tokens.rs` | `SqliteCreationTokenRepository`: `create`, `list`, `revoke`, `active`, `touch_last_use` (conditional `UPDATE`); no statement selects by verifier |
+| `src/repository/sqlite/creation_tokens.rs` | `SqliteCreationTokenRepository`: `create`, `list`, `revoke`, `active`, `touch_last_use` (conditional `UPDATE`); no statement selects by verifier; `active()` runs the constant `ACTIVE`, served by the partial index `idx_creation_tokens_active` (`active_tokens_are_read_through_the_partial_index` checks the query plan) |
 | `src/repository/sqlite/abuse.rs` | `AbuseRepository`: reports (capped by the open report ceilings), moderation, audit trail, retention |
 | `src/api.rs` | API module root |
 | `src/api/pastes.rs` | Paste router; per-route 4 KiB `PROOF_BODY_LIMIT` for describe, retrieve and delete |

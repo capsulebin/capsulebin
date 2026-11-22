@@ -30,11 +30,14 @@ Constraints:
 while the server runs; every change applies from the next create request. Configured
 `creation.token_hashes` keep working next to them.**
 
-- **What is stored.** Migration `0005_creation_tokens.sql` adds `creation_tokens` with `id` (ULID,
+- **What is stored.** The table `creation_tokens` (in `0001_init.sql`) has `id` (ULID,
   primary key), `verifier` (the 32 bytes of `Verifier::for_creation_token`, the same
   domain-separated hash as a configured entry, `UNIQUE`), `label` (`''` = none), `created_at`,
   `last_used_on` and `revoked_at` (Unix seconds, the last two `NULL` until set). The token itself is
-  never stored; a dump of the table grants no right to create.
+  never stored; a dump of the table grants no right to create. A partial index over
+  `(created_at, id) WHERE revoked_at IS NULL` serves the read of the active rows, so a long
+  revocation history does not make every create scan the whole table; it orders, it does not look
+  up a verifier.
 - **One candidate set, compared in constant time.** In `token` mode `authorize_creation` reads every
   active database verifier on each create and compares the bearer against the configured verifiers
   followed by the database ones with `capability::matching_index`, which visits every entry with
@@ -89,9 +92,10 @@ while the server runs; every change applies from the next create request. Config
   replaced database: every token whose verifier it lacks (with id, label, dates and revocation);
   the revocation of a token revoked there but active in the copy (with the replaced database's
   `revoked_at`); and the later `last_used_on` of the two. Tokens only in the backup stay as they
-  are. A replaced database without the table (schema below 5) carries nothing and warns about
-  nothing. A failed `ATTACH` or probe is the existing single warning, and then neither ids nor
-  tokens are carried; any failure after the probe stops the restore before the cutover.
+  are. A failed `ATTACH` or probe is the existing single warning, and then neither ids nor tokens
+  are carried; a replaced database without `creation_tokens` (or `retired_ids`) is not one
+  CapsuleBin wrote and fails the probe like any other unreadable one; any failure after the probe
+  stops the restore before the cutover.
   `restore` and `restore --dry-run` print how many tokens, revocations and last-use days are (or
   would be) carried.
 

@@ -286,8 +286,6 @@ pub(super) async fn retrieve(
         // an unknown id those are dummy verifiers, so the hashes and the
         // constant-time comparisons still run - an absent paste and wrong tokens
         // then cost the same work.
-        // A row without a describe verifier never holds a link
-        // (`Paste::describe_matches`).
         let (holds_link, stored_reveal, paste) = match found.as_ref() {
             Some(paste) => (paste.describe_matches(&presented_describe), paste.reveal_verifier, Some(paste)),
             None => (
@@ -562,50 +560,5 @@ mod tests {
         let answer = server.create(&foreign).await;
         assert_eq!(answer.status, StatusCode::CONFLICT);
         assert_eq!(repo.payload_reads() - before, 0);
-    }
-
-    /// A row without a describe verifier (written before migration 0002) has
-    /// no describe capability: the dummy the comparison runs against is not a
-    /// token. Describe and retrieve with its preimage answer exactly like an
-    /// unknown id (but for the request id).
-    #[tokio::test]
-    async fn a_row_without_a_describe_verifier_is_never_described() {
-        let (state, _clock) = test_support::state("no-describe-verifier", |_| {}).await;
-        let pool = state.pool.clone();
-        let server = TestServer::new(state);
-        let legacy = id(0x51);
-        assert_eq!(server.create(&create_body(&legacy, b"legacy")).await.status, StatusCode::CREATED);
-        sqlx::query("UPDATE pastes SET describe_verifier = NULL WHERE id = ?1")
-            .bind(legacy.encode())
-            .execute(&pool)
-            .await
-            .expect("drop the describe verifier");
-
-        let dummy = b64(b"absent");
-        let without_request_id = |answer: test_support::Answer| {
-            let mut json = answer.json();
-            json.as_object_mut().expect("problem object").remove("request_id");
-            (answer.status, json)
-        };
-        let mut answers = Vec::new();
-        for id in [legacy, self::id(0x52)] {
-            let path = |action: &str| format!("/api/v1/pastes/{}/{action}", id.encode());
-            let described = server
-                .post(&path("describe"), &serde_json::json!({ "describe_token": dummy }))
-                .await;
-            let retrieved = server
-                .post(
-                    &path("retrieve"),
-                    &serde_json::json!({ "describe_token": dummy, "reveal_token": b64(REVEAL_TOKEN) }),
-                )
-                .await;
-            for answer in [described, retrieved] {
-                let (status, json) = without_request_id(answer);
-                assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
-                assert_eq!(json["code"], "not_available", "{json}");
-                answers.push((status, json));
-            }
-        }
-        assert_eq!(answers[..2], answers[2..], "the legacy row answers unlike an unknown id");
     }
 }

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! Ids are never freed (`migrations/0004_retired_ids.sql`, REL-005).
+//! Ids are never freed (table `retired_ids` in `migrations/0001_init.sql`, REL-005).
 //!
 //! The client chooses the id (ADR-011). If a purge freed it, anyone holding the
 //! full link could create a new capsule under the same id and link secret, and

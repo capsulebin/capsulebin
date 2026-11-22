@@ -549,13 +549,11 @@ impl Carried {
     }
 }
 
-/// The ids of the attached replaced database (`old`): its rows and, from schema
-/// version 4 on, its retired ids. Constant SQL, put into the statements of
-/// [`carry_attached`] with `format!`; nothing from outside goes into them.
-/// `UNION ALL`: the scratch table's primary key with `INSERT OR IGNORE`
-/// already removes duplicates.
-const OLD_IDS: &str = "SELECT id FROM old.pastes";
-const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION ALL SELECT id FROM old.retired_ids";
+/// The ids of the attached replaced database (`old`): its rows and its retired
+/// ids. Constant SQL, put into the statements of [`carry_attached`] with
+/// `format!`; nothing from outside goes into them. `UNION ALL`: the scratch
+/// table's primary key with `INSERT OR IGNORE` already removes duplicates.
+const REPLACED_IDS: &str = "SELECT id FROM old.pastes UNION ALL SELECT id FROM old.retired_ids";
 
 /// Retires, in the staged copy behind `pool`, every id of `replaced` that the
 /// copy does not hold as a row, and carries its creation tokens over (see
@@ -594,24 +592,24 @@ const SCRATCH_TABLE: &str = "main.restore_carried_ids";
 
 /// The part of [`carry_from_replaced`] that runs while `old` is attached.
 ///
-/// First a read probe: whether `old` has `retired_ids` and `creation_tokens`,
-/// and a count over the same ids, capsule states and tokens the writes read.
-/// It writes nothing into the copy, so its failure can only come from `old`;
-/// it is the only failure here that becomes the warning, and then neither ids
-/// nor states nor tokens are carried. Then, in one transaction, the ids are
-/// copied into a scratch table in the copy ([`SCRATCH_TABLE`]), counted and
-/// inserted, the capsule states carried over ([`carry_states`]) and the
-/// tokens carried over. Any failure there is an error (the transaction rolls back),
-/// also a read failure of `old` that shows up only then: it cannot be told
-/// apart from a failure writing the copy, and installing the backup without
-/// the ids would free them, without the revocations would revive tokens.
+/// First a read probe: a count over the same ids, capsule states and tokens
+/// the writes read. It writes nothing into the copy, so its failure can only
+/// come from `old`; it is the only failure here that becomes the warning, and
+/// then neither ids nor states nor tokens are carried. A database without
+/// `retired_ids` or `creation_tokens` is not one this binary wrote, so a
+/// missing table fails the probe like any other unreadable database. Then, in
+/// one transaction, the ids are copied into a scratch table in the copy
+/// ([`SCRATCH_TABLE`]), counted and inserted, the capsule states carried over
+/// ([`carry_states`]) and the tokens carried over. Any failure there is an
+/// error (the transaction rolls back), also a read failure of `old` that shows
+/// up only then: it cannot be told apart from a failure writing the copy, and
+/// installing the backup without the ids would free them, without the
+/// revocations would revive tokens.
 async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<Carried, BackupError> {
     use sqlx::Connection as _;
 
     let probe = async {
-        let has_retired = old_has_table(connection, "retired_ids").await?;
-        let old_ids = if has_retired { OLD_IDS_WITH_RETIRED } else { OLD_IDS };
-        sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM ({old_ids})")))
+        sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM ({REPLACED_IDS})")))
             .fetch_one(&mut *connection)
             .await?;
         // The lifecycle columns [`CARRY_STATES`] reads, so the rows themselves
@@ -622,26 +620,19 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         )
         .fetch_one(&mut *connection)
         .await?;
-        // From schema version 5 on. Without the table there is nothing to
-        // carry, which is no reason for a warning.
-        let has_tokens = old_has_table(connection, "creation_tokens").await?;
-        if has_tokens {
-            // Every column, so the table itself is scanned: `count(*)` alone
-            // may be answered from the smaller verifier index.
-            sqlx::query(
-                "SELECT count(*), max(id), max(verifier), max(label), max(created_at), max(last_used_on), \
-                 max(revoked_at) FROM old.creation_tokens",
-            )
-            .fetch_one(&mut *connection)
-            .await?;
-        }
-        Ok::<_, sqlx::Error>((old_ids, has_tokens))
+        // Every column, so the table itself is scanned: `count(*)` alone may
+        // be answered from the smaller verifier index.
+        sqlx::query(
+            "SELECT count(*), max(id), max(verifier), max(label), max(created_at), max(last_used_on), \
+             max(revoked_at) FROM old.creation_tokens",
+        )
+        .fetch_one(&mut *connection)
+        .await
     }
     .await;
-    let (old_ids, has_tokens) = match probe {
-        Ok(found) => found,
-        Err(error) => return Ok(Carried::unreadable(error)),
-    };
+    if let Err(error) = probe {
+        return Ok(Carried::unreadable(error));
+    }
 
     let mut transaction = connection.begin().await.map_err(BackupError::Database)?;
     sqlx::query(AssertSqlSafe(format!(
@@ -659,7 +650,7 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
             .await
             .map_err(BackupError::Database)?;
     }
-    sqlx::query(AssertSqlSafe(format!("INSERT OR IGNORE INTO {SCRATCH_TABLE} (id) {old_ids}")))
+    sqlx::query(AssertSqlSafe(format!("INSERT OR IGNORE INTO {SCRATCH_TABLE} (id) {REPLACED_IDS}")))
         .execute(&mut *transaction)
         .await
         .map_err(BackupError::Database)?;
@@ -681,11 +672,7 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         .map_err(BackupError::Database)?;
     }
     let states = carry_states(&mut transaction, carry).await.map_err(BackupError::Database)?;
-    let tokens = if has_tokens {
-        carry_tokens(&mut transaction, carry).await.map_err(BackupError::Database)?
-    } else {
-        CarriedTokens::default()
-    };
+    let tokens = carry_tokens(&mut transaction, carry).await.map_err(BackupError::Database)?;
     if carry == Carry::Insert {
         sqlx::query(AssertSqlSafe(format!("DROP TABLE {SCRATCH_TABLE}")))
             .execute(&mut *transaction)
@@ -702,14 +689,6 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         tokens,
         warning: None,
     })
-}
-
-/// Whether the attached `old` has a table called `name`.
-async fn old_has_table(connection: &mut sqlx::SqliteConnection, name: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = ?1)")
-        .bind(name)
-        .fetch_one(connection)
-        .await
 }
 
 /// The capsules [`carry_states`] changes: rows the copy and `old` both hold

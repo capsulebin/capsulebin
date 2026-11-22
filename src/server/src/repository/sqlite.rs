@@ -115,11 +115,10 @@ fn row_to_paste(row: &sqlx::sqlite::SqliteRow) -> Result<Paste, RepositoryError>
             row.try_get("delete_verifier").map_err(RepositoryError::Database)?,
             "delete_verifier",
         )?,
-        describe_verifier: row
-            .try_get::<Option<Vec<u8>>, _>("describe_verifier")
-            .map_err(RepositoryError::Database)?
-            .map(|blob| verifier_from_blob(blob, "describe_verifier"))
-            .transpose()?,
+        describe_verifier: verifier_from_blob(
+            row.try_get("describe_verifier").map_err(RepositoryError::Database)?,
+            "describe_verifier",
+        )?,
         created_at: row.try_get("created_at").map_err(RepositoryError::Database)?,
         last_retrieved_at: row.try_get("last_retrieved_at").map_err(RepositoryError::Database)?,
         expires_at: row.try_get("expires_at").map_err(RepositoryError::Database)?,
@@ -143,7 +142,7 @@ impl PasteRepository for SqlitePasteRepository {
         // can actually measure. The plaintext size stays unknown to it.
         let payload_size = i64::try_from(paste.ciphertext.len()).unwrap_or(i64::MAX);
 
-        // A retired id (`migrations/0004_retired_ids.sql`) is refused in the
+        // A retired id (table `retired_ids`) is refused in the
         // same statement as the insert: checked separately, a purge committing in
         // between could retire the id after the check and before the insert. A
         // retired id inserts nothing, an occupied one is a unique violation; both
@@ -340,7 +339,7 @@ impl PasteRepository for SqlitePasteRepository {
         // Every deleted row - live capsule or tombstone - leaves its id in
         // `retired_ids`, so `create` never hands it out again. No code here does
         // that: the `AFTER DELETE` trigger `retire_deleted_paste_id` in
-        // `migrations/0004_retired_ids.sql` inserts it, in the same transaction.
+        // `migrations/0001_init.sql` inserts it, in the same transaction.
 
         const DELETE_EXPIRED: &str = "\
             DELETE FROM pastes \

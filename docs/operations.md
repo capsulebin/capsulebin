@@ -584,20 +584,20 @@ The server must be stopped. `restore` never opens the input file with SQLite and
    `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
 
 `restore` prints how many ids of the previous database it retired, how many capsules kept the
-previous database's burned, deleted or disabled state, and how many creation tokens, revocations and
-last-use days it carried over. If the current database cannot be read (it is
-corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would create), the restore
-still installs the backup and prints
+previous database's burned, deleted or disabled state, and how many creation tokens, revocations
+and last-use days it carried over. If the current database cannot be read (it is corrupt, it has a
+non-empty `-wal` without its `-shm`, which reading would create, or it lacks the table
+`retired_ids` or `creation_tokens`, so CapsuleBin did not write it), the restore still installs
+the backup and prints
 `warning: the ids, capsule states and creation tokens of the replaced database could not be carried
-over (…)` on stderr, with exit code 0: those ids can then be used again, capsules it burned,
-deleted or disabled after the backup are available again (delete or disable them again with
-`moderation` if you know their ids), its tokens the backup lacks are lost,
+over (…)` on stderr, with exit code 0: nothing of it is carried, so those ids can then be used
+again, capsules it burned, deleted or disabled after the backup are available again (delete or
+disable them again with `moderation` if you know their ids), its tokens the backup lacks are lost,
 and tokens it revoked are active again if the backup holds them unrevoked — check `token list` and
 revoke them again. Only a failure to attach the current database or to read it in a first
-read-only probe gives this warning. A current database from before creation tokens existed simply
-has none to carry. A failure while writing the ids, states or tokens into the copy (the disk full, for
-example), or a read failure that shows up only then, stops the restore before the cutover like any
-other step.
+read-only probe gives this warning. A failure while writing the ids, states or tokens into the copy
+(the disk full, for example), or a read failure that shows up only then, stops the restore before
+the cutover like any other step.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored
@@ -607,9 +607,9 @@ Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed 
 `--dry-run` runs steps 1 to 4 on a private copy, prints the backup's contents, the schema version
 the migration reached, how many ids would be retired, how many capsules would keep their burned,
 deleted or disabled state, and how many creation tokens, revocations and last-use days would be
-carried over (with the same warning if the current
-database cannot be read), then removes the copy; nothing else is created or changed. Without
-`--force` it also says when the restore would need `--force`.
+carried over (with the same warning if the current database cannot be read), then removes the
+copy; nothing else is created or changed. Without `--force` it also says when the restore would
+need `--force`.
 
 Restore only backups you made yourself: SQLite treats a database as trusted input. Verifying and
 migrating only a private copy of the main file keeps a `-wal` next to the backup from reaching
@@ -635,8 +635,10 @@ a killed run is not removed automatically; delete it once no restore or backup i
 
 Migrations only move forward. To roll back, restore the backup from step 1 with the old binary.
 
-The test suite checks on every change that a database at an older schema migrates and stays
-usable, and that no existing migration is edited.
+The test suite checks on every change that a database written by CapsuleBin 1.0 opens at the
+current schema and stays usable, and that no existing migration is edited: sqlx records each
+applied migration's checksum and refuses a database whose record differs from the embedded
+migration, so a released migration is never changed; a schema change is a new migration.
 
 ### Retention
 

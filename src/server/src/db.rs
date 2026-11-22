@@ -382,7 +382,7 @@ mod tests {
         let config = config("twice");
 
         let first = connect(&config).await.expect("first connect");
-        sqlx::query("INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size) VALUES ('x', 1, x'00', x'00', x'00', 1, 1)")
+        sqlx::query("INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size) VALUES ('x', 1, x'00', x'00', x'00', x'00', 1, 1)")
             .execute(&first)
             .await
             .expect("insert");
@@ -566,24 +566,115 @@ mod tests {
         set(&directory, 0o700);
     }
 
+    /// The schema is the one migration `0001_init.sql`: exactly these tables,
+    /// the trigger and the indexes, and no retrieval counter.
     #[tokio::test]
-    async fn indexes_exist() {
-        let pool = connect(&config("indexes")).await.expect("connect");
+    async fn a_fresh_database_holds_exactly_the_schema() {
+        assert_eq!(MIGRATOR.migrations.len(), 1);
+        assert_eq!(expected_version(), 1);
 
-        let rows = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'index'")
+        let pool = connect(&config("schema")).await.expect("connect");
+        let objects = |kind: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let mut names: Vec<String> =
+                    sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = ?1 AND name NOT LIKE 'sqlite_autoindex_%'")
+                        .bind(kind)
+                        .fetch_all(&pool)
+                        .await
+                        .expect("read sqlite_master");
+                names.sort();
+                names
+            }
+        };
+
+        assert_eq!(
+            objects("table").await,
+            [
+                "_sqlx_migrations",
+                "abuse_reports",
+                "creation_tokens",
+                "moderation_actions",
+                "pastes",
+                "retired_ids",
+                // SQLite's own, kept for `AUTOINCREMENT` in `moderation_actions`.
+                "sqlite_sequence",
+            ]
+        );
+        assert_eq!(objects("trigger").await, ["retire_deleted_paste_id"]);
+        assert_eq!(
+            objects("index").await,
+            [
+                "idx_abuse_reports_status",
+                "idx_creation_tokens_active",
+                "idx_pastes_created_at",
+                "idx_pastes_expires_at",
+                "idx_pastes_last_retrieved_at",
+            ]
+        );
+        assert_eq!(objects("view").await, Vec::<String>::new());
+
+        let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('pastes')")
             .fetch_all(&pool)
             .await
-            .expect("query indexes");
+            .expect("table info");
+        assert!(columns.iter().any(|column| column == "describe_verifier"), "{columns:?}");
+        assert!(!columns.iter().any(|column| column == "retrieval_count"), "{columns:?}");
+    }
 
-        let names: Vec<String> = rows.iter().filter_map(|row| row.try_get::<String, _>("name").ok()).collect();
+    /// The schema cannot hold a paste without the describe capability.
+    #[tokio::test]
+    async fn a_paste_without_a_describe_verifier_is_refused() {
+        let pool = connect(&config("describe-not-null")).await.expect("connect");
+        let error = sqlx::query("INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size) VALUES ('x', 1, x'00', x'00', x'00', 1, 1)")
+            .execute(&pool)
+            .await
+            .expect_err("must be refused");
+        let sqlx::Error::Database(error) = error else {
+            panic!("not a database error: {error}");
+        };
+        assert_eq!(error.kind(), sqlx::error::ErrorKind::NotNullViolation, "{error}");
+        assert!(error.message().contains("pastes.describe_verifier"), "{error}");
+    }
 
-        for expected in [
-            "idx_pastes_expires_at",
-            "idx_pastes_created_at",
-            "idx_pastes_last_retrieved_at",
-            "idx_abuse_reports_status",
-        ] {
-            assert!(names.iter().any(|name| name == expected), "{expected} missing");
-        }
+    /// A database that recorded another migration 1 - one written before the
+    /// migrations were merged, or after an edit of the released one - is
+    /// refused, and nothing is written into it.
+    #[tokio::test]
+    async fn another_migration_one_is_refused_without_a_write() {
+        let config = config("other-checksum");
+        let pool = connect(&config).await.expect("connect");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = x'00' WHERE version = 1")
+            .execute(&pool)
+            .await
+            .expect("simulate another migration 1");
+        pool.close().await;
+
+        let rows = || async {
+            let options = SqliteConnectOptions::new().filename(&config.path).read_only(true);
+            let pool = SqlitePoolOptions::new().connect_with(options).await.expect("open read-only");
+            let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table'")
+                .fetch_all(&pool)
+                .await
+                .expect("tables");
+            let mut counts = Vec::new();
+            for table in tables {
+                let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM \"{table}\"")))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count");
+                counts.push((table, count));
+            }
+            pool.close().await;
+            counts
+        };
+        let before = rows().await;
+
+        let error = connect(&config).await.expect_err("must refuse");
+        assert!(
+            matches!(error, DbError::Migrate(sqlx::migrate::MigrateError::VersionMismatch(1))),
+            "{error}"
+        );
+        assert_eq!(rows().await, before);
     }
 }

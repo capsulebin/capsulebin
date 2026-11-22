@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Acceptance tests for `capsulebin restore` against the real binary (package
-//! 20261121-operator-files-restore): `restore --dry-run` with a backup at an
-//! older schema prints the backup's contents and the schema version the
-//! staged copy reached, exits 0 and changes nothing (AC12); a successful
-//! `restore --force` keeps the old database with its sidecars aside (AC9).
+//! 20261121-operator-files-restore): `restore --dry-run` prints the backup's
+//! contents and the schema version the staged copy was migrated to, exits 0
+//! and changes nothing (AC12); a successful `restore --force` keeps the old
+//! database with its sidecars aside (AC9).
 //! Package 20261122-creation-tokens-db (AC16): creation tokens issued and
 //! revoked after the backup survive `restore --force`.
 
@@ -77,17 +77,17 @@ fn contents(paths: &[PathBuf]) -> Vec<Option<Vec<u8>>> {
     paths.iter().map(|path| std::fs::read(path).ok()).collect()
 }
 
-/// A backup with only the first migration and two paste rows.
-async fn first_migration_backup(path: &Path) {
+/// A backup on the current schema with two paste rows.
+async fn two_paste_backup(path: &Path) {
     let pool = SqlitePoolOptions::new()
         .connect_with(SqliteConnectOptions::new().filename(path).create_if_missing(true))
         .await
         .unwrap();
-    capsulebin_server::db::MIGRATOR.run_to(1, &pool).await.unwrap();
+    capsulebin_server::db::MIGRATOR.run(&pool).await.unwrap();
     for id in ["first-row", "second-row"] {
         sqlx::query(
-            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-             VALUES (?, 1, x'00', x'00', x'00', 1, 1)",
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+             VALUES (?, 1, x'00', x'00', x'00', x'00', 1, 1)",
         )
         .bind(id)
         .execute(&pool)
@@ -106,21 +106,20 @@ fn old_database(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// AC12: the dry run reports the backup (old schema, its rows) and the version
-/// the private copy was migrated to, exits 0, and leaves input, target, its
-/// sidecars and the target directory as they were. A backup that cannot be
-/// used fails the dry run with the same state.
+/// AC12: the dry run reports the backup (its schema version, its rows) and the
+/// version the private copy was migrated to, exits 0, and leaves input,
+/// target, its sidecars and the target directory as they were. A backup that
+/// cannot be used fails the dry run with the same state.
 #[tokio::test]
 async fn dry_run_reports_the_migrated_version_and_changes_nothing() {
     let (config, data, database) = setup("restore-acc-dry-run");
     let backup = data.parent().unwrap().join("backup.db");
-    first_migration_backup(&backup).await;
+    two_paste_backup(&backup).await;
     let input = std::fs::read(&backup).unwrap();
     let files = old_database(&database);
     let before = contents(&files);
     let listed = entries(&data);
-    let expected = capsulebin_server::db::expected_version();
-    assert!(expected > 1, "the test needs a migration after the first");
+    assert_eq!(capsulebin_server::db::expected_version(), 1);
 
     for force in [false, true] {
         let mut args = vec!["restore", "--input", backup.to_str().unwrap(), "--dry-run"];
@@ -133,10 +132,7 @@ async fn dry_run_reports_the_migrated_version_and_changes_nothing() {
         assert!(stdout.starts_with("ok:"), "force={force}: {}", describe(&output));
         assert!(stdout.contains("schema version 1,"), "backup's version missing: {stdout}");
         assert!(stdout.contains("2 paste row(s)"), "backup's rows missing: {stdout}");
-        assert!(
-            stdout.contains(&format!("migrated to schema version {expected}")),
-            "reached version missing: {stdout}"
-        );
+        assert!(stdout.contains("migrated to schema version 1"), "reached version missing: {stdout}");
 
         assert_eq!(std::fs::read(&backup).unwrap(), input, "force={force}: input changed");
         assert_eq!(contents(&files), before, "force={force}: target changed");
@@ -159,7 +155,7 @@ async fn dry_run_reports_the_migrated_version_and_changes_nothing() {
 async fn forced_restore_keeps_the_old_database_with_its_sidecars() {
     let (config, data, database) = setup("restore-acc-force");
     let backup = data.parent().unwrap().join("backup.db");
-    first_migration_backup(&backup).await;
+    two_paste_backup(&backup).await;
     let files = old_database(&database);
     let before = contents(&files);
 
@@ -238,7 +234,7 @@ async fn ids_in(path: &Path, table: &str) -> BTreeSet<String> {
 async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
     let (config, data, database) = setup("restore-acc-carry");
     let backup = data.parent().unwrap().join("backup.db");
-    first_migration_backup(&backup).await;
+    two_paste_backup(&backup).await;
 
     let migrated = run(&config, &["migrate"]);
     assert!(migrated.status.success(), "{}", describe(&migrated));
@@ -248,8 +244,8 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
         .unwrap();
     for id in ["first-row", "live-b"] {
         sqlx::query(
-            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-             VALUES (?, 1, x'00', x'00', x'00', 1, 1)",
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+             VALUES (?, 1, x'00', x'00', x'00', x'00', 1, 1)",
         )
         .bind(id)
         .execute(&pool)

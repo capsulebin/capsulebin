@@ -1,11 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! Upgrading a database written by CapsuleBin 1.0.
+//! Opening a database written by CapsuleBin 1.0.
 //!
 //! `fixtures/capsulebin-1.0.sql` is a dump of a database the 1.0 binary wrote:
-//! pastes in every state that matters, a report and a moderation action. These
-//! tests load it, let this build's migrations run as an upgrade would, and use
-//! the data through the HTTP API and the repositories.
+//! pastes in every state that matters, a report and a moderation action, a
+//! retired id and creation tokens. These tests load it, let this build's
+//! migrations run as an upgrade would, and use the data through the HTTP API
+//! and the repositories.
 //!
 //! Two kinds of change fail here:
 //!
@@ -16,36 +17,40 @@
 //! - **A new migration that loses or breaks 1.0 data**: rows that no longer
 //!   load, capabilities that stop matching, a tombstone that comes back to life.
 //!
-//! The fixture is never regenerated. A later release adds a dump of its own next
-//! to it, so every supported starting point stays tested.
+//! After the 1.0 tag the fixture is never regenerated. A later release adds a
+//! dump of its own next to it, so every supported starting point stays tested.
 
 mod support;
 
 use axum::http::StatusCode;
-use capsulebin_server::config::{DatabaseConfig, Synchronous};
 use capsulebin_server::db;
 use capsulebin_server::domain::abuse::ModerationAction;
 use capsulebin_server::domain::{Availability, PurgePolicy};
-use capsulebin_server::domain::{Label, NewPaste, Verifier};
 use capsulebin_server::repository::sqlite::SqlitePasteRepository;
 use capsulebin_server::repository::sqlite::abuse::SqliteAbuseRepository;
 use capsulebin_server::repository::sqlite::creation_tokens::SqliteCreationTokenRepository;
-use capsulebin_server::repository::{
-    AbuseRepository as _, CreationTokenRepository as _, ModerationOutcome, PasteRepository as _, RepositoryError,
-};
+use capsulebin_server::repository::{AbuseRepository as _, CreationTokenRepository as _, ModerationOutcome, PasteRepository as _};
 use support::*;
 
 const DUMP: &str = include_str!("fixtures/capsulebin-1.0.sql");
 
 /// An hour after the fixture was written, inside its pastes' 7-day expiry.
-const NOW: i64 = 1_795_074_774;
+const NOW: i64 = 1_795_363_450;
 
 const ACTIVE: u8 = 0x10;
 const BURNED: u8 = 0x11;
 const PASSWORD: u8 = 0x12;
 const DISABLED: u8 = 0x13;
+/// Expired and removed by `prune` before the dump: only its id is left.
+const RETIRED: u8 = 0x14;
 
-/// The fixture's tokens are `<kind>-<id byte in hex>`.
+/// The fixture's active database creation token.
+const ACTIVE_TOKEN_ID: &str = "01M81WJGCMV3655M9FDWASE284";
+const ACTIVE_TOKEN: &str = "4ZB7KtpKEH2_UScS3jlFAieRicESHEACLOPRl0t64yc";
+/// The fixture's revoked database creation token.
+const REVOKED_TOKEN: &str = "ux393DSUXF2Ulm9n065lWrO-Sdxx87632f45J5xGh0g";
+
+/// The fixture's paste tokens are `<kind>-<id byte in hex>`.
 fn token(kind: &str, byte: u8) -> Vec<u8> {
     format!("{kind}-{byte:02x}").into_bytes()
 }
@@ -54,13 +59,6 @@ fn ciphertext_of(byte: u8) -> Vec<u8> {
     let mut bytes = vec![0x00, 0xFF];
     bytes.extend_from_slice(format!("fixture-ciphertext-{byte:02x}").as_bytes());
     bytes
-}
-
-async fn creation_token_count(pool: &sqlx::SqlitePool) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM creation_tokens")
-        .fetch_one(pool)
-        .await
-        .unwrap()
 }
 
 async fn describe(h: &Harness, byte: u8) -> Answer {
@@ -81,13 +79,43 @@ async fn retrieve(h: &Harness, byte: u8) -> Answer {
     .await
 }
 
+/// The checksum 1.0 recorded for `0001_init.sql` is the checksum of the
+/// migration this build embeds. sqlx would refuse the database otherwise; this
+/// test says why before any other test here fails on that refusal.
 #[tokio::test]
-async fn a_1_0_database_migrates_to_the_current_schema() {
+async fn the_fixture_records_the_checksum_of_the_initial_migration() {
+    let dir = tempdir("upgrade-checksum");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(dir.join("capsulebin.db"))
+        .create_if_missing(true);
+    let seed = sqlx::SqlitePool::connect_with(options).await.unwrap();
+    sqlx::raw_sql(DUMP).execute(&seed).await.unwrap();
+
+    let recorded: Vec<(i64, Vec<u8>)> = sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(&seed)
+        .await
+        .unwrap();
+    let versions: Vec<i64> = recorded.iter().map(|(version, _)| *version).collect();
+    assert_eq!(versions, [1], "the 1.0 fixture records exactly migration 1");
+
+    let embedded = db::MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == 1)
+        .expect("this build embeds migration 1");
+    assert!(
+        recorded[0].1 == embedded.checksum.as_ref(),
+        "migrations/0001_init.sql differs from the migration 1.0 applied: every 1.0 database \
+         would be refused. Never edit a released migration; put the change into a new one."
+    );
+}
+
+#[tokio::test]
+async fn a_1_0_database_opens_at_the_current_schema() {
     let h = harness_from_dump("upgrade-schema", DUMP, NOW).await;
 
     assert_eq!(db::verify(&h.pool).await.unwrap(), db::expected_version());
     assert_eq!(h.get("/health/ready").await.status, StatusCode::OK);
-    assert_eq!(creation_token_count(&h.pool).await, 0);
 
     // Running the migrations again on the upgraded file changes nothing.
     db::MIGRATOR.run(&h.pool).await.unwrap();
@@ -204,26 +232,44 @@ async fn an_upgraded_database_accepts_new_pastes() {
     assert_eq!(h.describe(&id(1).encode()).await.status, StatusCode::OK);
 }
 
-/// Migration `0004` starts with no retired ids (rows purged before it ran left
-/// no record), keeps refusing the 1.0 tombstones' ids and retires every 1.0 row
-/// a purge removes.
+/// The 1.0 database tokens keep their state: the active one authorizes a
+/// create in `token` mode, the revoked one is refused like an unknown token.
+#[tokio::test]
+async fn creation_tokens_from_1_0_keep_their_state() {
+    let h = harness_from_dump("upgrade-creation-tokens", DUMP, NOW).await;
+
+    let active = SqliteCreationTokenRepository::new(h.pool.clone()).active().await.unwrap();
+    let active_ids: Vec<&str> = active.iter().map(|token| token.id.as_str()).collect();
+    assert_eq!(active_ids, [ACTIVE_TOKEN_ID]);
+
+    let created = h.post_with_token("/api/v1/pastes", create_body(&id(1)), Some(ACTIVE_TOKEN)).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+
+    let refused = h.post_with_token("/api/v1/pastes", create_body(&id(2)), Some(REVOKED_TOKEN)).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.text());
+    assert_eq!(refused.code(), "unauthorized");
+}
+
+/// The id 1.0's `prune` removed stays retired, the 1.0 tombstones keep
+/// refusing their ids, and every 1.0 row a purge removes is retired as well.
 #[tokio::test]
 async fn purged_fixture_ids_stay_retired() {
     let h = harness_from_dump("upgrade-retired-ids", DUMP, NOW).await;
     let fixture = [ACTIVE, BURNED, PASSWORD, DISABLED];
 
-    assert_eq!(db::verify(&h.pool).await.unwrap(), db::expected_version());
     let retired = || async {
         sqlx::query_scalar::<_, String>("SELECT id FROM retired_ids ORDER BY id")
             .fetch_all(&h.pool)
             .await
             .unwrap()
     };
-    assert!(retired().await.is_empty());
+    assert_eq!(retired().await, [id(RETIRED).encode()]);
 
-    let tombstone = h.post("/api/v1/pastes", create_body(&id(BURNED))).await;
-    assert_eq!(tombstone.status, StatusCode::CONFLICT, "{}", tombstone.text());
-    assert_eq!(tombstone.code(), "id_conflict");
+    for byte in [RETIRED, BURNED] {
+        let answer = h.post("/api/v1/pastes", create_body(&id(byte))).await;
+        assert_eq!(answer.status, StatusCode::CONFLICT, "{byte:#x}: {}", answer.text());
+        assert_eq!(answer.code(), "id_conflict");
+    }
 
     let policy = PurgePolicy {
         never_retrieved_after: 86_400,
@@ -235,7 +281,7 @@ async fn purged_fixture_ids_stay_retired() {
         .unwrap();
     assert_eq!(outcome.expired + outcome.never_retrieved + outcome.inactive, fixture.len() as u64);
 
-    let mut expected: Vec<String> = fixture.iter().map(|&byte| id(byte).encode()).collect();
+    let mut expected: Vec<String> = fixture.iter().chain([&RETIRED]).map(|&byte| id(byte).encode()).collect();
     expected.sort();
     assert_eq!(retired().await, expected);
 
@@ -246,140 +292,70 @@ async fn purged_fixture_ids_stay_retired() {
     }
 }
 
-/// Migration `0005` on a database at schema 4: the 1.0 fixture migrated up to
-/// `0004`, used there (a purge retires ids), then opened by this build. The
-/// table of creation tokens starts empty, the retired ids stay retired, the
-/// remaining pastes keep their capabilities, and tokens can be stored.
+/// AC7: the fixture holds what the 1.0 binary was asked to write, read
+/// straight from its rows: exactly migration 1, the four pastes in their
+/// states, the pruned paste only as a retired id, one closed report, and one
+/// active and one revoked database creation token.
 #[tokio::test]
-async fn a_schema_4_database_migrates_to_schema_5() {
-    let dir = tempdir("upgrade-schema-4");
-    let config = DatabaseConfig {
-        path: dir.join("capsulebin.db"),
-        busy_timeout_ms: 5_000,
-        synchronous: Synchronous::Full,
-    };
-
+async fn the_fixture_holds_every_state_it_was_written_with() {
+    let dir = tempdir("upgrade-fixture-contents");
     let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(&config.path)
+        .filename(dir.join("capsulebin.db"))
         .create_if_missing(true);
-    let seed = sqlx::SqlitePool::connect_with(options).await.unwrap();
-    sqlx::raw_sql(DUMP).execute(&seed).await.unwrap();
-    db::MIGRATOR.run_to(4, &seed).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM _sqlx_migrations")
-            .fetch_one(&seed)
-            .await
-            .unwrap(),
-        4
-    );
-    // Used at schema 4: a retention rule deleted the burned tombstone, so
-    // `0004`'s trigger retired its id.
-    sqlx::query("DELETE FROM pastes WHERE id = ?1")
-        .bind(id(BURNED).encode())
-        .execute(&seed)
+    let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+    sqlx::raw_sql(DUMP).execute(&pool).await.unwrap();
+
+    let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(&pool)
         .await
         .unwrap();
-    seed.close().await;
+    assert_eq!(versions, [1]);
 
-    let pool = db::connect(&config)
-        .await
-        .expect("migration 0005 must apply to a schema-4 database");
-    // Pinned to 5: this test covers migration 0005 only; a later migration
-    // needs its own test.
-    assert_eq!(db::expected_version(), 5, "a migration after 0005 needs its own upgrade test");
-    assert_eq!(db::verify(&pool).await.unwrap(), 5);
-    assert_eq!(creation_token_count(&pool).await, 0);
+    type Row = (String, String, i64, Option<i64>, bool, bool);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, availability_status, burn_after_retrieval, consumed_at, \
+         ciphertext IS NOT NULL, instr(CAST(public_header AS TEXT), '\"password\"') > 0 \
+         FROM pastes ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let state = |byte: u8| {
+        rows.iter()
+            .find(|row| row.0 == id(byte).encode())
+            .unwrap_or_else(|| panic!("no row for {byte:#x}"))
+            .clone()
+    };
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    let (_, status, burn, consumed, payload, password) = state(ACTIVE);
+    assert_eq!(
+        (status.as_str(), burn, consumed, payload, password),
+        ("active", 0, None, true, false)
+    );
+    let (_, status, burn, consumed, payload, _) = state(BURNED);
+    assert_eq!((status.as_str(), burn, payload), ("active", 1, false));
+    assert!(consumed.is_some(), "the burned paste is a tombstone");
+    let (_, status, _, _, payload, password) = state(PASSWORD);
+    assert_eq!((status.as_str(), payload, password), ("active", true, true));
+    let (_, status, _, _, payload, _) = state(DISABLED);
+    assert_eq!((status.as_str(), payload), ("disabled", true));
 
     let retired: Vec<String> = sqlx::query_scalar("SELECT id FROM retired_ids").fetch_all(&pool).await.unwrap();
-    assert_eq!(retired, [id(BURNED).encode()]);
+    assert_eq!(retired, [id(RETIRED).encode()]);
+    assert!(rows.iter().all(|row| row.0 != id(RETIRED).encode()), "the retired id has no row");
 
-    let pastes = SqlitePasteRepository::new(pool.clone());
-    let active = pastes.find(&id(ACTIVE)).await.unwrap().expect("the active paste must load");
-    assert!(
-        active
-            .reveal_verifier
-            .matches(&Verifier::for_reveal_token(&token("reveal", ACTIVE)))
-    );
-    assert!(
-        active
-            .delete_verifier
-            .matches(&Verifier::for_delete_secret(&token("delete", ACTIVE)))
-    );
-    assert_eq!(active.ciphertext, Some(ciphertext_of(ACTIVE)));
-    let reused = NewPaste {
-        id: id(BURNED),
-        format_version: 1,
-        public_header: vec![0xAA],
-        ciphertext: vec![1, 2, 3],
-        reveal_verifier: Verifier::for_reveal_token(b"reveal"),
-        delete_verifier: Verifier::for_delete_secret(b"delete"),
-        describe_verifier: Verifier::for_describe_token(b"describe"),
-        created_at: NOW,
-        expires_at: None,
-        burn_after_retrieval: false,
-    };
-    assert!(matches!(pastes.create(&reused).await, Err(RepositoryError::IdConflict)));
-
-    let reports = SqliteAbuseRepository::new(pool.clone()).list_reports(None, 10).await.unwrap();
-    assert_eq!(reports.len(), 1);
-
-    let tokens = SqliteCreationTokenRepository::new(pool.clone());
-    let label = Label::parse("after the upgrade").unwrap();
-    tokens.create(&Verifier::for_creation_token(b"token"), &label, NOW).await.unwrap();
-    assert_eq!(tokens.active().await.unwrap().len(), 1);
-
-    // Running the migrations again on the upgraded file changes nothing.
-    db::MIGRATOR.run(&pool).await.unwrap();
-}
-
-/// AC1 (package 20261122-creation-tokens-db): after the upgrade from the 1.0
-/// fixture, `creation_tokens` has exactly the specified columns, and
-/// `verifier` is `NOT NULL` and unique: a second row with the same verifier,
-/// or one without a verifier, is refused.
-#[tokio::test]
-async fn creation_tokens_has_exactly_the_specified_columns() {
-    let h = harness_from_dump("upgrade-token-columns", DUMP, NOW).await;
-
-    let columns: Vec<(String, i64)> = sqlx::query_as("SELECT name, \"notnull\" FROM pragma_table_info('creation_tokens') ORDER BY cid")
-        .fetch_all(&h.pool)
+    let reports: Vec<(String, String)> = sqlx::query_as("SELECT paste_id, status FROM abuse_reports")
+        .fetch_all(&pool)
         .await
         .unwrap();
-    let names: Vec<&str> = columns.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["id", "verifier", "label", "created_at", "last_used_on", "revoked_at"]);
-    let verifier_not_null = columns.iter().find(|(name, _)| name == "verifier").unwrap().1;
-    assert_eq!(verifier_not_null, 1, "verifier must be NOT NULL");
+    assert_eq!(reports, [(id(DISABLED).encode(), "closed".to_owned())]);
 
-    // A unique index covering exactly `verifier`.
-    let unique_indexes: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_index_list('creation_tokens') WHERE \"unique\" = 1")
-        .fetch_all(&h.pool)
-        .await
-        .unwrap();
-    let mut verifier_unique = false;
-    for index in unique_indexes {
-        let indexed: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_index_info(?1)")
-            .bind(&index)
-            .fetch_all(&h.pool)
+    let tokens: Vec<(String, bool)> =
+        sqlx::query_as("SELECT id, revoked_at IS NOT NULL FROM creation_tokens ORDER BY revoked_at IS NOT NULL")
+            .fetch_all(&pool)
             .await
             .unwrap();
-        verifier_unique |= indexed == ["verifier"];
-    }
-    assert!(verifier_unique, "no unique index on verifier alone");
-
-    // The constraints hold in practice too.
-    let insert = |id: &'static str, verifier: Option<Vec<u8>>| {
-        sqlx::query("INSERT INTO creation_tokens (id, verifier, label, created_at) VALUES (?1, ?2, '', 1)")
-            .bind(id)
-            .bind(verifier)
-            .execute(&h.pool)
-    };
-    insert("01ARZ3NDEKTSV4RRFFQ69G5FAV", Some(vec![7; 32])).await.unwrap();
-    assert!(
-        insert("01ARZ3NDEKTSV4RRFFQ69G5FAW", Some(vec![7; 32])).await.is_err(),
-        "duplicate verifier accepted"
-    );
-    assert!(
-        insert("01ARZ3NDEKTSV4RRFFQ69G5FAX", None).await.is_err(),
-        "missing verifier accepted"
-    );
-    assert_eq!(creation_token_count(&h.pool).await, 1);
+    assert_eq!(tokens.len(), 2, "{tokens:?}");
+    assert_eq!(tokens[0], (ACTIVE_TOKEN_ID.to_owned(), false));
+    assert!(tokens[1].1, "the second token is revoked");
 }
