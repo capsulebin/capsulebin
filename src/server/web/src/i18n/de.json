@@ -54,7 +54,7 @@
     "create.expiry.week": "Nach 1 Woche",
     "create.expiry.30days": "Nach 30 Tagen",
     "create.expiry.90days": "Nach 90 Tagen",
-    "create.burn": "Nach dem ersten Abruf löschen (Einmalabruf)",
+    "create.burn": "Nach dem ersten Abruf löschen",
     "create.burnLabel": "Einmalabruf",
     "create.password": "Passwort (optional)",
     "create.passwordPlaceholder": "Leer lassen für kein Passwort",

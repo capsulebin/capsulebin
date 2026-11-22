@@ -26,27 +26,55 @@
     box-shadow: inset 0 -1px 0 var(--cb-accent);
 }
 
+/* The editor fills the window: .cb-main takes the height the header and the
+ * footer leave (base.css), the form takes .cb-main's, and the frame and its
+ * text area take what the form's other rows leave. On a short window nothing
+ * shrinks below its own height, so the page scrolls instead. */
+.cb-create-form {
+    flex: 1 0 auto;
+}
+
+/* Less room under the submit row than above the title: the footer follows. */
+.cb-main:has(> .cb-create-form) {
+    padding-bottom: var(--cb-space-3);
+}
+
 /* One frame for tabs, item tools, text and size; its focus ring (base.css,
  * :focus-within) stands for whatever control inside has focus. */
 .cb-create-editor {
     display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
+}
+
+.cb-create-editor .cb-item-panel {
+    display: flex;
+    flex: 1 0 auto;
     flex-direction: column;
 }
 
 /* Tab bar and item tools stay in reach while a long item scrolls. Opaque, so
- * scrolled text does not show through. */
+ * scrolled text does not show through. The padding keeps every control of the
+ * head off the frame's edge. */
 .cb-create-head {
     position: sticky;
     top: 0;
     z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: var(--cb-space-2);
+    padding: var(--cb-space-3);
     background: var(--cb-surface);
+    border-bottom: 1px solid var(--cb-border);
     border-radius: var(--cb-radius-surface) var(--cb-radius-surface) 0 0;
 }
 
 /* Tabs take what is left; "All N" and "+ Add item" stay pinned on the right,
- * in that order, at every width (fitTabs measures the tab list). */
+ * in that order, at every width (fitTabs measures the tab list). Shown from
+ * two items on (pages/create.ts). */
 .cb-create-bar {
     flex-wrap: nowrap;
+    padding: 0;
 }
 
 .cb-create-bar .cb-itemtabs {
@@ -90,8 +118,7 @@
 }
 
 .cb-create-all-menu {
-    right: var(--cb-space-2);
-    width: min(22rem, calc(100% - 2 * var(--cb-space-2)));
+    width: min(22rem, 100%);
 }
 
 .cb-create-bar .cb-itemtab-close {
@@ -105,15 +132,13 @@
     height: 0.875rem;
 }
 
-/* Type, name, language and the item actions: quiet controls on a sunken band. */
+/* Type, name, language and the item actions: quiet controls in one row; with
+ * a single item the add button ends it. */
 .cb-create-tools {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--cb-space-1) var(--cb-space-2);
-    padding: var(--cb-space-1) var(--cb-space-2);
-    background: var(--cb-surface-sunken);
-    border-bottom: 1px solid var(--cb-border);
 }
 
 .cb-create-tools .cb-input {
@@ -123,7 +148,7 @@
 
 .cb-create-tools .cb-input:hover,
 .cb-create-tools .cb-input:focus {
-    background: var(--cb-surface);
+    background: var(--cb-surface-sunken);
 }
 
 .cb-create-tools .cb-item-name-input {
@@ -155,6 +180,7 @@
 
 /* The text area is the frame's content: no border, outline or ring of its own. */
 .cb-create-editor .cb-item-text {
+    flex: 1 0 auto;
     min-height: 15rem;
     padding: var(--cb-space-4);
     font-family: var(--cb-font-mono);
@@ -172,6 +198,7 @@
 }
 
 .cb-create-editor .cb-item-preview {
+    flex: 1 0 auto;
     min-height: 15rem;
     padding: var(--cb-space-4);
     background: transparent;
@@ -193,7 +220,7 @@
     display: flex;
     align-items: center;
     gap: var(--cb-space-3);
-    padding: var(--cb-space-2) var(--cb-space-4);
+    padding: var(--cb-space-3) var(--cb-space-4);
     border-top: 1px solid var(--cb-border);
 }
 
@@ -321,13 +348,12 @@
 
 /* ----- sealed page ---------------------------------------------------------- */
 
+/* As wide as .cb-main's content, like the form before it. */
 .cb-sealed {
     display: flex;
     flex-direction: column;
     gap: var(--cb-space-5);
     width: 100%;
-    max-width: 40rem;
-    margin: 0 auto;
 }
 
 .cb-sealed > p {

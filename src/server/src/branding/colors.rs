@@ -114,7 +114,7 @@ const fn token(key: &'static str, light: u32, dark: u32) -> Token {
 /// values. Kept equal to all four palette blocks of `tokens.css` by a test;
 /// `--cb-shadow-card` is not a plain colour and stays built-in.
 const TOKENS: [Token; 18] = [
-    token("bg", 0xfbfcfc, 0x0c1413),
+    token("bg", 0xf2f6f5, 0x0c1413),
     token("surface", 0xffffff, 0x131e1d),
     token("surface_sunken", 0xf2f5f5, 0x0f1a19),
     token("border", 0xdbe3e2, 0x263735),
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1, below 4.5:1",
+                "light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.09:1, below 4.5:1",
                 "light theme: branding.colors.light.text on branding.colors.light.surface has a contrast of 1.00:1, below 4.5:1",
                 "light theme: branding.colors.light.text on branding.colors.light.surface_sunken has a contrast of 1.10:1, below 4.5:1",
                 "light theme: branding.colors.light.text on branding.colors.light.tint_accent has a contrast of 1.15:1, below 4.5:1",

@@ -296,7 +296,7 @@ source_url = "https://github.com/capsulebin/capsulebin"
 # surface_sunken, and accent_text on accent, at least 4.5:1; border_strong on
 # bg, surface and surface_sunken, and focus_ring on bg, at least 3:1.
 # [branding.colors.light]
-# bg = "#fbfcfc"
+# bg = "#f2f6f5"
 # surface = "#ffffff"
 # surface_sunken = "#f2f5f5"
 # border = "#dbe3e2"

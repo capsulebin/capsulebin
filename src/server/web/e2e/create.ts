@@ -43,9 +43,15 @@ export async function create(
     return sealedLinks(page);
 }
 
+/** Opens the create page in `language` and waits for its form. */
+export async function openCreate(page: Page, language = 'en'): Promise<void> {
+    await page.goto(`${prefixOf(language)}/`);
+    await expect(page.locator('[data-create-form]')).toBeVisible();
+}
+
 /** Opens the create page in `language` and fills it in with `capsule`, without submitting. */
 export async function fill(page: Page, capsule: Capsule, language = 'en'): Promise<void> {
-    await page.goto(`${prefixOf(language)}/`);
+    await openCreate(page, language);
     await fillForm(page, capsule);
 }
 

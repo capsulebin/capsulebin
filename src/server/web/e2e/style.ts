@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
+import { expect } from './guard';
 
 /**
  * Computed styles as the engine resolves them, shared by the layout, items and
@@ -28,6 +29,21 @@ export async function colour(
         context.fillStyle = getComputedStyle(element)[property];
         return context.fillStyle;
     }, property);
+}
+
+/** WCAG relative luminance of a `#rrggbb` colour. */
+function luminance(hex: string): number {
+    const [r, g, b] = [1, 3, 5].map((start) => {
+        const c = Number.parseInt(hex.slice(start, start + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }) as [number, number, number];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast ratio of two `#rrggbb` colours, as `token()` and `colour()` return them. */
+export function contrast(a: string, b: string): number {
+    const [low, high] = [luminance(a), luminance(b)].sort((x, y) => x - y) as [number, number];
+    return (high + 0.05) / (low + 0.05);
 }
 
 /**
@@ -105,5 +121,22 @@ export async function settled(page: Page): Promise<void> {
                 )
                 .map((animation) => animation.finished.catch(() => undefined)),
         ),
+    );
+}
+
+/** The element's box once the page's entry animation has ended. */
+export async function box(
+    locator: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+    await settled(locator.page());
+    const found = await locator.boundingBox();
+    expect(found, 'the element has a box').not.toBeNull();
+    return found!;
+}
+
+export async function expectNoHorizontalScroll(page: Page): Promise<void> {
+    const width = page.viewportSize()!.width;
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
     );
 }

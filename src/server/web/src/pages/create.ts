@@ -425,9 +425,10 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
         const remove = target.closest<HTMLElement>('[data-menu-remove-id]');
         if (remove) {
             removeItem(remove.dataset.menuRemoveId!);
-            // The menu was rebuilt (or closed, once every tab fits again).
+            // The menu was rebuilt (or closed, once every tab fits again). With
+            // one item left there is no bar: removeItem() moved the focus.
             if (moreOpen) focusCheckedRow();
-            else focusActiveTab();
+            else if (items.length > 1) focusActiveTab();
             return;
         }
         const option = target.closest<HTMLElement>('[data-more-id]');
@@ -688,6 +689,9 @@ function removeItem(id: string): void {
     items.splice(index, 1);
     if (activeId === id) activeId = items[Math.min(index, items.length - 1)]!.id;
     render();
+    // The control that removed the item is gone, and one item has no tab bar to
+    // take the focus: it goes to the first control of the row naming the item.
+    if (items.length === 1) byAttr<HTMLSelectElement>('item-type').focus();
 }
 
 function setPreview(on: boolean): void {
@@ -732,9 +736,21 @@ function refreshSizeMeter(): void {
     byAttr<HTMLButtonElement>('create-submit').disabled = overBudget;
 }
 
+/** One item needs no tab bar: its type, name and language row names it, and
+ *  the add button ends that row's actions. From two items on the bar is back,
+ *  with the add button at its end, right of "All N". */
+function placeTabBar(): void {
+    const bar = byAttr<HTMLElement>('tabs-row');
+    bar.hidden = items.length <= 1;
+    const home = bar.hidden ? byAttr<HTMLElement>('item-actions') : bar;
+    const add = byAttr<HTMLElement>('add');
+    if (add.parentElement !== home) home.append(add);
+}
+
 function render(): void {
     keepDraftOnLanguageSwitch();
     if (!getActive()) activeId = items[0]?.id ?? null;
+    placeTabBar();
     renderTabs();
     renderEditor(getActive());
     refreshSizeMeter();

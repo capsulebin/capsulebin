@@ -1080,6 +1080,92 @@ describe('create page "+ Add item"', () => {
     });
 });
 
+describe('create page with one item', () => {
+    const bar = () => el('tabs-row');
+    const inBar = () => bar().contains(el('item-add'));
+
+    it('shows no tab bar and names the item only in its row', () => {
+        expect(bar().hidden).toBe(true);
+        expect(el('more').hidden).toBe(true);
+        expect(el<HTMLInputElement>('item-name').value).toBe('text.txt');
+        // The only other place holding the name is the hidden bar.
+        const named = [...el('editor').querySelectorAll('*')].filter(
+            (node) => node.children.length === 0 && node.textContent === 'text.txt',
+        );
+        expect(named.every((node) => bar().contains(node))).toBe(true);
+    });
+
+    it('keeps the add button in reach, at the end of the item actions', () => {
+        const addButton = el<HTMLButtonElement>('item-add');
+        expect(inBar()).toBe(false);
+        expect(el('item-actions').lastElementChild!.contains(addButton)).toBe(true);
+        expect(el('editor-head').contains(addButton)).toBe(true);
+        expect(addButton.disabled).toBe(false);
+
+        addButton.click();
+        expect(el('add-menu').hidden).toBe(false);
+        expect(addButton.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('brings the tab bar back with the second item and hides it after a removal', () => {
+        type('one');
+        add('plain');
+        expect(bar().hidden).toBe(false);
+        expect(inBar()).toBe(true);
+        expect(bar().lastElementChild!.contains(el('item-add'))).toBe(true);
+        expect(tabs()).toEqual(['text.txt', 'text-2.txt *']);
+
+        el<HTMLButtonElement>('item-remove').click();
+        expect(tabs()).toEqual(['text.txt *']);
+        expect(bar().hidden).toBe(true);
+        expect(inBar()).toBe(false);
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('one');
+    });
+
+    it('moves the focus to the item row when the tab close button leaves one item', () => {
+        type('one');
+        add('plain');
+        const close = document.querySelector<HTMLButtonElement>('[data-remove-id]')!;
+        close.focus();
+        close.click();
+        expect(tabs()).toEqual(['text-2.txt *']);
+        expect(bar().hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
+    });
+
+    it('moves the focus to the item row when "Remove" leaves one item', () => {
+        type('one');
+        add('plain');
+        const remove = el<HTMLButtonElement>('item-remove');
+        remove.focus();
+        remove.click();
+        expect(remove.hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
+    });
+
+    it('keeps one bar-less item when the untouched item changes its kind', () => {
+        add('markdown');
+        expect(tabs()).toEqual(['notes.md *']);
+        expect(bar().hidden).toBe(true);
+        expect(inBar()).toBe(false);
+    });
+
+    it('shows the bar again for a restored draft with several items', async () => {
+        vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+        type('one');
+        add('plain');
+        type('two');
+        el<HTMLFormElement>('create-form').requestSubmit();
+        await vi.waitFor(() => expect(document.querySelector('[data-retry-btn]')).not.toBeNull(), {
+            timeout: 15_000,
+        });
+        el<HTMLButtonElement>('retry-btn').click();
+        expect(bar().hidden).toBe(false);
+        expect(inBar()).toBe(true);
+        expect(tabs()).toEqual(['text.txt', 'text-2.txt *']);
+    });
+});
+
 describe('create page "All N" list', () => {
     /** Width of the tab list; every tab and the "All N" button are 100 px wide. */
     let barWidth = 250;
@@ -1209,6 +1295,23 @@ describe('create page "All N" list', () => {
         // Still open: a click inside the menu does not close it.
         expect(el('more-menu').hidden).toBe(false);
         expect(document.activeElement!.getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('moves the focus to the item row when a removal from the list leaves one item', () => {
+        barWidth = 120;
+        type('one');
+        add('markdown');
+        expect(el('more-btn').textContent).toBe('All 2');
+        open();
+        const remove = el('more-menu').querySelector<HTMLButtonElement>(
+            '[aria-label="Remove notes.md"]',
+        )!;
+        remove.focus();
+        remove.click();
+        expect(tabs()).toEqual(['text.txt *']);
+        expect(el('tabs-row').hidden).toBe(true);
+        expect(el('more-menu').hidden).toBe(true);
+        expect(document.activeElement).toBe(el('item-type'));
     });
 
     it('offers no remove control with one item', () => {

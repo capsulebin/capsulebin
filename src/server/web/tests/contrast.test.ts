@@ -119,6 +119,26 @@ describe.each(THEMES)('contrast in theme %s', (_name, p) => {
     });
 });
 
+/**
+ * Depth: a surface (sheet, editor frame, link panel) has to stand out from the
+ * page. In the light themes that is the ground's tint; #fbfcfc on #ffffff
+ * (1.03:1) was not visible.
+ */
+describe('the light page background', () => {
+    const light = THEMES.filter(([name]) => name.startsWith('light'));
+
+    it.each(light)('is tinted against the surface in theme %s', (_name, p) => {
+        const ratio = contrast(need(p, '--cb-bg'), need(p, '--cb-surface'));
+        expect(ratio, `--cb-bg on --cb-surface = ${ratio.toFixed(3)}:1`).toBeGreaterThanOrEqual(
+            1.06,
+        );
+    });
+
+    it('is checked on both light blocks', () => {
+        expect(light).toHaveLength(2);
+    });
+});
+
 describe('structure of the token file', () => {
     /**
      * The manual toggle must be able to override the system preference in both

@@ -54,7 +54,7 @@
     "create.expiry.week": "1 week",
     "create.expiry.30days": "30 days",
     "create.expiry.90days": "90 days",
-    "create.burn": "Delete after first retrieval (burn)",
+    "create.burn": "Delete after first retrieval",
     "create.burnLabel": "Retrieval",
     "create.password": "Password (optional)",
     "create.passwordPlaceholder": "Leave blank for no password",

@@ -20,7 +20,7 @@
     color-scheme: light dark;
 
     /* --- Light --- */
-    --cb-bg: #fbfcfc;
+    --cb-bg: #f2f6f5;
     --cb-surface: #ffffff;
     --cb-surface-sunken: #f2f5f5;
     --cb-border: #dbe3e2;
@@ -44,8 +44,11 @@
     --cb-font-sans:
         ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
         sans-serif;
+    /* Installed coding fonts first, then each platform's own monospace face. */
     --cb-font-mono:
-        ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+        ui-monospace, "JetBrains Mono", "Cascadia Code", "Cascadia Mono", "Fira Code", "Fira Mono",
+        "Source Code Pro", "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono",
+        "Liberation Mono", monospace;
 
     --cb-radius-sm: 4px;
     --cb-radius-md: 8px;
@@ -69,6 +72,14 @@
 
     /* Line length for body copy. */
     --cb-measure: 72ch;
+
+    /* The one column that header, content and footer share. */
+    --cb-column: 60rem;
+
+    /* Depth of the surfaces that hold content (sheet, editor frame, link
+     * panel): the card shadow of the theme plus a soft drop. Not a colour
+     * token, so not part of [branding.colors]. */
+    --cb-shadow-surface: var(--cb-shadow-card), 0 8px 24px -12px rgba(0, 0, 0, 0.18);
 }
 
 /* Dark values. --cb-accent is lightened because #0f766e would drop below 3:1 on
@@ -100,7 +111,7 @@
 /* An explicit choice wins over the system preference - in both directions. */
 :root[data-theme="light"] {
     color-scheme: light;
-    --cb-bg: #fbfcfc;
+    --cb-bg: #f2f6f5;
     --cb-surface: #ffffff;
     --cb-surface-sunken: #f2f5f5;
     --cb-border: #dbe3e2;

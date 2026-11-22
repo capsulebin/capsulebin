@@ -78,8 +78,8 @@ optional; the key `x_y` sets the token `--cb-x-y`:
 - **Syntax:** a TOML string `#rgb` or `#rrggbb`, hex digits in either case, nothing around it — no
   whitespace (values are not trimmed), no alpha, no `rgb()`, `hsl()` or colour names. Normalised
   to lowercase `#rrggbb` (`#ABC` → `#aabbcc`).
-- **Not configurable:** `--cb-shadow-card` (not a plain colour) and every non-colour token
-  (fonts, radii, spacing). The built-in `/favicon.svg` keeps its fixed colours; for a matching
+- **Not configurable:** `--cb-shadow-card` and `--cb-shadow-surface` (not plain colours) and every
+  non-colour token (fonts, radii, spacing, the column width). The built-in `/favicon.svg` keeps its fixed colours; for a matching
   favicon set `branding.favicon`.
 - **Env:** `CAPSULEBIN__BRANDING__COLORS__<THEME>__<KEY>`, e.g.
   `CAPSULEBIN__BRANDING__COLORS__DARK__ACCENT_HOVER=#5eead4`. Keys are case-sensitive in the file
@@ -109,7 +109,7 @@ against the pairs and thresholds of the built-in theme (WCAG 2.2 contrast ratio)
 | `focus_ring` | `bg` | 3:1 |
 
 Each failing pair is one warning naming theme, both keys and the ratio with two decimals, e.g.
-`light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.03:1,
+`light theme: branding.colors.light.text on branding.colors.light.bg has a contrast of 1.09:1,
 below 4.5:1`. A warning names both keys even if only one of them is configured (the other is the
 built-in value). The built-in palette gives none. Warnings never stop anything: `serve` logs each
 once at `WARN` at startup; `check` prints each as `warning: …` to stderr, still prints its `ok:`

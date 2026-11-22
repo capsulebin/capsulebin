@@ -3,7 +3,15 @@ import type { Locator, Page } from '@playwright/test';
 import { create, fill, prefixOf, sealedLinks } from './create';
 import { catalogue } from './german';
 import { expect, test } from './guard';
-import { colour, elementsWith, px, settled, token, transitionOf } from './style';
+import {
+    box,
+    colour,
+    elementsWith,
+    expectNoHorizontalScroll,
+    px,
+    token,
+    transitionOf,
+} from './style';
 
 /**
  * The page design in a real engine: quiet header and footer, the radius scale,
@@ -49,29 +57,12 @@ async function expectNoBorder(locator: Locator): Promise<void> {
         expect(await borderWidths(element)).toEqual([0, 0, 0, 0]);
 }
 
-/** The element's box once the page's entry animation has ended. */
-async function box(
-    locator: Locator,
-): Promise<{ x: number; y: number; width: number; height: number }> {
-    await settled(locator.page());
-    const found = await locator.boundingBox();
-    expect(found, 'the element has a box').not.toBeNull();
-    return found!;
-}
-
 /** `inner` lies within `outer`'s box (half a pixel of rounding allowed). */
 async function expectWithin(inner: Locator, outer: Locator): Promise<void> {
     const a = await box(inner);
     const b = await box(outer);
     expect(a.x).toBeGreaterThanOrEqual(b.x - 0.5);
     expect(a.x + a.width).toBeLessThanOrEqual(b.x + b.width + 0.5);
-}
-
-async function expectNoHorizontalScroll(page: Page): Promise<void> {
-    const width = page.viewportSize()!.width;
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-        width,
-    );
 }
 
 /** The view page of `share` in a new page of the context, once the content is shown. */

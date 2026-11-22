@@ -58,9 +58,14 @@ body {
 
 /* --- Header ---
  * No band and no border: the header sits on the page background, so the
- * content is the first thing that stands out. */
+ * content is the first thing that stands out. Header, content and footer share
+ * one centred column (--cb-column) and its gutters, so they start and end at
+ * the same x. */
 
 .cb-head {
+    width: 100%;
+    max-width: var(--cb-column);
+    margin: 0 auto;
     display: flex;
     align-items: center;
     gap: var(--cb-space-3);
@@ -170,7 +175,7 @@ body {
 .cb-main {
     flex: 1 1 auto;
     width: 100%;
-    max-width: 60rem;
+    max-width: var(--cb-column);
     margin: 0 auto;
     padding: var(--cb-space-5) var(--cb-space-4);
     display: flex;
@@ -201,6 +206,9 @@ body {
 /* --- Footer --- */
 
 .cb-foot {
+    width: 100%;
+    max-width: var(--cb-column);
+    margin: 0 auto;
     display: flex;
     align-items: center;
     gap: var(--cb-space-3);
@@ -325,9 +333,11 @@ body {
     line-height: 1.55;
 }
 
+/* As wide as its longest option, but never wider than the column. */
 .cb-select {
     cursor: pointer;
     width: auto;
+    max-width: 100%;
 }
 
 .cb-check {
@@ -930,6 +940,7 @@ cb-view-page {
     background: var(--cb-surface);
     border: 1px solid var(--cb-border);
     border-radius: var(--cb-radius-surface);
+    box-shadow: var(--cb-shadow-surface);
 }
 
 /* The head row of a sheet: tabs on the left, actions on the right. */
@@ -969,11 +980,14 @@ cb-view-page {
     background: var(--cb-surface);
     border: 1px solid var(--cb-border-strong);
     border-radius: var(--cb-radius-surface);
+    box-shadow: var(--cb-shadow-surface);
 }
 
 .cb-editor-frame:focus-within {
     border-color: var(--cb-accent);
-    box-shadow: 0 0 0 1px var(--cb-focus-ring);
+    box-shadow:
+        0 0 0 1px var(--cb-focus-ring),
+        var(--cb-shadow-surface);
 }
 
 /* The panel that shows a link in full (sealed page). */
@@ -985,6 +999,7 @@ cb-view-page {
     background: var(--cb-surface);
     border: 1px solid var(--cb-border);
     border-radius: var(--cb-radius-surface);
+    box-shadow: var(--cb-shadow-surface);
 }
 
 /* "All N" menu: one row per item in fixed order - kind badge, name, and a

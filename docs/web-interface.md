@@ -4,7 +4,9 @@ The page design of the browser client (`src/server/web/`): what the create, seal
 and state pages show, in which hierarchy, and the shared components behind them. The capsule
 content is the focus of every page: header, footer and controls are quiet, the accent colour is
 kept for the active tab and the one primary action, and every state page (progress, password,
-warning, gone) carries one symbol, the state hexagon. The design uses only the colour tokens of
+warning, gone) carries one symbol, the state hexagon. Header, content and footer share one centred
+column, and the surfaces that hold content (view sheet, editor frame, link panel) stand out from
+the page by a shadow and, in the light theme, a tinted page background. The design uses only the colour tokens of
 `tokens.css`, so it follows the operator's `[branding.colors]` ([branding.md](branding.md)), the
 system preference and the theme toggle (ADR-005); it changes nothing in the CSP, the server, the
 capsule format or the crypto. Languages and the language switch's behaviour are described in
@@ -17,6 +19,25 @@ capsule format or the crypto. Languages and the language switch's behaviour are 
 - **Header and footer** sit on the page background: no band, no border, no accent fill. The
   header holds the logo/wordmark regions and the page claim from [branding.md](branding.md), then
   the language switch and the theme toggle (`.cb-head-tools`). Below 34rem the claim is hidden.
+- **One column:** `.cb-head`, `.cb-main` and `.cb-foot` are each centred with
+  `max-width: var(--cb-column)` (60rem) and the same 16 px side padding, so on every page the
+  header's first element, the content and the footer start at the same x and end at the same x; on
+  a narrow screen the 16 px gutters remain and nothing scrolls horizontally (`.cb-select` is capped
+  at `max-width: 100%` for that: the report page's select overflowed at 400 px). Full-width content
+  (create form, editor frame, view sheet, the sealed page with its link panel and delete-link row)
+  spans the column; the state pages (`.cb-state`) stay a narrower centred column inside it.
+- **Depth:** the view sheet (`.cb-sheet`), the editor frame (`.cb-editor-frame`) and the link panel
+  (`.cb-link-panel`) carry `box-shadow: var(--cb-shadow-surface)` — the theme's `--cb-shadow-card`
+  plus a soft drop (`0 8px 24px -12px rgba(0, 0, 0, 0.18)`), in light and dark. The focused editor
+  frame shows its focus ring and that shadow together. In the light theme the page background
+  `--cb-bg` is the tint `#f2f6f5` (1.09:1 against the white `--cb-surface`), so a surface is
+  visible as a sheet on the page; `tests/contrast.test.ts` requires at least 1.06:1 on both light
+  palette blocks. The dark values are unchanged.
+- **Fonts:** system stacks only, no `@font-face` and no font file in the build. `--cb-font-mono`
+  is `ui-monospace`, then coding fonts a reader may have installed (JetBrains Mono, Cascadia
+  Code, Cascadia Mono, Fira Code, Fira Mono, Source Code Pro), then each platform's own face (SF
+  Mono, SFMono-Regular, Menlo, Consolas, DejaVu Sans Mono, Liberation Mono), then `monospace`.
+  `tests/fonts.test.ts` pins that order.
 - **Language switch** (`nav.cb-lang[data-language-switch]`, filled by `mountLanguageSwitch` in
   `pages/shell.ts`): one quiet text button (`.cb-quiet`) per offered language, named in that
   language; the page language has `aria-current="true"` and reads in the text colour at weight 600,
@@ -29,7 +50,8 @@ capsule format or the crypto. Languages and the language switch's behaviour are 
   source contains the `◐` glyph.
 - **Radius scale by role** (`tokens.css`): `--cb-radius-control` (8 px: buttons, inputs, selects)
   and `--cb-radius-surface` (12 px: view sheet, editor frame, link panel, delete-link row, menus).
-  Not colour tokens, not configurable.
+  Not colour tokens, not configurable — like `--cb-column`, `--cb-shadow-surface` and the font
+  stacks.
 - **Motion:** buttons, tabs and menu buttons change `background-color` and `color` over
   `--cb-duration-quick` (120 ms). Under `prefers-reduced-motion: reduce` a global rule in
   `base.css` sets every transition and animation duration and delay to 0 s (an animation still
@@ -129,7 +151,8 @@ active row is `aria-checked="true"`.
   and returns focus to the button (on the view page after Lit's `updateComplete`); arrow keys move
   within it; a click outside closes it (create: by the event's `composedPath`, because a removed
   row is no longer inside the menu). Removing an item from the create menu keeps the menu open on
-  the checked row, or focuses the active tab once every tab fits again.
+  the checked row, or focuses the active tab once every tab fits again; when the removal leaves
+  one item there is no tab bar, and the focus goes to the item row (see "One item, no tab bar").
 
 ### Create page (`/`), edit phase
 
@@ -139,22 +162,44 @@ Editor first: no visible heading or lede before the form, an `h1.cb-sr-only` wit
 1. **Title input** (`#create-title`, `.cb-create-title`): borderless, at the view title's size
    (1.5rem, weight 700), a line under it only while focused; its label is screen-reader-only.
 2. **Editor frame** (`.cb-editor-frame[data-editor]`, 12 px radius) holding the head
-   (`[data-editor-head]`, sticky: tab bar, "All N", the add button; then type, name, language and the
-   item actions — Write/Preview switch `.cb-create-switch` for Markdown, "Remove"), the item panel
-   (textarea, preview or file drop) and the foot with the size display. The frame shows the one
-   focus ring (`:focus-within`); the textarea has no border or outline of its own.
-3. **Add button** (`create.addItem`, "+ Add item") stays right of "All N" (also when "All N"
-   shows). At `MAX_ITEMS` (16) it is disabled and reads `create.itemsFull` ("16 of 16").
-4. **Size display:** a decorative SVG bar (`[data-size-bar]`, `aria-hidden`) whose fill
+   (`[data-editor-head]`, sticky, opaque, a line under it: the tab bar `[data-tabs-row]` with the
+   tabs, "All N" and the add button; then the item row with type, name, language and the item
+   actions `[data-item-actions]` — Write/Preview switch `.cb-create-switch` for Markdown,
+   "Remove"), the item panel (textarea, preview or file drop) and the foot with the size display.
+   The frame shows the one focus ring (`:focus-within`); the textarea has no border or outline of
+   its own. Head and foot have 12 px padding above and below, and no control of the head comes
+   closer than 10 px to the frame's edge.
+3. **One item, no tab bar:** while there is one item, `[data-tabs-row]` is `hidden` (`placeTabBar`
+   in `pages/create.ts`, called by every `render`); the item row is then the only place showing
+   the item's name. The tab itself stays in the DOM, because the panel is labelled by it
+   (`aria-labelledby`). From two items on the bar (and, on overflow, "All N") is back; removing
+   down to one item hides it again, and a restored draft with several items shows it.
+   Every removal that leaves one item (a tab's close button, "Remove" in the item row, a remove
+   control in "All N") moves the keyboard focus to the type select `[data-item-type]`, the first
+   control of the item row (`removeItem`): the control that removed the item is gone and the
+   remaining tab sits in the hidden bar, where `focus()` does nothing.
+4. **Add button** (`create.addItem`, "+ Add item", wrapped in `[data-add]` with its menu): with
+   the tab bar it is the bar's last element, right of "All N" (also when "All N" shows); with one
+   item `placeTabBar` moves `[data-add]` to the end of `[data-item-actions]`, so it stays in reach.
+   At `MAX_ITEMS` (16) it is disabled and reads `create.itemsFull` ("16 of 16").
+5. **Height:** the editor fills the window. `.cb-main` takes the height header and footer leave,
+   `.cb-create-form`, the frame, its item panel and the textarea or preview each grow
+   (`flex: 1 0 auto`), so on a tall window the submit row ends near the window's bottom (the
+   create form page has only 12 px bottom padding in `.cb-main`) and extra window height goes to
+   the frame alone. Nothing shrinks below its own height: the textarea and the preview keep
+   `min-height: 15rem`, and on a short window the page scrolls.
+6. **Size display:** a decorative SVG bar (`[data-size-bar]`, `aria-hidden`) whose fill
    (`[data-size-fill]`) has `width` = used / `MAX_ITEM_BYTES` in percent (capped at 100, one
    decimal), and the text `create.size`/`create.sizeOver`, which stays the accessible
    information. Over the limit both turn danger-coloured (`.cb-size-bar-over`,
    `.cb-size-meter-over`) and the submit button is disabled.
-5. **Options row:** expiry, burn and password side by side from 720 px, each label above its
-   control (the burn checkbox's label above it is `create.burnLabel`, the checkbox text
-   `create.burn`). The password hint (`create.passwordNote`, `[data-password-note]`) is hidden
+7. **Options row:** expiry, burn and password side by side from 720 px, each label above its
+   control (the burn checkbox's label above it is `create.burnLabel`, "Retrieval"/"Einmalabruf",
+   the checkbox text `create.burn`, "Delete after first retrieval"/"Nach dem ersten Abruf
+   löschen"; the checkbox text never repeats the label and has no bracketed second name). The
+   password hint (`create.passwordNote`, `[data-password-note]`) is hidden
    while the password field is empty and shown once it has content.
-6. **Submit row:** the submit button (lock icon) at its content width, the trust line
+8. **Submit row:** the submit button (lock icon) at its content width, the trust line
    (`create.lede`, lock icon) next to it; below 34rem the button takes the form width.
 
 The draft logic (`hasDraft`, store-only language switch, "Back to editing" restoring the `Draft`)
@@ -162,7 +207,8 @@ is unchanged by the layout.
 
 ### Sealed page (after a successful create)
 
-`tmpl-done`, filled by `showDone(shareUrl, deleteUrl, draft)`:
+`tmpl-done`, filled by `showDone(shareUrl, deleteUrl, draft)`. Its content (`.cb-sealed`) is as
+wide as the column, like the form before it — not a narrower centred block:
 
 - the `sealed` hexagon next to `h1` "Sealed." (`create.done`) and a summary chip row
   (`[data-summary]`): `create.summary.items` ("{count} items · {size}", plural), the expiry
@@ -202,7 +248,8 @@ warning states). `tests/fixtures/contrast-pairs.json` therefore also requires 4.
 `tint_accent`, `danger` on `tint_danger`, `warning` on `tint_warning`, `success` on `tint_success`
 and `text` on each tint, in all four palette blocks; the built-in palette passes (lowest: `warning`
 on `tint_warning`, light, 4.57:1). The same pairs drive the operator colour warnings
-([branding.md](branding.md#theme-colours)).
+([branding.md](branding.md#theme-colours)). The tinted light `--cb-bg` keeps every pair above its
+threshold, so the built-in palette still gives no operator warning.
 
 ## Structure
 
@@ -214,14 +261,15 @@ on `tint_warning`, light, 4.57:1). The same pairs drive the operator colour warn
 | `src/server/web/src/pages/view.ts` | Display phase: `#renderDisplay` (title, `#renderChips`, sheet), `#renderTabs`, `#renderAllMenu`, `#renderItemNav`, `#renderItemActions`, `#fitTabs`; hexagon in every other phase; `#hexagon`/`#icon` hand Lit the same SVG node per place and state or icon on every render (`#drawings`) |
 | `src/server/web/src/pages/open-capsule.ts` | `burnAfterRetrieval` passed from the descriptor into the outcome |
 | `src/server/web/src/pages/render-items.ts` | Item content without card; `.cb-code` with the gutter (`lineNumbers`) |
-| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon` |
+| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `placeTabBar` (no tab bar for one item, add button's place), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon` |
 | `src/server/web/src/pages/manage.ts` | `showState(template, state)` for every phase |
 | `src/server/web/src/pages/shell.ts` | Imports the stylesheets (`tokens`, `base`, `view`, `create`, `states`); `mountLanguageSwitch` (quiet buttons) |
 | `src/server/web/src/theme.ts` | `mountThemeToggle`: icon per choice, name `theme.switch`, choice as `title` |
-| `src/server/web/src/styles/tokens.css` | `--cb-radius-control`, `--cb-radius-surface`, `--cb-duration-quick` |
-| `src/server/web/src/styles/base.css` | Chrome (`.cb-head`, `.cb-foot`, `.cb-lang`), reduced-motion rule, `.cb-quiet`, `.cb-icon`, `.cb-bar-label`, `.cb-copied`, `.cb-chips`/`.cb-chip`/`.cb-chip-warning`, `.cb-sheet`/`.cb-sheet-bar`, `.cb-bar-actions`, `.cb-editor-frame`, `.cb-link-panel`, menu rows, `.cb-itemtab`, `.cb-btn-danger`, transitions, `.cb-hex*` |
-| `src/server/web/src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet, chips, switch, gutter, previous/next; editor, options row, size bar, sealed page; `.cb-state` layout |
-| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`; `manage.html` templates in `.cb-state` |
+| `src/server/web/src/styles/tokens.css` | `--cb-radius-control`, `--cb-radius-surface`, `--cb-duration-quick`, `--cb-column`, `--cb-shadow-surface`, `--cb-font-mono`; the light `--cb-bg` tint (both light blocks) |
+| `src/server/src/branding/colors.rs` | `TOKENS`: the built-in palette on the server side, light `bg` equal to `tokens.css` (kept equal by a test) |
+| `src/server/web/src/styles/base.css` | Chrome (`.cb-head`, `.cb-main`, `.cb-foot` on `--cb-column`; `.cb-lang`), reduced-motion rule, `.cb-quiet`, `.cb-icon`, `.cb-bar-label`, `.cb-copied`, `.cb-chips`/`.cb-chip`/`.cb-chip-warning`, `.cb-sheet`/`.cb-sheet-bar`, `.cb-bar-actions`, `.cb-editor-frame`, `.cb-link-panel`, menu rows, `.cb-itemtab`, `.cb-btn-danger`, transitions, `.cb-hex*` |
+| `src/server/web/src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet, chips, switch, gutter, previous/next; editor (the flex chain that fills the window, head and foot padding), options row, size bar, sealed page; `.cb-state` layout |
+| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`; `manage.html` templates in `.cb-state` |
 | `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*` |
 
 ### Tests
@@ -230,18 +278,25 @@ on `tint_warning`, light, 4.57:1). The same pairs drive the operator colour warn
 | --- | --- |
 | `tests/icons.test.ts`, `tests/copy-state.test.ts`, `tests/theme.test.ts` | Icons and hexagon markup; copied state with fake timers (restore, second copy, refused clipboard, live region); toggle icon and name |
 | `tests/view-page-display.test.ts`, `tests/render-items.test.ts`, `tests/item-tabs.test.ts` | Sheet structure, chip order for burn/no burn × one/many items, "All N" list and keyboard, previous/next, copy; the running hexagon and the chip/action icons stay the same nodes across a re-render or tab switch; gutter numbers, unchanged `<code>` text, no gutter for plain text and Markdown source |
-| `tests/create-page.test.ts`, `tests/manage-page.test.ts` | Editor, size bar, password hint, "All N" with remove controls, "16 of 16", sealed page (link, key, summary, copy), hexagon per state |
+| `tests/create-page.test.ts`, `tests/manage-page.test.ts` | Editor, size bar, password hint, "All N" with remove controls, "16 of 16", one item without a tab bar (name only in the item row, add button at the end of the item actions, bar back with the second item, after a removal, a kind change and a restored draft; focus on `[data-item-type]` after a removal by the tab's close button, "Remove" or the "All N" list leaves one item), sealed page (link, key, summary, copy), hexagon per state |
+| `tests/fonts.test.ts` | `--cb-font-mono` starts with `ui-monospace`, names the families in the fixed order and ends with `monospace`; no font file and no `@font-face` in the stylesheets, `public/` and (if built) `dist/` |
+| `tests/i18n-catalogues.test.ts` | `create.burn` does not contain `create.burnLabel` and has no brackets, in every language; its exact text in en and de |
 | `tests/shells.test.ts` | SVG theme toggle without text in every shell, no `◐` |
-| `tests/contrast.test.ts` | The tint pairs on all four palette blocks |
+| `tests/contrast.test.ts` | The tint pairs on all four palette blocks; `--cb-bg` at least 1.06:1 against `--cb-surface` on both light blocks |
 | `tests/catalogue-references.test.ts` | Every catalogue key is referenced by a source file, shell template or head script (replaced texts are removed, not left behind); the replaced "more"/"copied" keys are gone; `create.keyNote` names no colour |
 | `e2e/acceptance.e2e.ts` | No border or shadow inside the item panel for every item kind (Markdown source too); burn chip first in the warning colour in both schemes, chip row between title and sheet; code gutter `aria-hidden`, not selectable, outside `<code>`; item actions with icon and label at 1280 px |
 | `e2e/layout.e2e.ts` | Quiet header/footer, radii, transitions and reduced motion, 400 px, accent only on the active tab and the primary action, reading measure, editor-first create page |
 | `e2e/items.e2e.ts` | 16 items on view and create: "All N", previous/next, remove from the list, "16 of 16" |
 | `e2e/states.e2e.ts` | Sealed page and every state's hexagon with and without reduced motion, copied state, opening/decrypting/password/burn flows |
+| `e2e/column.e2e.ts` | Header, content and footer with equal left and right edges (± 1 px) at 1280 px on create, view (one and three items), sealed, report and imprint, light and dark; 16 px gutters and no horizontal scroll at 400 px; state pages centred and narrower than the column; a computed shadow on `[data-sheet]`, `[data-editor]` and `.cb-link-panel` in the light and the dark system theme and in each theme chosen with the toggle against the system's (stored choice, `data-theme`), background and surface equal to `--cb-bg`/`--cb-surface`, the light background a tint at least 1.06:1 behind the surface |
+| `e2e/editor.e2e.ts` | Submit button inside the viewport and at most 64 px above its bottom at 1280×800 and 1280×1000, the extra height taken by the frame; at 400×700 the textarea keeps 15rem and the page scrolls; 300 lines in the window-filling editor scroll inside the textarea or grow it, never below the empty editor's height, with the last line and the submit button reachable and no horizontal scroll; no tab bar with one item, back with two, gone again after removals (also "All N"); one item at 400 px: no tab bar, the name only as the name field's value, the add button inside the frame and the window and opening its menu, the first item's content kept when the bar returns; head and foot padding ≥ 12 px and head controls ≥ 10 px from the frame edge at 1280 px and 400 px |
 | `e2e/guard.ts` | Additionally fails on any inline `style` attribute, also one set through the CSSOM |
 
 Computed styles in the browser tests are compared through `e2e/style.ts` (colours normalised by a
-canvas context, the same in every engine).
+canvas context, the same in every engine; also `box`, `expectNoHorizontalScroll` and `contrast`,
+the WCAG ratio of two such colours). `openCreate` in `e2e/create.ts` opens the create page and
+waits for its form. A browser test of the page design belongs in the spec of its area
+(`column.e2e.ts`, `editor.e2e.ts`, …) and takes these helpers from the shared modules.
 
 ## Decisions
 
@@ -294,8 +349,36 @@ canvas context, the same in every engine).
   for these pairs, never an error.
 - **One stylesheet per page area** (`view.css`, `create.css`, `states.css`) next to the shared
   components in `base.css`.
-- No ADR: CSP, colour tokens, the MPA structure (ADR-004), the theme mechanics (ADR-005) and the
-  branding rules (ADR-017) are unchanged.
+- **One column as a token (`--cb-column`), used by header, main and footer alike** — header and
+  footer used to span the window while the content sat in a 60rem column, and the sealed page in a
+  40rem one, so chrome and content were on different axes. The state pages keep their narrow
+  centred layout: they are a symbol with a few lines, not a sheet.
+- **Depth by a shadow and a tinted light background** — the former light `--cb-bg` `#fbfcfc` was
+  1.03:1 against the white surface, so sheet and page read as one plane. The tint `#f2f6f5` is the
+  one built-in colour value this redesign changed (an explicit exception to "colours stay", made
+  after the manual check); it is changed in both light blocks of `tokens.css` and in the server's
+  palette together, which tests keep equal. `--cb-shadow-surface` is built from `--cb-shadow-card`
+  and a fixed drop, so no colour token was added and `[branding.colors]` keeps its 18 keys.
+- **A wider monospace stack, no embedded font** — the earlier stack fell through to a weak default
+  face on systems without the platform fonts it named. Installed coding fonts are tried first; a
+  self-hosted font would need font files in the build and its own decision (ADR), so it is not
+  part of this.
+- **Editor height through the flex chain, not viewport arithmetic** — every box from `.cb-main`
+  down to the textarea grows with `flex: 1 0 auto`; no `100dvh` calculation that would have to know
+  the header's and footer's heights, and `0` shrink means a short window scrolls instead of
+  squeezing the textarea below 15rem.
+- **One item without a tab bar: the bar is hidden, the tab is not removed** — a single tab only
+  repeated the name shown in the item row. The tab stays in the DOM because the panel's
+  `aria-labelledby` points at it and `renderTabs`/`fitTabs` keep working unchanged; the add
+  button's wrapper is moved, not duplicated, so there is one `[data-item-add]` at any time.
+- **Focus on the type select when a removal leaves one item** — the removing control disappears
+  and the remaining tab is in the hidden bar, so the focus would fall to `body`. The type select
+  is the first control of the row naming the item; unlike the name field it opens no soft
+  keyboard on phones.
+- **Burn checkbox text without the label's word** — label and checkbox text sit directly above one
+  another; "(burn)"/"(Einmalabruf)" in the text repeated the label.
+- No ADR: CSP, the set of colour tokens, the MPA structure (ADR-004), the theme mechanics (ADR-005)
+  and the branding rules (ADR-017) are unchanged.
 
 ## Limits and open points
 
@@ -304,4 +387,9 @@ canvas context, the same in every engine).
   redesign.
 - The danger button deviates from the mockup (outlined instead of filled), see above.
 - WebKit runs the browser tests only in CI; locally they are run in Chromium and Firefox.
-- A visual comparison against the design mockups in light, dark and at 400 px is a manual check.
+- No embedded or self-hosted font: text and code use what the reader's system has installed.
+- The dark `--cb-bg` is unchanged; in the dark theme depth comes from the shadow and the existing
+  difference between `bg` and `surface`.
+- A visual comparison against the design mockups in light, dark and at 400 px is a manual check;
+  so is the look of the column, the surface depth, the monospace text and the create page's height
+  and spacing.
