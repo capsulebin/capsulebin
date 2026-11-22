@@ -137,7 +137,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   ([ADR-018](docs/adr/ADR-018-creation-token-in-the-browser.md)): the server puts `creation.mode`
   into the create page, so in `token` mode the page asks for a token before the editor appears and
   in `disabled` mode says that no new capsules are accepted. The token comes from a field or an
-  invitation link (`#token=…`, removed from the address at once), is remembered in the browser
+  invitation link (`#token=…`, removed from the address at once; one carrying another token than
+  the stored one asks before replacing it), is remembered in the browser
   unless "Remember in this browser" is unchecked, can be forgotten, and is sent only as the bearer
   of the create request. A refused token is forgotten and another one sends the same encrypted
   capsule again. "Back to editing" after a failed create brings the draft back as it was submitted.

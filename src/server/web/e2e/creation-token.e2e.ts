@@ -398,6 +398,39 @@ test.describe('the invitation link', () => {
         });
     }
 
+    test('with another token stored asks before replacing it', async ({
+        browser,
+        tokenInstance,
+    }) => {
+        const other = 'another-invited-token';
+        const { context, page, guard } = await freshBrowser(browser);
+        await page.goto(`${tokenInstance.origin}/#token=${tokenInstance.token}`);
+        await expect(page.locator('[data-create-form]')).toBeVisible();
+
+        // Keep: the stored token stays, the editor follows.
+        await page.goto(`${tokenInstance.origin}/report`);
+        await page.goto(`${tokenInstance.origin}/#token=${other}`);
+        await expect(page.locator('[data-token-keep]')).toBeVisible();
+        expect(await page.evaluate(() => location.hash)).toBe('');
+        expect(await stored(page)).toBe(tokenInstance.token);
+        await page.click('[data-token-keep]');
+        await expect(page.locator('[data-token-notice]')).toHaveText(
+            'The stored token stays; the invitation link was not used.',
+        );
+        await expect(page.locator('[data-create-form]')).toBeVisible();
+        expect(await stored(page)).toBe(tokenInstance.token);
+
+        // Use the new one: replaced and remembered.
+        await page.goto(`${tokenInstance.origin}/report`);
+        await page.goto(`${tokenInstance.origin}/#token=${other}`);
+        await page.click('[data-token-use-invited]');
+        await expect(page.locator('[data-token-notice]')).toHaveText(accepted);
+        expect(await stored(page)).toBe(other);
+
+        await context.close();
+        expect(guard.problems).toEqual([]);
+    });
+
     test('with an unusable token stores nothing and says so', async ({
         browser,
         tokenInstance,

@@ -46,13 +46,19 @@ browser, and sends it only as the bearer of the create request.**
   address bar and the current history entry with `history.replaceState` before anything is
   rendered — in every mode. Only in `token` mode is it used: stored, with a confirmation ("This
   browser can now create capsules"); an unusable value shows that the link cannot be used. Any
-  other fragment is left alone. `capsulebin token` prints the link after the token and hash when
+  other fragment is left alone. When the browser already holds a stored token that differs from
+  the link's, the page asks before replacing it ("Keep the stored token" / "Use the new token")
+  and changes nothing until one is chosen; keeping it shows that the link was not used. Any link
+  can carry an invitation, also one inside a capsule or on another site, so a silent replacement
+  would let a holder of any token swap a user's stored token unnoticed. A link carrying the
+  stored token, or one opened without a stored token, is used at once as before, so the first
+  invitation needs no extra step. `capsulebin token` prints the link after the token and hash when
   `server.public_url` is set (by `--config` or the environment) and passes the rules `serve`
   applies to it.
 - **Remembered by default.** The checkbox is checked; a remembered token is kept in
   `localStorage` under `capsulebin.creation_token` (one origin per instance, so per instance).
   Unchecked, the token is held by this page only and storage is not touched. An invitation link
-  always stores. When storage is unavailable (blocked site data), the token is held for the page
+  that is used always stores. When storage is unavailable (blocked site data), the token is held for the page
   only and the line says so. "Forget" removes it from storage and from the page.
 - **Sent only on create.** The token goes into `PasteApi`'s `creationToken`, which the core client
   sends as `Authorization: Bearer` on the create request and on nothing else, and only in `token`

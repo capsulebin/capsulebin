@@ -505,6 +505,13 @@ body {
     color: var(--cb-text-muted);
 }
 
+/* Keep the stored creation token or use an invitation's other one (ADR-018). */
+.cb-token-choice {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--cb-space-2);
+}
+
 /* A button that reads as a link inside a line of text. */
 .cb-btn-inline {
     padding: 0;
