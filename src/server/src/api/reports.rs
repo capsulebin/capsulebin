@@ -128,7 +128,7 @@ fn report_error(error: ReportError) -> ApiError {
         ReportError::DescriptionTooLong => "description is too long",
         ReportError::ContactTooLong => "contact is too long",
         ReportError::ControlCharacters => "text contains control characters",
-        ReportError::ContainsKey => "remove the part after # from any link - it is the decryption key",
+        ReportError::ContainsKey => "remove the part after # from any link - it is the decryption key or a creation token",
     })
 }
 

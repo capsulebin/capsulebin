@@ -33,6 +33,11 @@ export interface FakeServer {
     creationToken: string | null;
     /** Makes the next burn retrieval lose a simulated race: answers 410. */
     failNextBurnWithRace: boolean;
+    /**
+     * Answers every create success like a broken proxy in front of the server:
+     * `204` with no body, or JSON `null`. The paste is still stored.
+     */
+    malformedCreate: 'no_content' | 'null' | null;
     fetch: typeof fetch;
 }
 
@@ -60,6 +65,7 @@ export function createFakeServer(origin = 'http://capsule.test'): FakeServer {
         requests: [],
         creationToken: null,
         failNextBurnWithRace: false,
+        malformedCreate: null,
         fetch: async (input, init) => {
             const url = new URL(String(input), origin);
             const method = init?.method ?? 'GET';
@@ -98,7 +104,7 @@ async function handle(
         const existing = server.pastes.get(pasteId);
         if (existing) {
             return existing.body === body && existing.ciphertext !== null
-                ? json(201, createResponse(pasteId, existing))
+                ? createSuccess(server, pasteId, existing)
                 : problem(409, 'id_conflict');
         }
         const ciphertext = String(request['ciphertext']);
@@ -116,7 +122,7 @@ async function handle(
             payloadSize: fromBase64url(ciphertext).length,
         };
         server.pastes.set(pasteId, stored);
-        return json(201, createResponse(pasteId, stored));
+        return createSuccess(server, pasteId, stored);
     }
 
     const paste = id ? server.pastes.get(id) : undefined;
@@ -183,6 +189,12 @@ async function handle(
     }
 
     return problem(405, 'method_not_allowed');
+}
+
+function createSuccess(server: FakeServer, id: string, paste: StoredPaste): Response {
+    if (server.malformedCreate === 'no_content') return new Response(null, { status: 204 });
+    if (server.malformedCreate === 'null') return json(201, null);
+    return json(201, createResponse(id, paste));
 }
 
 function createResponse(id: string, paste: StoredPaste) {

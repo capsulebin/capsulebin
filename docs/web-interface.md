@@ -237,6 +237,23 @@ URL; the browser tests read the links from there.
 
 - **Create:** `tmpl-encrypting` (`running`) and `tmpl-error` (`empty`) put the hexagon into their
   `[data-hexagon-slot]` (`placeHexagon`).
+- **Create error after an unclear outcome:** when `isUnclearOutcome` (`pages/errors.ts`) holds for
+  the failed create — an `ApiError` with status `0` (network error, `timeout`,
+  `response_too_large`, `invalid_response`), `429` or any `5xx`, but not `redirect_refused` —
+  `showUnclearOutcome` fills `tmpl-error` like `showError` and additionally shows `[data-unclear]`:
+  `create.deleteLink`, the sealed capsule's management URL as text in
+  `[data-unclear-delete-link]` (`paste.deleteUrl(origin)`, the link the sealed page would show),
+  `create.unclearNote` (the capsule may exist, trying again creates no second one, keep the link
+  private) and a small ghost "Copy" (`[data-unclear-copy]`, `CopyFeedback`, wired by
+  `mountCopyButtons` like the sealed page's copy buttons). It reuses the
+  sealed page's delete-row classes (`.cb-sealed-delete*`, stretched to the column inside
+  `.cb-create-state`). The action row (`.cb-create-actions`) then holds "Try again"
+  (`[data-try-again]`, `create.tryAgain`, filled), which calls `publish(paste, draft)` with the same
+  sealed `Paste`, and "Back to editing" (`[data-retry-btn]`, ghost). Every other failure — a
+  definite answer (`400`, `409`, `413`, another `4xx`, a refused redirect), an error before any
+  request (assembling or sealing the capsule) — keeps both hidden and shows only "Back to editing";
+  a `401` in `token` mode keeps its token form. A malformed success has its own text,
+  `error.invalidResponse`; the other cases keep their texts from `apiErrorText`.
 - **Manage:** every phase template wraps its content in `.cb-state`; `showState(template, state)`
   prepends the hexagon: loading `running`, confirmation `warning`, deleting `running`, deleted and
   unavailable `empty`. The confirmation shows the facts as chips (burn chip first,
@@ -266,7 +283,8 @@ threshold, so the built-in palette still gives no operator warning.
 | `src/server/web/src/pages/view.ts` | Display phase: `#renderDisplay` (title, `#renderChips`, sheet), `#renderTabs`, `#renderAllMenu`, `#renderItemNav`, `#renderItemActions`, `#fitTabs`; hexagon in every other phase; `#hexagon`/`#icon` hand Lit the same SVG node per place and state or icon on every render (`#drawings`) |
 | `src/server/web/src/pages/open-capsule.ts` | `burnAfterRetrieval` passed from the descriptor into the outcome |
 | `src/server/web/src/pages/render-items.ts` | Item content without card; `.cb-code` with the gutter (`lineNumbers`) |
-| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `placeTabBar` (no tab bar for one item, add button's place), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon` |
+| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `placeTabBar` (no tab bar for one item, add button's place), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon`, `showUnclearOutcome` ("Try again" and the delete link on the error view) |
+| `src/server/web/src/pages/errors.ts` | `isUnclearOutcome` (which failed creates may have stored the capsule), `apiErrorText` (`error.invalidResponse` for `invalid_response`) |
 | `src/server/web/src/pages/manage.ts` | `showState(template, state)` for every phase |
 | `src/server/web/src/pages/shell.ts` | Imports the stylesheets (`tokens`, `base`, `view`, `create`, `states`); `mountLanguageSwitch` (quiet buttons) |
 | `src/server/web/src/theme.ts` | `mountThemeToggle`: icon per choice, name `theme.switch`, choice as `title` |
@@ -274,8 +292,8 @@ threshold, so the built-in palette still gives no operator warning.
 | `src/server/src/branding/colors.rs` | `TOKENS`: the built-in palette on the server side, light `bg` equal to `tokens.css` (kept equal by a test) |
 | `src/server/web/src/styles/base.css` | Chrome (`.cb-head`, `.cb-main`, `.cb-foot` on `--cb-column`; `.cb-lang`), reduced-motion rule, `.cb-quiet`, `.cb-icon`, `.cb-bar-label`, `.cb-copied`, `.cb-chips`/`.cb-chip`/`.cb-chip-warning`, `.cb-sheet`/`.cb-sheet-bar`, `.cb-bar-actions`, `.cb-editor-frame`, `.cb-link-panel`, menu rows, `.cb-itemtab`, `.cb-btn-danger`, transitions, `.cb-hex*` |
 | `src/server/web/src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet, chips, switch, gutter, previous/next; editor (the flex chain that fills the window, head and foot padding), options row, size bar, sealed page; `.cb-state` layout |
-| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`; `manage.html` templates in `.cb-state` |
-| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*` |
+| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`, in `tmpl-error` the hidden `[data-unclear]` row and `[data-try-again]`; `manage.html` templates in `.cb-state` |
+| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*`, `create.tryAgain`, `create.unclearNote`, `error.invalidResponse` |
 
 ### Tests
 
@@ -283,7 +301,7 @@ threshold, so the built-in palette still gives no operator warning.
 | --- | --- |
 | `tests/icons.test.ts`, `tests/copy-state.test.ts`, `tests/theme.test.ts` | Icons and hexagon markup; copied state with fake timers (restore, second copy, refused clipboard, live region); toggle icon and name |
 | `tests/view-page-display.test.ts`, `tests/render-items.test.ts`, `tests/item-tabs.test.ts` | Sheet structure, chip order for burn/no burn × one/many items, "All N" list and keyboard, previous/next, copy; the running hexagon and the chip/action icons stay the same nodes across a re-render or tab switch; gutter numbers, unchanged `<code>` text, no gutter for plain text and Markdown source |
-| `tests/create-page.test.ts`, `tests/manage-page.test.ts` | Editor, size bar, password hint, "All N" with remove controls, "16 of 16", one item without a tab bar (name only in the item row, add button at the end of the item actions, bar back with the second item, after a removal, a kind change and a restored draft; focus on `[data-item-type]` after a removal by the tab's close button, "Remove" or the "All N" list leaves one item), sealed page (link, key, summary, copy), hexagon per state |
+| `tests/create-page.test.ts`, `tests/manage-page.test.ts` | Editor, size bar, password hint, "All N" with remove controls, "16 of 16", one item without a tab bar (name only in the item row, add button at the end of the item actions, bar back with the second item, after a removal, a kind change and a restored draft; focus on `[data-item-type]` after a removal by the tab's close button, "Remove" or the "All N" list leaves one item), sealed page (link, key, summary, copy), hexagon per state; the error view after an unclear outcome ("Try again" resending a byte-identical body, then the sealed page; delete link with copy; neither after a definite answer, a failure before the request or in place of the token form; EN and DE) |
 | `tests/fonts.test.ts` | `--cb-font-mono` starts with `ui-monospace`, names the families in the fixed order and ends with `monospace`; no font file and no `@font-face` in the stylesheets, `public/` and (if built) `dist/` |
 | `tests/i18n-catalogues.test.ts` | `create.burn` does not contain `create.burnLabel` and has no brackets, in every language; its exact text in en and de |
 | `tests/shells.test.ts` | SVG theme toggle without text in every shell, no `◐` |
@@ -292,6 +310,7 @@ threshold, so the built-in palette still gives no operator warning.
 | `e2e/acceptance.e2e.ts` | No border or shadow inside the item panel for every item kind (Markdown source too); burn chip first in the warning colour in both schemes, chip row between title and sheet; code gutter `aria-hidden`, not selectable, outside `<code>`; item actions with icon and label at 1280 px |
 | `e2e/layout.e2e.ts` | Quiet header/footer, radii, transitions and reduced motion, 400 px, accent only on the active tab and the primary action, reading measure, editor-first create page |
 | `e2e/items.e2e.ts` | 16 items on view and create: "All N", previous/next, remove from the list, "16 of 16" |
+| `e2e/capsule.e2e.ts` ("Try again") | A create whose answer is dropped in the browser after it reached the real server: error view with "Try again" and the delete link, then the sealed page with share and delete link of the same id; the capsule opens and the shown delete link deletes it |
 | `e2e/states.e2e.ts` | Sealed page and every state's hexagon with and without reduced motion, copied state, opening/decrypting/password/burn flows |
 | `e2e/column.e2e.ts` | Header, content and footer with equal left and right edges (± 1 px) at 1280 px on create, view (one and three items), sealed, report and imprint, light and dark; 16 px gutters and no horizontal scroll at 400 px; state pages centred and narrower than the column; a computed shadow on `[data-sheet]`, `[data-editor]` and `.cb-link-panel` in the light and the dark system theme and in each theme chosen with the toggle against the system's (stored choice, `data-theme`), background and surface equal to `--cb-bg`/`--cb-surface`, the light background a tint at least 1.06:1 behind the surface |
 | `e2e/editor.e2e.ts` | Submit button inside the viewport and at most 64 px above its bottom at 1280×800 and 1280×1000, the extra height taken by the frame; at 400×700 the textarea keeps 15rem and the page scrolls; 300 lines in the window-filling editor scroll inside the textarea or grow it, never below the empty editor's height, with the last line and the submit button reachable and no horizontal scroll; no tab bar with one item, back with two, gone again after removals (also "All N"); one item at 400 px: no tab bar, the name only as the name field's value, the add button inside the frame and the window and opening its menu, the first item's content kept when the bar returns; head and foot padding ≥ 12 px and head controls ≥ 10 px from the frame edge at 1280 px and 400 px |
@@ -382,6 +401,16 @@ waits for its form. A browser test of the page design belongs in the spec of its
   keyboard on phones.
 - **Burn checkbox text without the label's word** — label and checkbox text sit directly above one
   another; "(burn)"/"(Einmalabruf)" in the text repeated the label.
+- **"Try again" only after an unclear outcome, with the same sealed capsule** — after a lost
+  answer, a timeout, an oversized or malformed success, a `5xx` or a `429` the capsule may be
+  stored; sealing again from the editor would store a second copy whose first delete link was never
+  seen. Resending the same `Paste` is answered as a replay (`201`, ADR-011), like the refused-token
+  path. After `400`, `409` or `413` a retry gets the same answer, and a refused redirect is a
+  configuration problem, so those offer only "Back to editing".
+- **The delete link on the error view** — for the creator who gives up instead of trying again. It
+  is computed from the sealed `Paste` before the request, so it is known whatever the answer was,
+  and it is the sealed page's link, so no new secret reaches the page. "Back to editing" still drops
+  the sealed capsule; the next submit seals a new one.
 - No ADR: CSP, the set of colour tokens, the MPA structure (ADR-004), the theme mechanics (ADR-005)
   and the branding rules (ADR-017) are unchanged.
 

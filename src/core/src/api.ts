@@ -49,6 +49,10 @@ export const RESPONSE_TOO_LARGE = 'response_too_large';
  *  response body stalled. */
 export const TIMEOUT = 'timeout';
 
+/** {@link ApiError} code for a create success whose body is not the expected
+ *  answer for the sent paste (no body, `null`, another id, wrong field types). */
+export const INVALID_RESPONSE = 'invalid_response';
+
 /** Length of the AES-GCM authentication tag appended to the ciphertext. */
 const GCM_TAG_BYTES = 16;
 
@@ -156,13 +160,17 @@ export class PasteApi {
      * timeout whose outcome is unknown) returns the original result instead of
      * `id_conflict`, because the server treats an identical re-submission of
      * an id as a replay (ADR-011).
+     *
+     * A success whose body is not that answer (a proxy's `204`, JSON `null`,
+     * another id, a wrong field type) rejects with {@link INVALID_RESPONSE},
+     * status `0`: the outcome is unclear, the paste may have been stored.
      */
     public async create(sealed: SealedPaste): Promise<CreateResponse> {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (this.#creationToken) {
             headers['Authorization'] = `Bearer ${this.#creationToken}`;
         }
-        return this.#request<CreateResponse>(this.#url('/api/v1/pastes'), CREATE_BOUNDS, {
+        const response = await this.#request<unknown>(this.#url('/api/v1/pastes'), CREATE_BOUNDS, {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -177,6 +185,10 @@ export class PasteApi {
                 burn_after_retrieval: sealed.burnAfterRetrieval,
             }),
         });
+        if (!isCreateResponse(response, sealed.id)) {
+            throw new ApiError('malformed create response', 0, INVALID_RESPONSE);
+        }
+        return response;
     }
 
     /**
@@ -449,4 +461,15 @@ async function readBounded(
     }
     parts.push(decoder.decode());
     return parts.join('');
+}
+
+/** Whether `value` is the create answer for the paste with id `id`. */
+function isCreateResponse(value: unknown, id: string): value is CreateResponse {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const response = value as Record<string, unknown>;
+    return (
+        response['id'] === id &&
+        typeof response['burn_after_retrieval'] === 'boolean' &&
+        (response['expires_at'] === null || typeof response['expires_at'] === 'number')
+    );
 }

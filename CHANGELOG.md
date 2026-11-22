@@ -90,6 +90,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   capsule and per instance (`abuse.max_open_reports_per_paste`, default 10;
   `abuse.max_open_reports`, default 1000); a report above a ceiling is dropped with the same answer,
   and `capsulebin reports list` and a rate-limited log warning show the operator a full queue.
+  A report whose description or contact carries a link's key (`#v1.…`) or an invitation link's
+  creation token (`#token=…`) is refused with `400` and never stored, so neither reaches the report
+  table or a backup.
 - Request bodies are read only when they may be used: create checks the creation token, and the
   report endpoint whether reports are enabled, before reading the body. Describe, retrieve and
   delete accept at most 4 KiB, reports 32 KiB.
@@ -153,12 +156,17 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   unless "Remember in this browser" is unchecked, can be forgotten, and is sent only as the bearer
   of the create request. A refused token is forgotten and another one sends the same encrypted
   capsule again. "Back to editing" after a failed create brings the draft back as it was submitted.
+- A create whose outcome is unclear (no answer, a timeout, an unreadable answer, a server error or
+  too many requests) offers "Try again", which sends the same encrypted capsule, so a capsule the
+  first attempt stored is not created twice, and shows that capsule's delete link with a copy
+  button in the meantime.
 - Markdown (sanitized) and code (highlight.js) rendering; copy, download and source view per item.
 - A wrong password keeps the password prompt open. Its message does not claim more than the server
   says - a wrong password and a capsule that went away look alike - and too many attempts show
   how long to wait.
 - Management page for deleting a capsule and checking its status; report page that strips the key
-  from a pasted link.
+  from a pasted link and, before sending anything, refuses a description or contact containing a
+  link's key or an invitation link's creation token (the same rule as the server).
 - An English and a German interface: the default language (`[i18n] default_language`) without a
   path prefix, the other under its prefix (`/de/`), chosen by a language switch or the browser
   language ([ADR-016](docs/adr/ADR-016-language-paths.md)); share and management links carry no
@@ -188,7 +196,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   owner-only file instead of stderr.
 - A failed `put` never loses the delete link once the upload was attempted: the
   `--delete-link-file` file is kept, otherwise the link is printed on stderr, and the `--json`
-  error carries `delete_link_file` or `delete_url`.
+  error carries `delete_link_file` or `delete_url`. A create success without the expected answer
+  (a proxy's empty `204`, JSON `null`, another id) counts as such a failure: exit code `7` with the
+  reason `invalid_response`, not retried.
 - `CAPSULEBIN_PASSWORD` is used by `get` only for links to the server named with `--server` (or
   `CAPSULEBIN_SERVER`).
 - Plain `http://` only to `localhost`, `127.0.0.0/8` and `[::1]`, elsewhere only with `--allow-http`

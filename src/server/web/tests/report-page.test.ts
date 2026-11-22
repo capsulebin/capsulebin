@@ -14,6 +14,7 @@ import { servedShell, setPageLanguage } from './page-language';
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const KEY = 'v1.c2VjcmV0LWtleS1ub3QtdG8tYmUtc2VudA';
+const TOKEN = 'creation-token-not-to-be-sent';
 
 const CATALOGUES = { en, de };
 
@@ -229,9 +230,11 @@ describe('report page errors', () => {
     });
 });
 
-describe('report page refuses a key in the free text', () => {
+describe('report page refuses a key or token in the free text', () => {
     const SHARE = `https://paste.example/p/${ID}#${KEY}`;
     const MANAGE = `https://paste.example/de/manage/${ID}#${KEY}`;
+    const INVITATION = `https://paste.example/#token=${TOKEN}`;
+    const INVITATION_DE = `https://paste.example/de/#token=${TOKEN}`;
 
     function posts(): Sent[] {
         return sent.filter((s) => s.method === 'POST');
@@ -265,6 +268,38 @@ describe('report page refuses a key in the free text', () => {
             );
             expect(document.activeElement).toBe(field('report-contact'));
             expect(field<HTMLInputElement>('report-contact').value).toBe(MANAGE);
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe('spam');
+        });
+    }
+
+    for (const lang of ['en', 'de'] as const) {
+        it(`refuses an invitation link in the description, in ${lang}`, async () => {
+            await loadPage(`?id=${ID}`, lang);
+            const description = `Invited by ${INVITATION}, please check`;
+            field<HTMLTextAreaElement>('report-description').value = description;
+            await submit();
+
+            expect(posts()).toHaveLength(0);
+            expect(field('report-error').hidden).toBe(false);
+            expect(field('report-error').textContent).toBe(
+                CATALOGUES[lang]['report.error.containsKey'],
+            );
+            expect(document.activeElement).toBe(field('report-description'));
+            expect(field<HTMLTextAreaElement>('report-description').value).toBe(description);
+        });
+
+        it(`refuses an invitation link in the contact, in ${lang}`, async () => {
+            await loadPage(`?id=${ID}`, lang);
+            field<HTMLTextAreaElement>('report-description').value = 'spam';
+            field<HTMLInputElement>('report-contact').value = INVITATION_DE;
+            await submit();
+
+            expect(posts()).toHaveLength(0);
+            expect(field('report-error').textContent).toBe(
+                CATALOGUES[lang]['report.error.containsKey'],
+            );
+            expect(document.activeElement).toBe(field('report-contact'));
+            expect(field<HTMLInputElement>('report-contact').value).toBe(INVITATION_DE);
             expect(field<HTMLTextAreaElement>('report-description').value).toBe('spam');
         });
     }

@@ -38,12 +38,14 @@ optional `contact`.
   `capsulebin reports list` starts with the number of open reports and both ceilings, and says when
   new reports are not stored. `--json` stays a plain array for scripts.
 - A report never carries a key: the report page strips the fragment from a pasted link in the id
-  field, and it refuses a description or contact containing `#v1.` before anything is sent — no
-  request, a message, focus on the first field concerned, the text left for the reporter to edit.
-  The server refuses such text too, for clients other than the report page. Both use the same
-  rule (`#` followed by the fragment prefix, case-sensitive; `containsKeyFragment` in the core,
-  `check_text` on the server), so the page never sends a text the server would refuse for a key.
-  A bare key without `#` is not detected on either side. The page refuses rather than cutting the
+  field, and it refuses a description or contact containing a link's key (`#v1.`) or an
+  invitation link's creation token (`#token=`, ADR-018) before anything is sent — no request, a
+  message, focus on the first field concerned, the text left for the reporter to edit. The server
+  refuses such text too (`400`, nothing stored), for clients other than the report page. Both use
+  the same rule (either fragment, `#v1.` or `#token=`, as a case-sensitive substring;
+  `containsKeyFragment` in the core, `check_text` on the server, kept equal by shared examples), so
+  the page never sends a text the server would refuse for a key or token. A bare key or token
+  without its `#…` prefix is not detected on either side. The page refuses rather than cutting the
   key out: removing text from free text is guesswork, and the reporter would not see what was sent.
 - Control characters are refused (in the description all but line breaks and tabs, in the contact
   all), so a report shown in the operator's terminal cannot carry escape sequences.

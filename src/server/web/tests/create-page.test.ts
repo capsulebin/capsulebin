@@ -1575,3 +1575,322 @@ describe('create page states and sealed page', () => {
         expect(region.textContent).toBe('');
     });
 });
+
+describe('create page after an unclear outcome', () => {
+    const TOKEN = 'good-token_123';
+    let server: FakeServer;
+    /** Bodies of every create request, in order, also of those answered by `firstCreate`. */
+    let createBodies: string[];
+    const writeText = vi.fn<(text: string) => Promise<void>>();
+
+    type Answer = (forward: () => Promise<Response>) => Promise<Response>;
+
+    function problem(status: number, code: string): Response {
+        return new Response(JSON.stringify({ title: code, status, code }), {
+            status,
+            headers: { 'Content-Type': 'application/problem+json' },
+        });
+    }
+
+    /** The first create is answered by `answer`, every later request by the fake server. */
+    function firstCreate(answer: Answer): void {
+        let answered = false;
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            const isCreate = init?.method === 'POST' && String(input).endsWith('/api/v1/pastes');
+            if (isCreate) createBodies.push(String(init.body));
+            if (!isCreate || answered) return server.fetch(input, init);
+            answered = true;
+            return answer(() => server.fetch(input, init));
+        });
+    }
+
+    beforeEach(() => {
+        server = createFakeServer(window.location.origin);
+        createBodies = [];
+        writeText.mockReset();
+        writeText.mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText },
+        });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        localStorage.clear();
+    });
+
+    function submit(): void {
+        el<HTMLFormElement>('create-form').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true }),
+        );
+    }
+
+    async function failed(): Promise<void> {
+        await vi.waitFor(
+            () => expect(document.querySelector('[data-error-message]')).not.toBeNull(),
+            { timeout: 15_000 },
+        );
+    }
+
+    function visible(attr: string): boolean {
+        const node = document.querySelector<HTMLElement>(`[data-${attr}]`);
+        return node !== null && !node.hidden;
+    }
+
+    /** Neither "Try again" nor a delete link; "Back to editing" brings back the draft. */
+    function expectDefinite(): void {
+        expect(visible('try-again')).toBe(false);
+        expect(visible('unclear')).toBe(false);
+        expect(el('unclear-delete-link').textContent).toBe('');
+        expect(document.querySelector('main')!.textContent).not.toContain('/manage/');
+        expect(visible('retry-btn')).toBe(true);
+    }
+
+    const unclear: [string, Answer][] = [
+        ['a network error', () => Promise.reject(new TypeError('Failed to fetch'))],
+        [
+            'a dropped answer after the capsule was stored',
+            async (forward) => {
+                await forward();
+                throw new TypeError('Failed to fetch');
+            },
+        ],
+        [
+            'a response too large',
+            () => Promise.resolve(new Response('x'.repeat(128 * 1024), { status: 201 })),
+        ],
+        [
+            'an invalid response',
+            () =>
+                Promise.resolve(
+                    new Response('null', {
+                        status: 201,
+                        headers: { 'Content-Type': 'application/json' },
+                    }),
+                ),
+        ],
+        ['a 500', () => Promise.resolve(problem(500, 'internal_error'))],
+        ['a 502 without a body', () => Promise.resolve(new Response('', { status: 502 }))],
+        ['a 503', () => Promise.resolve(problem(503, 'unavailable'))],
+        ['a 429', () => Promise.resolve(problem(429, 'rate_limited'))],
+    ];
+
+    it.each(unclear)(
+        'offers "Try again" with the same capsule and its delete link after %s',
+        async (_case, answer) => {
+            server.creationToken = TOKEN;
+            localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+            await loadPage('en', 'token');
+            firstCreate(answer);
+            type('content');
+            submit();
+            await failed();
+
+            expect(visible('try-again')).toBe(true);
+            expect(el('try-again').textContent!.trim()).toBe(en['create.tryAgain']);
+            expect(visible('retry-btn')).toBe(true);
+            expect(el('retry-btn').textContent).toBe(en['create.retry']);
+            expect(visible('unclear')).toBe(true);
+            expect(el('unclear').textContent).toContain(en['create.unclearNote']);
+            expect(el('unclear').textContent).toContain(en['create.deleteLink']);
+
+            const id = JSON.parse(createBodies[0]!).id as string;
+            const shown = el('unclear-delete-link').textContent!;
+            expect(shown.startsWith(`${window.location.origin}/manage/${id}#v1.`)).toBe(true);
+            expect(parseLink(shown, 'manage').id).toBe(id);
+
+            const copy = el<HTMLButtonElement>('unclear-copy');
+            expect(copy.textContent!.trim()).toBe(en['create.copy']);
+            expect(copy.querySelector('svg[data-icon="copy"]')).not.toBeNull();
+            copy.click();
+            await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(shown));
+
+            el<HTMLButtonElement>('try-again').click();
+            const share = await sealedShareLink();
+            // No new encryption: the same request, the same id.
+            expect(createBodies).toHaveLength(2);
+            expect(createBodies[1]).toBe(createBodies[0]);
+            expect(parseLink(share, 'share').id).toBe(id);
+            expect(el('delete-link').textContent).toBe(shown);
+            expect(server.pastes.has(id)).toBe(true);
+            expect([...server.pastes.keys()]).toEqual([id]);
+        },
+        30_000,
+    );
+
+    it('offers "Try again" after a timeout', async () => {
+        await loadPage('en', 'public');
+        let hanging = false;
+        firstCreate(() => {
+            hanging = true;
+            return new Promise<Response>(() => undefined);
+        });
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        type('content');
+        submit();
+        await vi.waitFor(() => expect(hanging).toBe(true), { timeout: 15_000 });
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+        vi.useRealTimers();
+        await failed();
+        expect(visible('try-again')).toBe(true);
+        expect(parseLink(el('unclear-delete-link').textContent!, 'manage').id).toBe(
+            JSON.parse(createBodies[0]!).id,
+        );
+
+        el<HTMLButtonElement>('try-again').click();
+        await sealedShareLink();
+        expect(createBodies).toEqual([createBodies[0], createBodies[0]]);
+    }, 30_000);
+
+    it.each([
+        ['a 400', () => Promise.resolve(problem(400, 'invalid_request'))],
+        ['a 413', () => Promise.resolve(problem(413, 'payload_too_large'))],
+        ['a 409', () => Promise.resolve(problem(409, 'id_conflict'))],
+        ['a 403', () => Promise.resolve(problem(403, 'creation_disabled'))],
+        ['a 404', () => Promise.resolve(problem(404, 'not_found'))],
+        ['a refused redirect', () => Promise.resolve(new Response(null, { status: 302 }))],
+    ] satisfies [string, Answer][])(
+        'shows only "Back to editing" after %s',
+        async (_case, answer) => {
+            await loadPage('en', 'public');
+            firstCreate(answer);
+            type('content');
+            submit();
+            await failed();
+            expectDefinite();
+            el<HTMLButtonElement>('retry-btn').click();
+            expect(el<HTMLTextAreaElement>('item-text').value).toBe('content');
+        },
+        30_000,
+    );
+
+    it('keeps the token form for a refused token in token mode', async () => {
+        server.creationToken = TOKEN;
+        localStorage.setItem(CREATION_TOKEN_KEY, 'wrong-token');
+        await loadPage('en', 'token');
+        firstCreate((forward) => forward());
+        type('content');
+        submit();
+        await failed();
+        expect(el('error-message').textContent).toBe(en['create.token.refused']);
+        expect(document.querySelector('[data-token-input]')).not.toBeNull();
+        expectDefinite();
+    }, 30_000);
+
+    it('offers neither when the capsule cannot be assembled', async () => {
+        await loadPage('en', 'public');
+        firstCreate((forward) => forward());
+        type('content');
+        vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce(() => {
+            throw new Error('no randomness');
+        });
+        submit();
+        await failed();
+        expect(createBodies).toEqual([]);
+        expectDefinite();
+    });
+
+    it('offers neither when the capsule cannot be sealed', async () => {
+        await loadPage('en', 'public');
+        firstCreate((forward) => forward());
+        type('content');
+        // 200 characters of 3 UTF-8 bytes each: over the capsule's 255-byte name limit.
+        const name = el<HTMLInputElement>('item-name');
+        name.value = '€'.repeat(200);
+        name.dispatchEvent(new Event('input'));
+        submit();
+        await failed();
+        expect(createBodies).toEqual([]);
+        expectDefinite();
+    }, 30_000);
+
+    it('says it in German', async () => {
+        await loadPage('de', 'public');
+        firstCreate(() => Promise.resolve(problem(500, 'internal_error')));
+        type('Inhalt');
+        submit();
+        await failed();
+        expect(el('error-message').textContent).toBe(de['error.server']);
+        expect(el('try-again').textContent!.trim()).toBe(de['create.tryAgain']);
+        expect(el('retry-btn').textContent).toBe(de['create.retry']);
+        expect(el('unclear').textContent).toContain(de['create.unclearNote']);
+        expect(el('unclear').textContent).toContain(de['create.deleteLink']);
+        expect(el('unclear-copy').textContent!.trim()).toBe(de['create.copy']);
+
+        el<HTMLButtonElement>('try-again').click();
+        await sealedShareLink();
+        expect(document.querySelector('main h1')!.textContent).toBe('Versiegelt.');
+    }, 30_000);
+
+    it('names a malformed answer in both languages', async () => {
+        for (const [lang, catalogue] of [
+            ['en', en],
+            ['de', de],
+        ] as const) {
+            await loadPage(lang, 'public');
+            firstCreate(() =>
+                Promise.resolve(
+                    new Response('{}', {
+                        status: 201,
+                        headers: { 'Content-Type': 'application/json' },
+                    }),
+                ),
+            );
+            type('content');
+            submit();
+            await failed();
+            expect(el('error-message').textContent).toBe(catalogue['error.invalidResponse']);
+        }
+    }, 30_000);
+
+    // Acceptance (AC6), edge case: "Try again" that meets another unclear outcome
+    // offers it again with the same capsule, and a later success creates it once.
+    it('offers "Try again" again when the retry is unclear too', async () => {
+        await loadPage('en', 'public');
+        let failures = 2;
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            const isCreate = init?.method === 'POST' && String(input).endsWith('/api/v1/pastes');
+            if (isCreate) createBodies.push(String(init.body));
+            if (isCreate && failures > 0) {
+                failures -= 1;
+                return problem(503, 'unavailable');
+            }
+            return server.fetch(input, init);
+        });
+        type('content');
+        submit();
+        await failed();
+        const first = el('unclear-delete-link').textContent!;
+        const id = JSON.parse(createBodies[0]!).id as string;
+
+        el<HTMLButtonElement>('try-again').click();
+        await vi.waitFor(() => expect(createBodies).toHaveLength(2), { timeout: 15_000 });
+        await failed();
+        expect(visible('try-again')).toBe(true);
+        expect(visible('unclear')).toBe(true);
+        expect(el('unclear-delete-link').textContent).toBe(first);
+
+        el<HTMLButtonElement>('try-again').click();
+        const share = await sealedShareLink();
+        expect(createBodies).toEqual([createBodies[0], createBodies[0], createBodies[0]]);
+        expect(parseLink(share, 'share').id).toBe(id);
+        expect(el('delete-link').textContent).toBe(first);
+        expect([...server.pastes.keys()]).toEqual([id]);
+    }, 30_000);
+
+    // Acceptance (AC6): "Back to editing" stays after an unclear outcome and brings
+    // back the draft.
+    it('keeps "Back to editing" with the draft after an unclear outcome', async () => {
+        await loadPage('en', 'public');
+        firstCreate(() => Promise.resolve(problem(500, 'internal_error')));
+        type('my draft');
+        submit();
+        await failed();
+        expect(visible('try-again')).toBe(true);
+        el<HTMLButtonElement>('retry-btn').click();
+        expect(el<HTMLTextAreaElement>('item-text').value).toBe('my draft');
+        expect(document.querySelector('[data-try-again]')).toBeNull();
+    }, 30_000);
+});

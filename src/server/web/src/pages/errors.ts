@@ -8,7 +8,7 @@
  * take the text from the catalogue.
  */
 
-import { ApiError } from '@capsulebin/core';
+import { ApiError, INVALID_RESPONSE, REDIRECT_REFUSED } from '@capsulebin/core';
 
 import { t, tn } from '../language';
 
@@ -26,9 +26,23 @@ export function isTokenRefused(err: unknown): boolean {
     return err instanceof ApiError && err.code === 'unauthorized';
 }
 
+/**
+ * Whether a failed create may still have stored the capsule: no usable answer
+ * (network error, timeout, an oversized or malformed success), a server error
+ * or a `429`. Sending the same sealed capsule again is then safe (a stored one
+ * is answered as a replay, ADR-011). A refused redirect is a configuration
+ * problem, any other status a definite answer; anything not from the API
+ * failed before a request was sent.
+ */
+export function isUnclearOutcome(err: unknown): boolean {
+    if (!(err instanceof ApiError) || err.code === REDIRECT_REFUSED) return false;
+    return err.status === 0 || err.status === 429 || err.status >= 500;
+}
+
 /** What to tell the user about a failed API call; a general text for anything unexpected. */
 export function apiErrorText(err: unknown): string {
     if (!(err instanceof ApiError)) return t('error.generic');
+    if (err.code === INVALID_RESPONSE) return t('error.invalidResponse');
     if (err.status === 0) return t('error.network');
     switch (err.code) {
         case 'rate_limited':

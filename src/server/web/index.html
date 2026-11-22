@@ -438,7 +438,23 @@
                 <h1 class="cb-h1">{{create.error}}</h1>
                 <p class="cb-lede" data-error-message></p>
                 <div data-token-slot></div>
-                <p><button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button></p>
+                <!-- Shown only when the create may have stored the capsule anyway. -->
+                <div class="cb-sealed-delete" data-unclear hidden>
+                    <div class="cb-sealed-delete-text">
+                        <strong>{{create.deleteLink}}</strong>
+                        <span class="cb-sealed-delete-link" data-unclear-delete-link></span>
+                        <span class="cb-sealed-note">{{create.unclearNote}}</span>
+                    </div>
+                    <button type="button" class="cb-btn cb-btn-ghost cb-btn-sm" data-unclear-copy>
+                        <span>{{create.copy}}</span>
+                    </button>
+                </div>
+                <p class="cb-create-actions">
+                    <button type="button" class="cb-btn" data-try-again hidden>
+                        {{create.tryAgain}}
+                    </button>
+                    <button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button>
+                </p>
             </div>
         </template>
     </body>
