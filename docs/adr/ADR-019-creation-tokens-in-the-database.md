@@ -72,7 +72,9 @@ while the server runs; every change applies from the next create request. Config
     `note:` on stderr that it has no effect until the mode is `token`.
   - `list` starts with `active tokens: N (configured hashes: M)` and prints every token, active and
     revoked, oldest first: id, created (`YYYY-MM-DD HH:MM UTC`), last used (`YYYY-MM-DD` or
-    `never`), revoked (`YYYY-MM-DD HH:MM UTC` or `-`) and the label. `--json` is a plain array of
+    `never`), the state (`active`, or `revoked YYYY-MM-DD HH:MM UTC`) and the label. An active
+    token's line never contains the word `revoked`: a placeholder such as `revoked -` reads as
+    revoked at a glance. `--json` is a plain array of
     `{id, label, created_at, last_used_on, revoked_at}`. Neither shows anything of the verifier.
   - `revoke` takes the id `list` shows (a ULID, case-insensitive, stored upper-case), sets
     `revoked_at` and exits `0`; an already revoked token exits `0` saying so and keeps its

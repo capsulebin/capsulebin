@@ -104,14 +104,17 @@ pub(crate) async fn token_create(resolved: Resolved, label: Option<String>) -> a
     Ok(())
 }
 
-/// One `token list` line: id, created, last used, revoked, label.
+/// One `token list` line: id, created, last used, state (`active` or
+/// `revoked <date>`), label.
 fn token_line(token: &CreationToken) -> String {
     let line = format!(
-        "{}  created {}  last used {}  revoked {}  {}",
+        "{}  created {}  last used {}  {}  {}",
         token.id,
         format_utc(token.created_at),
         token.last_used_on.map_or_else(|| "never".to_owned(), format_utc_date),
-        token.revoked_at.map_or_else(|| "-".to_owned(), format_utc),
+        token
+            .revoked_at
+            .map_or_else(|| "active".to_owned(), |at| format!("revoked {}", format_utc(at))),
         token.label.as_str(),
     );
     // No trailing blanks for a token without a label.
@@ -224,7 +227,11 @@ mod tests {
         );
         assert_eq!(
             token_line(&token("", None, None)),
-            "01KAPS0000000000000000TEST  created 2026-11-23 11:44 UTC  last used never  revoked -"
+            "01KAPS0000000000000000TEST  created 2026-11-23 11:44 UTC  last used never  active"
+        );
+        assert_eq!(
+            token_line(&token("bob", Some(1_795_392_000), None)),
+            "01KAPS0000000000000000TEST  created 2026-11-23 11:44 UTC  last used 2026-11-23  active  bob"
         );
     }
 

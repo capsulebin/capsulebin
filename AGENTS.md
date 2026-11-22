@@ -317,8 +317,9 @@ no retention: restore needs them); no un-revoke; never link a capsule to a token
   `token`), `id: <ULID>`, `label: …` (if any), the invitation link header and `  <link>`; no
   `sha256:`, no configuration entry; outside `token` mode a `note:` on stderr, token still created.
   `list`: `active tokens: N (configured hashes: M)`, then per token, oldest first,
-  `<id>  created <YYYY-MM-DD HH:MM UTC>  last used <YYYY-MM-DD|never>  revoked <… UTC|->  <label>`
-  (`format_utc`/`format_utc_date` shared from `commands/abuse.rs`); `--json` a plain array of
+  `<id>  created <YYYY-MM-DD HH:MM UTC>  last used <YYYY-MM-DD|never>  <active|revoked … UTC>  <label>`
+  (an active token's line never says `revoked`; `format_utc`/`format_utc_date` shared from
+  `commands/abuse.rs`); `--json` a plain array of
   `{id, label, created_at, last_used_on, revoked_at}`. `revoke`: ULID syntax checked in the CLI
   (any case, canonical upper case stored), `ok: token <id> revoked`, `ok: token <id> was already
   revoked` (exit 0, `revoked_at` unchanged), `no token <id>` (exit 1).

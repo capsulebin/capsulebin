@@ -123,7 +123,8 @@ open the database; give them the server's configuration.
   instance the token is still created, with a `note:` on stderr that it has no effect until the
   mode is `token`.
 - **`token list`** starts with `active tokens: N (configured hashes: M)`, then one line per token,
-  oldest first: id, created, last used (the day only, or `never`), revoked (or `-`) and label.
+  oldest first: id, created, last used (the day only, or `never`), the state (`active`, or
+  `revoked` with the time of the revocation) and label.
   `--json` prints a plain array of objects with `id`, `label`, `created_at`, `last_used_on` and
   `revoked_at` (Unix seconds or `null`). Neither shows a token or its hash.
 - **`token revoke <id>`** takes the id from `token list`. The next create with that token gets

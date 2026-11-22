@@ -263,8 +263,8 @@ async fn create_without_a_usable_configuration_fails_like_reports() {
 }
 
 /// AC13: the summary line, one line per token in creation order with every
-/// date and the label, and `--json` as a plain array; neither shows a token
-/// or a verifier.
+/// date, the state (`active` or `revoked <date>`) and the label, and
+/// `--json` as a plain array; neither shows a token or a verifier.
 #[tokio::test]
 async fn list_shows_every_token_without_its_secret() {
     let h = harness_with_mode("tokens-acc-list", CreationMode::Public).await;
@@ -306,9 +306,11 @@ async fn list_shows_every_token_without_its_secret() {
                 "{}  created 2026-11-23 11:44 UTC  last used 2026-11-24  revoked 2026-11-24 06:00 UTC  {LABEL}",
                 first.id
             ),
-            format!("{}  created 2026-11-23 11:45 UTC  last used never  revoked -", second.id),
+            format!("{}  created 2026-11-23 11:45 UTC  last used never  active", second.id),
         ]
     );
+    // The state of an active token never reads like a revocation.
+    assert!(!lines[2].contains("revoked"), "{}", lines[2]);
 
     let json = stdout("list --json", &run(&config, &["token", "list", "--json"]));
     assert_no_traces("list --json", &json, &secrets);
@@ -332,6 +334,87 @@ async fn list_shows_every_token_without_its_secret() {
             },
         ])
     );
+}
+
+/// AC13 (N1): the state column in the combinations the main list test leaves
+/// out. An active token that was used and has a label reads `active`, with
+/// the word `revoked` nowhere on its line; `token revoke` turns exactly that
+/// line into `revoked <date>`; a revoked token without a label ends with the
+/// date. The old `revoked -` placeholder is gone, and `--json` keeps
+/// `revoked_at` as `null` or the stored seconds.
+#[tokio::test]
+async fn list_states_each_token_as_active_or_revoked() {
+    let h = harness_with_mode("tokens-acc-list-state", CreationMode::Public).await;
+    let config = creation_config_file(&h, PUBLIC_URL, "token", &[]);
+
+    let used = assert_created("used", &run(&config, &["token", "create", "--label", LABEL]), Some(LABEL));
+    let plain = assert_created("plain", &run(&config, &["token", "create"]), None);
+    for (id, created, last_used) in [
+        (&used.id, 1_795_434_240_i64, Some(1_795_478_400_i64)),
+        (&plain.id, 1_795_434_300_i64, None),
+    ] {
+        sqlx::query("UPDATE creation_tokens SET created_at = ?2, last_used_on = ?3 WHERE id = ?1")
+            .bind(id)
+            .bind(created)
+            .bind(last_used)
+            .execute(&h.pool)
+            .await
+            .unwrap();
+    }
+
+    let text = stdout("list", &run(&config, &["token", "list"]));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "active tokens: 2 (configured hashes: 0)".to_owned(),
+            format!("{}  created 2026-11-23 11:44 UTC  last used 2026-11-24  active  {LABEL}", used.id),
+            format!("{}  created 2026-11-23 11:45 UTC  last used never  active", plain.id),
+        ]
+    );
+    for line in &lines[1..] {
+        assert!(!line.contains("revoked"), "{line}");
+    }
+
+    // Revoked by the command itself, both tokens; the date is the stored one.
+    stdout("revoke used", &run(&config, &["token", "revoke", &used.id]));
+    stdout("revoke plain", &run(&config, &["token", "revoke", &plain.id]));
+    sqlx::query("UPDATE creation_tokens SET revoked_at = 1795500000 WHERE revoked_at IS NOT NULL")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    let text = stdout("list after revoke", &run(&config, &["token", "list"]));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "active tokens: 0 (configured hashes: 0)".to_owned(),
+            format!(
+                "{}  created 2026-11-23 11:44 UTC  last used 2026-11-24  revoked 2026-11-24 06:00 UTC  {LABEL}",
+                used.id
+            ),
+            format!(
+                "{}  created 2026-11-23 11:45 UTC  last used never  revoked 2026-11-24 06:00 UTC",
+                plain.id
+            ),
+        ]
+    );
+    for line in &lines[1..] {
+        assert!(!line.contains("active"), "{line}");
+        assert!(!line.contains("revoked -"), "{line}");
+    }
+
+    let json = stdout("list --json", &run(&config, &["token", "list", "--json"]));
+    let parsed: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    let entries = parsed.as_array().expect("a plain array");
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        let mut keys: Vec<&str> = entry.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["created_at", "id", "label", "last_used_on", "revoked_at"]);
+        assert_eq!(entry["revoked_at"], 1_795_500_000_i64);
+    }
 }
 
 /// AC14: revoke sets `revoked_at`; again is `0` with a message and changes
