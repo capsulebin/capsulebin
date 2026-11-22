@@ -12,13 +12,6 @@ speaks.
 
 ## [Unreleased]
 
-### Fixed
-
-- The bundled SQLite is updated to 3.54 (`libsqlite3-sys` 0.40 through `sqlx` 0.9.1), which fixes
-  [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459): a database opened together
-  with a crafted `-wal` file of another page size could return uninitialised memory. The exception
-  for it is removed from `deny.toml`.
-
 ## [1.0.0]
 
 First stable release. Speaks envelope format 1, capsule file format 1, crypto profile 1 and HTTP API
