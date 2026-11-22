@@ -198,7 +198,12 @@ Editor first: no visible heading or lede before the form, an `h1.cb-sr-only` wit
    the checkbox text `create.burn`, "Delete after first retrieval"/"Nach dem ersten Abruf
    löschen"; the checkbox text never repeats the label and has no bracketed second name). The
    password hint (`create.passwordNote`, `[data-password-note]`) is hidden
-   while the password field is empty and shown once it has content.
+   while the password field is empty and shown once it has content. The password field sits
+   inside the create form but belongs to the empty form `#create-password-form`
+   (`[data-password-form]`, `form` attribute): password managers pair a password field with the
+   text field before it in the same form as a login and offered the item name as a username.
+   Enter in it submits that form, which creates the capsule (`requestSubmit()` on the create
+   form); the draft check counts it although it is not in the create form's `elements`.
 8. **Submit row:** the submit button (lock icon) at its content width, the trust line
    (`create.lede`, lock icon) next to it; below 34rem the button takes the form width.
 

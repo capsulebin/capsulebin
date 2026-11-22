@@ -312,6 +312,7 @@
                             placeholder="{{create.passwordPlaceholder}}"
                             autocomplete="new-password"
                             aria-describedby="create-password-error create-password-note"
+                            form="create-password-form"
                         />
                     </div>
                 </div>
@@ -326,6 +327,11 @@
                     <p class="cb-create-trust" data-trust-line>{{create.lede}}</p>
                 </div>
             </form>
+            <!-- The capsule password belongs to this form (form="create-password-form"),
+                 not to the create form: password managers pair a password field with the
+                 text field before it in the same form as a login, and offered the item
+                 name as a username. Enter in the field still creates the capsule. -->
+            <form id="create-password-form" data-password-form novalidate hidden></form>
         </template>
 
         <template id="tmpl-token">

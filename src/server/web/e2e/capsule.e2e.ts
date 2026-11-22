@@ -284,6 +284,38 @@ test('a password of only spaces is refused before anything is sent', async ({ pa
     });
 });
 
+// The password field belongs to a form of its own (so password managers do not
+// take the item name for a username); Enter in it still creates the capsule once.
+test('Enter in the password field creates the capsule', async ({ page, context }) => {
+    const createPosts: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().endsWith('/api/v1/pastes') && request.method() === 'POST') {
+            createPosts.push(request.url());
+        }
+    });
+    await page.goto('/');
+    await page.fill('[data-item-text]', 'sent with Enter');
+    await page.fill('#create-item-name', 'notes.txt');
+    await page.fill('#create-password', 'enter key');
+    expect(
+        await page.locator('#create-password').evaluate((input: HTMLInputElement) => ({
+            own: input.form?.id,
+            textFields: [...(input.form?.elements ?? [])].filter((e) => e !== input).length,
+        })),
+    ).toEqual({ own: 'create-password-form', textFields: 0 });
+    await page.press('#create-password', 'Enter');
+    const { share } = await sealedLinks(page);
+    expect(createPosts).toHaveLength(1);
+
+    const view = await context.newPage();
+    await view.goto(share);
+    await view.fill('#pwd-input', 'enter key');
+    await view.click('button[type=submit]');
+    await expect(view.locator('.cb-item-panel')).toContainText('sent with Enter', {
+        timeout: 30_000,
+    });
+});
+
 test('hostile HTML in Markdown is removed and never runs', async ({
     page,
     context,
