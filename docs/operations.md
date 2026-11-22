@@ -562,7 +562,11 @@ cron jobs before you stop the server and resume them once it runs again.
 
 `restore` never opens the input file with SQLite and never touches it:
 
-1. It refuses if the database file is missing next to restore leftovers (see "Interrupted
+1. It refuses if `database.path` is itself a symbolic link (dangling or not): SQLite keeps the
+   `-wal`/`-shm` next to the file the link points to, so commits only in that `-wal` could be
+   missed, and the cutover would replace the link with a regular file. Set `database.path` to the
+   file the link points to for the restore (a symlinked *directory* is fine). It refuses if the
+   database file is missing next to restore leftovers (see "Interrupted
    restore" below), and if a name it would write is taken: without `--force` an existing database,
    with `--force` `<file>.pre-restore-<timestamp>` or its `-wal`/`-shm`.
 2. It copies only the backup's main file (never a `-wal` or `-shm` next to it) into a new private

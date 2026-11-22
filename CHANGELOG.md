@@ -112,7 +112,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   readable again, and a capsule of the backup that the replaced database purged after the backup
   is removed, its id staying retired. A database missing after an interrupted restore stops
   the server, and `restore` too, instead of being replaced by an empty one or by a backup that
-  carries nothing over; the message says to move the old database back first.
+  carries nothing over; the message says to move the old database back first. A `database.path`
+  that is itself a symbolic link is refused by `restore` and `--dry-run`, so its `-wal` beside the
+  link's target is never missed.
 - A container image: distroless without OpenSSL, non-root, configured by environment variables or a
   mounted configuration file, with the database on a `/data` volume and a health check that needs
   no shell or `curl` and nothing but the address it probes. Every change and a weekly run scan it

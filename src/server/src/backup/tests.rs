@@ -1792,3 +1792,83 @@ async fn restore_removes_purged_backup_capsules_in_every_state() {
     assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from(["kept".to_owned()]));
     assert_eq!(ids_in(&target.path, "retired_ids").await, purged);
 }
+
+/// SEC-028: SQLite keeps the `-wal` and `-shm` next to the file a database
+/// symlink points to, not next to the link. A restore through the link would
+/// find no `-wal`, attach the old main file as `immutable` and miss a
+/// revocation committed only in that `-wal`; its cutover would replace the
+/// link with a regular file. `restore` (with and without `replace`) and the
+/// dry run refuse a symlinked target, also a dangling one, before any step and
+/// change nothing on either side of the link.
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_refuses_a_symlinked_database() {
+    let dir = dir("restore-symlink");
+    let real = dir.join("real");
+    let data = dir.join("data");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::create_dir(&data).unwrap();
+
+    // The backup holds the token as active.
+    let backup = dir.join("backup.db");
+    database_at(&backup, &[]).await;
+    add_tokens(&backup, &[("revoked-in-wal", 1, "", 10, None, None)]).await;
+
+    // The real database revoked it afterwards, and a crash left the
+    // revocation only in its `-wal`.
+    let live = real.join("live.db");
+    std::fs::copy(&backup, &live).unwrap();
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&live)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .pragma("wal_autocheckpoint", "0"),
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE creation_tokens SET revoked_at = 50")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let crashed = real.join("crashed.db");
+    copy_open_database(&live, &crashed);
+    pool.close().await;
+    assert!(std::fs::metadata(&sidecars(&crashed)[0]).unwrap().len() > 0);
+
+    let link = data.join("live.db");
+    std::os::unix::fs::symlink(&crashed, &link).unwrap();
+    assert!(!sidecars(&link)[0].exists());
+    let target = config(link.clone());
+    let (data_before, real_before) = (snapshot(&data), snapshot(&real));
+
+    for (replace, dry_run) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (error, steps) = failed_restore(&backup, &target, replace, dry_run).await;
+        let case = format!("replace {replace}, dry run {dry_run}");
+        assert!(
+            matches!(&error, BackupError::SymlinkTarget(path) if path == &link),
+            "{case}: {error}"
+        );
+        assert!(error.to_string().contains("database.path"), "{case}: {error}");
+        assert!(steps.is_empty(), "{case}: went on to {steps:?}");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{case}");
+        assert_eq!(snapshot(&data), data_before, "{case}: the link's directory changed");
+        assert_eq!(snapshot(&real), real_before, "{case}: the linked database changed");
+    }
+
+    // A dangling link is refused as well, not replaced by the backup.
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(real.join("missing.db"), &link).unwrap();
+    for (replace, dry_run) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (error, steps) = failed_restore(&backup, &target, replace, dry_run).await;
+        let case = format!("dangling, replace {replace}, dry run {dry_run}");
+        assert!(
+            matches!(&error, BackupError::SymlinkTarget(path) if path == &link),
+            "{case}: {error}"
+        );
+        assert!(steps.is_empty(), "{case}: went on to {steps:?}");
+        assert_eq!(entries(&data), BTreeSet::from([OsString::from("live.db")]), "{case}");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{case}");
+    }
+}
