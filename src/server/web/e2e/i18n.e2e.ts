@@ -89,9 +89,9 @@ test.describe('in a German browser', () => {
             {
                 password,
                 items: [
-                    { type: 'plain', name: 'notiz.txt', text: 'Geheimer Inhalt' },
-                    { type: 'markdown', name: 'liesmich.md', text: '# Überschrift' },
-                    { type: 'code', name: 'haupt.rs', lang: 'rust', text: 'fn main() {}' },
+                    { type: 'plain', name: 'besprechungsnotizen.txt', text: 'Geheimer Inhalt' },
+                    { type: 'markdown', name: 'liesmich-zuerst.md', text: '# Überschrift' },
+                    { type: 'code', name: 'hauptprogramm.rs', lang: 'rust', text: 'fn main() {}' },
                 ],
             },
             'de',
@@ -120,16 +120,19 @@ test.describe('in a German browser', () => {
             timeout: 30_000,
         });
         await expectGerman(view, 'Die Entschlüsselung findet lokal statt.');
-        // Chips, the previous/next row and, where the tabs do not fit, "Alle 3".
+        // Chips, the previous/next row and "Alle 3": the long names make the three tabs overflow at
+        // 400 px whatever fonts the machine has.
         await expectGerman(view, 'Lokal entschlüsselt');
         await expectGerman(view, '3 Elemente');
         await expectGerman(view, '1 von 3');
         await expect(view.getByRole('button', { name: 'Nächstes Element' })).toHaveText(
-            'liesmich.md',
+            'liesmich-zuerst.md',
         );
         await view.getByRole('button', { name: 'Nächstes Element' }).click();
         await expectGerman(view, '2 von 3');
-        await expect(view.getByRole('button', { name: 'Voriges Element' })).toHaveText('notiz.txt');
+        await expect(view.getByRole('button', { name: 'Voriges Element' })).toHaveText(
+            'besprechungsnotizen.txt',
+        );
         await view.setViewportSize({ width: 400, height: 800 });
         await expect(view.locator('[data-items-all]')).toBeVisible();
         await expectGerman(view, 'Alle 3');

@@ -76,12 +76,14 @@ async function expectWarning(page: Page, hexagon: Locator): Promise<void> {
     expect(await colour(ring(hexagon), 'stroke')).toBe(await token(page, '--cb-warning'));
 }
 
-/** Lets the page write to the clipboard where the engine asks for a permission. */
-async function allowClipboard(context: BrowserContext): Promise<void> {
-    try {
+/**
+ * Lets the page write to the clipboard in Chromium, the only engine that asks for these
+ * permissions. Firefox and WebKit allow writing on a click; WebKit accepts the grant but then
+ * refuses to open a page in the context ("Unknown permission: clipboard-write").
+ */
+async function allowClipboard(context: BrowserContext, browserName: string): Promise<void> {
+    if (browserName === 'chromium') {
         await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-    } catch {
-        // Engines without these permissions allow writing on a click anyway.
     }
 }
 
@@ -178,8 +180,8 @@ test('the summary says when there is no password and no expiry', async ({ page }
     });
 });
 
-test('every copy button says "Copied" for two seconds', async ({ page, context }) => {
-    await allowClipboard(context);
+test('every copy button says "Copied" for two seconds', async ({ page, context, browserName }) => {
+    await allowClipboard(context, browserName);
     const { share } = await create(page, { items: [{ type: 'plain', text: 'copy me' }] });
     const region = page.locator('[role="status"][aria-live="polite"]');
 
