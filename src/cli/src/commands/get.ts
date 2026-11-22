@@ -1,5 +1,5 @@
 /**
- * `capsulebin get <share link>`: retrieve, decrypt and write out a capsule.
+ * `capsulebin-cli get <share link>`: retrieve, decrypt and write out a capsule.
  *
  * Runs the same `openPaste()` flow as the web view. Two decisions are made
  * *before* anything is retrieved, because a burn-after-retrieval capsule is

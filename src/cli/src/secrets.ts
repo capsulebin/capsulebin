@@ -10,6 +10,7 @@
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { CliError, ExitCode, usage } from './exit';
+import { PROGRAM } from './program';
 import { type Io, readFirstLine } from './io';
 import { escapeDiagnostic } from './terminal';
 import { normalizeBase } from './transport';
@@ -102,7 +103,7 @@ export async function creationToken(
     const used = normalizeBase(server);
     if (tokenServer === used) return fromEnv;
     io.stderr.write(
-        `capsulebin: ${escapeDiagnostic(
+        `${PROGRAM}: ${escapeDiagnostic(
             `CAPSULEBIN_TOKEN is only sent to the server in CAPSULEBIN_SERVER ` +
                 `(${tokenServer ?? 'not a usable URL'}); the server in use is ${used}, ` +
                 `so the token is not sent. Use --token-file for this server`,
@@ -184,7 +185,7 @@ export async function existingPassword(
             );
         }
         io.stderr.write(
-            `capsulebin: ${escapeDiagnostic(mismatch)}; the environment password is not used\n`,
+            `${PROGRAM}: ${escapeDiagnostic(mismatch)}; the environment password is not used\n`,
         );
         return io.prompt('Password: ', true);
     }

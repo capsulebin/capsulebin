@@ -75,7 +75,7 @@ retired id cannot succeed: its row, and with it the original request, is gone.
 ## Consequences
 
 - Clients may retry a create with the *same* `SealedPaste` on network errors, timeouts, `429` and
-  `5xx`. `capsulebin put` does. Re-sealing on retry is wrong: it produces a new id and a duplicate.
+  `5xx`. `capsulebin-cli put` does. Re-sealing on retry is wrong: it produces a new id and a duplicate.
 - The conflict path costs one metadata `SELECT`, and a possible replay one more for the ciphertext;
   the normal path is unchanged. A mismatched request never reads the stored payload.
 - A replay reveals nothing new: the caller already holds every verifier and the ciphertext, and a

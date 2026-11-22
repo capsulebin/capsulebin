@@ -1,5 +1,5 @@
 /**
- * `capsulebin delete <management link>`: delete a capsule with its delete
+ * `capsulebin-cli delete <management link>`: delete a capsule with its delete
  * secret. The secret travels in the request body, never in the URL, and the
  * server answers an unknown id and a wrong secret identically.
  */

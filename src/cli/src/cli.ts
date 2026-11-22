@@ -5,7 +5,7 @@
  * created here opens in the browser and vice versa. Encryption and decryption
  * happen in this process; the server only ever sees ciphertext (ADR-001).
  *
- * Exit codes are listed in `exit.ts` and in `capsulebin --help`.
+ * Exit codes are listed in `exit.ts` and in `capsulebin-cli --help`.
  */
 
 import { parseArgs, type ParseArgsConfig } from 'node:util';
@@ -16,6 +16,7 @@ import { remove } from './commands/delete';
 import { CliError, ExitCode, toCliError, usage } from './exit';
 import type { Io } from './io';
 import { AS_VALUES } from './items';
+import { PROGRAM } from './program';
 import { readLink } from './secrets';
 import { escapeDiagnostic, jsonLine } from './terminal';
 import { allowHttp, checkTransport } from './transport';
@@ -24,12 +25,12 @@ import pkg from '../package.json' with { type: 'json' };
 
 const VERSION = pkg.version;
 
-export const HELP = `capsulebin — share end-to-end encrypted capsules
+export const HELP = `${PROGRAM} — share end-to-end encrypted capsules
 
 Usage:
-  capsulebin put [FILE...] [options]     Encrypt files (or stdin) into one capsule and upload it
-  capsulebin get LINK [options]          Retrieve and decrypt a capsule from its share link
-  capsulebin delete LINK [options]       Delete a capsule with its management link
+  ${PROGRAM} put [FILE...] [options]   Encrypt files (or stdin) into one capsule and upload it
+  ${PROGRAM} get LINK [options]        Retrieve and decrypt a capsule from its share link
+  ${PROGRAM} delete LINK [options]     Delete a capsule with its management link
 
 LINK is the link itself, or - to read it from the first line of stdin; or leave it
 out and pass --link-file PATH. A link given as an argument is visible to other
@@ -254,7 +255,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         json = values.json === true;
 
         if (values.version) {
-            io.stdout.write(`capsulebin ${VERSION}\n`);
+            io.stdout.write(`${PROGRAM} ${VERSION}\n`);
             return ExitCode.Ok;
         }
         if (values.help || command === 'help' || command === undefined) {
@@ -348,17 +349,17 @@ export async function run(argv: string[], io: Io): Promise<number> {
                 }),
             );
         }
-        io.stderr.write(`capsulebin: ${escapeDiagnostic(error.message)}\n`);
+        io.stderr.write(`${PROGRAM}: ${escapeDiagnostic(error.message)}\n`);
         if (link !== undefined) {
             io.stderr.write(
-                'capsulebin: the capsule may exist on the server; ' +
+                `${PROGRAM}: the capsule may exist on the server; ` +
                     ('file' in link
                         ? `its delete link was written to ${escapeDiagnostic(link.file)}\n`
                         : `delete link (keep it private): ${escapeDiagnostic(link.url)}\n`),
             );
         }
         if (error.exitCode === ExitCode.Usage && !json) {
-            io.stderr.write('Run "capsulebin --help" for usage.\n');
+            io.stderr.write(`Run "${PROGRAM} --help" for usage.\n`);
         }
         return error.exitCode;
     }

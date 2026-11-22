@@ -6,6 +6,7 @@
 import { run } from './cli';
 import { ExitCode } from './exit';
 import { processIo } from './io';
+import { PROGRAM } from './program';
 import { escapeDiagnostic } from './terminal';
 
 run(process.argv.slice(2), processIo()).then(
@@ -13,7 +14,7 @@ run(process.argv.slice(2), processIo()).then(
         process.exitCode = code;
     },
     (err: unknown) => {
-        process.stderr.write(`capsulebin: ${escapeDiagnostic(String(err))}\n`);
+        process.stderr.write(`${PROGRAM}: ${escapeDiagnostic(String(err))}\n`);
         process.exitCode = ExitCode.Failure;
     },
 );

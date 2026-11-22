@@ -2,7 +2,7 @@
  * Recipient-side decrypt flow for the web view: reads the link from
  * `window.location` and hands the sequence of network calls and crypto
  * derivations to `openPaste()` in `@capsulebin/core` — the same flow
- * `capsulebin get` uses. No Lit/DOM state here: `view.ts` owns the phase
+ * `capsulebin-cli get` uses. No Lit/DOM state here: `view.ts` owns the phase
  * state machine and templates.
  *
  * The two UI pauses (burn warning, password prompt) are modeled as hooks the
