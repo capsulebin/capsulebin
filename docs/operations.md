@@ -538,6 +538,9 @@ entry at the output name — a file, a directory or a symlink, dangling or not �
 before the snapshot and again right before the rename. The rename never follows a symlink; only an
 entry created in the output directory between that last check and the rename would be replaced,
 which needs write access to that directory (and whoever has it could replace the backup anyway).
+The same window lets two backups started at the same moment with the same output name both report
+success, the later rename replacing the earlier snapshot: give every backup job a name of its own
+(a timestamp, as above, or the job's name) and do not run two jobs onto one name.
 The rename stays within the output's directory, so any filesystem works as a destination. Store
 backups as carefully as the database: they contain ciphertext, verifiers and abuse reports with
 contact details. Rotate them — an old backup is where deleted capsules survive the longest. Never

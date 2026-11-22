@@ -607,7 +607,7 @@ async fn failed_restore(backup: &Path, target: &DatabaseConfig, replace: bool, d
     (error, steps)
 }
 
-/// SEC-025: with the target's main file missing, a restore leftover next to it
+/// With the target's main file missing, a restore leftover next to it
 /// means an interrupted restore whose old database lies aside. `restore` (with
 /// and without `replace`) and the dry run refuse like `serve`, naming every
 /// leftover, before any step runs and without touching the directory.
@@ -1587,7 +1587,7 @@ async fn restore_keeps_burns_deletions_and_moderation_after_the_backup() {
     }
 }
 
-/// SEC-024: a capsule the backup holds whose row the replaced database burned
+/// A capsule the backup holds whose row the replaced database burned
 /// or deleted and then purged after the backup (only its id is left in
 /// `retired_ids`) is removed from the restored database, ciphertext included,
 /// and its id stays retired; an untouched capsule stays as it is. The dry run
@@ -1687,7 +1687,7 @@ async fn restore_removes_backup_capsules_purged_since() {
     }
 }
 
-/// SEC-025: after a cutover interrupted between moving the old database aside
+/// After a cutover interrupted between moving the old database aside
 /// and installing the copy, a new restore refuses; once the operator has moved
 /// the old database back, the restore carries its revocation and burn.
 #[tokio::test]

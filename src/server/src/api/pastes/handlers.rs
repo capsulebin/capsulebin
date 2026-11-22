@@ -446,7 +446,7 @@ mod tests {
         server.send(request).await.status
     }
 
-    /// SEC-023: a create that collides with a stored paste is decided from
+    /// A create that collides with a stored paste is decided from
     /// its metadata; the payload is read only for a request that can still be
     /// an identical replay.
     #[tokio::test]
