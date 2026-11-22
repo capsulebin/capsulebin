@@ -12,7 +12,7 @@
         "capsulebin-cli": "./dist/cli.js"
     },
     "scripts": {
-        "build": "esbuild src/main.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/cli.js --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/cli.js",
+        "build": "esbuild src/main.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/cli.js --metafile=dist/cli.js.meta.json --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/cli.js && node ../../scripts/third-party-licenses.mjs cli dist/cli.js.meta.json dist/cli.js.third-party-licenses.txt",
         "check": "tsc --noEmit",
         "test": "vitest run"
     },

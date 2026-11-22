@@ -276,6 +276,17 @@ grep -qi '^content-type: image/svg+xml' <<<"${headers}" || fail "/favicon.svg is
 check_headers "/favicon.svg"
 echo "ok  /favicon.svg"
 
+# The licence notices of the packages in the web bundle, which the binary
+# embeds and serves to the browsers it sends that code to.
+headers="$(curl -fsS -D - -o "${WORKDIR}/notices.txt" "${BASE}/third-party-licenses.txt" | tr -d '\r')" ||
+  fail "/third-party-licenses.txt missing from the binary"
+grep -qi '^content-type: text/plain' <<<"${headers}" || fail "/third-party-licenses.txt is not served as text"
+for package in dompurify highlight.js lit-html marked; do
+  grep -q "^- ${package} " "${WORKDIR}/notices.txt" || fail "/third-party-licenses.txt does not list ${package}"
+done
+check_headers "/third-party-licenses.txt"
+echo "ok  /third-party-licenses.txt"
+
 # --- API: a full lifecycle ---------------------------------------------------
 
 API="${BASE}/api/v1/pastes"

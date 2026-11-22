@@ -11,6 +11,36 @@ import {
     type ShellName,
 } from './scripts/shells.ts';
 import { DEFAULT_LANGUAGE } from './src/default-language.ts';
+import { npmNotices } from '../../../scripts/third-party-licenses.mjs';
+
+/** Where the build puts the bundled packages' licence notices (served as a static asset). */
+const THIRD_PARTY_LICENSES = 'third-party-licenses.txt';
+
+/**
+ * Emits `dist/third-party-licenses.txt`: the licence texts of every npm package
+ * in the bundle (scripts/third-party-licenses.mjs). The server embeds and
+ * serves it with the other assets, so the code that browsers receive carries
+ * its notices. Not Vite's own `build.license`: that keeps only one licence file
+ * per package (the first the file system lists), drops NOTICE files and checks
+ * nothing against deny.toml.
+ */
+function thirdPartyLicenses(): Plugin {
+    return {
+        name: 'capsulebin:third-party-licenses',
+        apply: 'build',
+        generateBundle(_options, bundle) {
+            const modules = new Set<string>();
+            for (const output of Object.values(bundle)) {
+                if (output.type === 'chunk') for (const id of output.moduleIds) modules.add(id);
+            }
+            this.emitFile({
+                type: 'asset',
+                fileName: THIRD_PARTY_LICENSES,
+                source: npmNotices(modules, 'the CapsuleBin web client'),
+            });
+        },
+    };
+}
 
 /**
  * The shells are generated per language from the templates in this directory and
@@ -131,7 +161,7 @@ export default defineConfig({
     base: '/',
     // No SPA fallback: an unknown path is a 404, not the raw index.html template.
     appType: 'mpa',
-    plugins: [languageShells()],
+    plugins: [languageShells(), thirdPartyLicenses()],
 
     build: {
         outDir: 'dist',

@@ -47,14 +47,15 @@ Every release on the [releases page](https://github.com/capsulebin/capsulebin/re
 
 | File | Contents |
 | --- | --- |
-| `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, README, changelog and example configuration |
+| `capsulebin-<version>-linux-x86_64.tar.gz`, `…-linux-aarch64.tar.gz` | The server binary (glibc 2.36: Debian 12, Ubuntu 24.04, RHEL 10 or newer) with the licence, the third-party licence notices (`THIRD_PARTY_LICENSES`), README, changelog and example configuration |
 | `capsulebin-cli-<version>.mjs` | The command line client as one file for Node.js 24 or newer |
+| `capsulebin-cli-<version>-THIRD_PARTY_LICENSES.txt` | The licence notices of the third-party code in the command line client |
 | `capsulebin-<version>-source.spdx.json` | SBOM of the locked Rust and npm dependencies |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Checksums of all files and their cosign signature |
 
 The container image is `ghcr.io/capsulebin/capsulebin:<version>` (`linux/amd64`, `linux/arm64`),
-with SBOM and provenance attestations; see [operations](docs/operations.md#container) for running
-it.
+with SBOM and provenance attestations and the licence and third-party notices in
+`/usr/share/doc/capsulebin/`; see [operations](docs/operations.md#container) for running it.
 
 Signatures are keyless: the certificate names the release workflow and the tag it ran for, so
 verifying them needs no key, only [cosign](https://docs.sigstore.dev/cosign/system_config/installation/):
@@ -628,3 +629,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Commits carry a Developer Certificate of
 ## Licence
 
 [AGPL-3.0-only](LICENSE).
+
+CapsuleBin contains third-party code under permissive licences (the `[licenses] allow` list in
+[`deny.toml`](deny.toml)). Every artefact ships their licence notices, generated at build time by
+[`scripts/third-party-licenses.mjs`](scripts/third-party-licenses.mjs): `THIRD_PARTY_LICENSES` in
+the release tarball and in the image (`/usr/share/doc/capsulebin/`) for the crates linked into the
+server and the embedded web client, `capsulebin-cli-<version>-THIRD_PARTY_LICENSES.txt` next to
+the CLI bundle, and `/third-party-licenses.txt` on every instance for the code the web client sends
+to browsers. The generation fails for a dependency without a licence text or with a licence the
+list does not allow.
