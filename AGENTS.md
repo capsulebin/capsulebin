@@ -417,7 +417,7 @@ logs one warning per minute at most, without id, text or contact; the throttle i
   the backup anyway) — a hard link would make backups fail on filesystems without hard links.
 - **Restore order** (`backup::restore`): collision check (target, or with `--force`
   `<file>.pre-restore-<now>` and its sidecars, via `symlink_metadata`) → stage → copy only the main
-  file → `verify_file` on the copy (never on the input: RUSTSEC-2026-0459) → `db::connect` +
+  file → `verify_file` on the copy (never on the input: SQLite trusts database files) → `db::connect` +
   `db::verify` + `wal_checkpoint(TRUNCATE)` → collision re-check → move database, `-wal`, `-shm`
   aside → rename the copy into place. The moves use `rename`, which replaces a destination created
   after the re-check; that window is accepted (stopped server; planting there needs write access to

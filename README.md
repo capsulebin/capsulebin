@@ -614,12 +614,9 @@ are worth repeating here:
   frames until the next checkpoint, the filesystem, SSD wear levelling and backups are beyond its
   reach, so physical erasure of the bytes is not promised.
 - **Only restore databases you created.** The server opens its SQLite database and write-ahead log
-  as trusted input. Restoring a database or `-wal` file from an untrusted source is unsupported —
-  the bundled SQLite is currently affected by
-  [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459), which only such a file can
-  trigger (see the exception in `deny.toml`). Until that is fixed, `restore` verifies and migrates
-  only a private copy of the backup's main file, so a `-wal` next to it never reaches SQLite; the
-  main file itself must still be your own.
+  as trusted input. Restoring a database or `-wal` file from an untrusted source is unsupported.
+  `restore` verifies and migrates only a private copy of the backup's main file, so a `-wal` next
+  to it never reaches SQLite; the main file itself must still be your own.
 
 ## Contributing
 
