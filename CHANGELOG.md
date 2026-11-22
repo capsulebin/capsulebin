@@ -73,7 +73,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   the ids of the replaced database that the backup lacks (`--dry-run` counts them) and only warns
   if it cannot read them. The built-in privacy notice says so.
 - Per-client rate limits, a daily byte quota and concurrent-upload limit, with trusted-proxy-aware
-  client addresses; a per-paste limit on password attempts (on by default) that only callers
+  client addresses (every `X-Forwarded-For` line counts, an entry that is not a bare address is never
+  skipped, IPv4-mapped addresses count as IPv4); a per-paste limit on password attempts (on by default) that only callers
   holding the link can trigger. The limiter's memory is capped (100 000 client and 100 000
   per-capsule buckets) with bounded work per request; a flood of addresses evicts the least recently
   used client, never a password budget. While the per-capsule table is full, capsules it does not
@@ -103,7 +104,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   name, refusing an existing entry there instead of replacing or following it. `restore` verifies
   and migrates a private copy of the backup's main file before the old database moves aside, undoes
   every move on a failure, and keeps the old database with its `-wal`/`-shm`; `restore --dry-run`
-  test-migrates that copy and changes nothing. A database missing after an interrupted restore stops
+  test-migrates that copy and changes nothing. A capsule the replaced database burned, deleted or
+  disabled after the backup keeps that state (and loses its ciphertext), so a restore never makes it
+  readable again. A database missing after an interrupted restore stops
   the server instead of being replaced by an empty one.
 - A container image: distroless without OpenSSL, non-root, configured by environment variables or a
   mounted configuration file, with the database on a `/data` volume and a health check that needs

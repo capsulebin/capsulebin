@@ -119,6 +119,20 @@ impl Paste {
             .is_none_or(|last| last <= now.saturating_sub(granularity_secs))
     }
 
+    /// Whether `presented` is this paste's describe capability, compared in
+    /// constant time.
+    ///
+    /// A row without a describe verifier (written before
+    /// `migrations/0002_describe_verifier.sql`) has no describe capability:
+    /// the comparison still runs, against a dummy, so it costs the same work as
+    /// for any other row, but it never matches - also not for a caller who
+    /// presents the dummy's preimage.
+    #[must_use]
+    pub fn describe_matches(&self, presented: &Verifier) -> bool {
+        let stored = self.describe_verifier.unwrap_or_else(|| Verifier::for_describe_token(b"absent"));
+        presented.matches(&stored) & self.describe_verifier.is_some()
+    }
+
     /// Whether `request` can still be a re-submission of the create request
     /// that produced this paste — a client retrying after a timeout or a
     /// dropped connection, not knowing whether its first attempt landed.
@@ -149,8 +163,7 @@ impl Paste {
     pub fn may_be_replayed_by(&self, request: &NewPaste, now: i64) -> bool {
         let mut same = subtle::Choice::from(u8::from(self.reveal_verifier.matches(&request.reveal_verifier)));
         same &= subtle::Choice::from(u8::from(self.delete_verifier.matches(&request.delete_verifier)));
-        let describe = self.describe_verifier.unwrap_or_else(|| Verifier::for_describe_token(b"absent"));
-        same &= subtle::Choice::from(u8::from(describe.matches(&request.describe_verifier)));
+        same &= subtle::Choice::from(u8::from(self.describe_matches(&request.describe_verifier)));
         same &= self.public_header.as_slice().ct_eq(request.public_header.as_slice());
 
         let lifetime = |expires_at: Option<i64>, created_at: i64| expires_at.map(|at| at.saturating_sub(created_at));

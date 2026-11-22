@@ -1234,7 +1234,8 @@ async fn restore_with_unreadable_creation_tokens_carries_neither_ids_nor_tokens(
     );
     assert_eq!(outcome.warnings, dry_run.warnings);
     assert!(
-        outcome.warnings[0].contains("ids and creation tokens") && outcome.warnings[0].contains("could not be carried over"),
+        outcome.warnings[0].contains("ids, capsule states and creation tokens")
+            && outcome.warnings[0].contains("could not be carried over"),
         "{:?}",
         outcome.warnings
     );
@@ -1304,4 +1305,130 @@ async fn restore_stops_when_the_copy_cannot_take_the_carried_tokens() {
     assert_eq!(outcome.carried_tokens, 2_000);
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+}
+
+/// The lifecycle columns of the capsule `byte` in the database at `path`:
+/// `(availability_status, consumed_at, moderation_reason, has ciphertext)`.
+async fn state_of(path: &Path, byte: u8) -> (String, Option<i64>, Option<String>, bool) {
+    let pool = db::connect(&config(path.to_path_buf())).await.unwrap();
+    let row = sqlx::query("SELECT availability_status, consumed_at, moderation_reason, ciphertext IS NOT NULL FROM pastes WHERE id = ?1")
+        .bind(PasteId::from_bytes([byte; 16]).encode())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    (row.get(0), row.get(1), row.get(2), row.get(3))
+}
+
+/// A capsule the replaced database burned, deleted (by its owner or by
+/// moderation) or disabled after the backup was taken keeps that state in the
+/// restored database, and its ciphertext is gone from the installed file; a
+/// capsule re-enabled after the backup keeps the backup's (disabled) state, an
+/// untouched one stays as it is. The dry run counts the same and changes
+/// nothing.
+#[tokio::test]
+async fn restore_keeps_burns_deletions_and_moderation_after_the_backup() {
+    use crate::domain::abuse::{ModerationAction, ReasonCode};
+    use crate::repository::AbuseRepository as _;
+    use crate::repository::sqlite::abuse::SqliteAbuseRepository;
+
+    let dir = dir("restore-states");
+    let source = dir.join("source.db");
+    let pool = db::connect(&config(source.clone())).await.unwrap();
+    let repo = SqlitePasteRepository::new(pool.clone());
+    let abuse = SqliteAbuseRepository::new(pool.clone());
+    let id = |byte: u8| PasteId::from_bytes([byte; 16]);
+    repo.create(&NewPaste {
+        burn_after_retrieval: true,
+        ..paste(1, b"BURNED-CIPHERTEXT-MARKER")
+    })
+    .await
+    .unwrap();
+    repo.create(&paste(2, b"OWNER-DELETED-MARKER")).await.unwrap();
+    repo.create(&paste(3, b"disabled later")).await.unwrap();
+    repo.create(&paste(4, b"MODERATION-DELETED-MARKER")).await.unwrap();
+    repo.create(&paste(5, b"re-enabled later")).await.unwrap();
+    repo.create(&paste(6, b"untouched")).await.unwrap();
+    abuse
+        .moderate(&id(5), ModerationAction::Disable, Some(ReasonCode::Spam), None, 1_100)
+        .await
+        .unwrap();
+    let backup = dir.join("backup.db");
+    create(&pool, &backup).await.unwrap();
+
+    assert!(repo.retrieve_and_burn(&id(1), 2_000).await.unwrap().is_some());
+    assert!(repo.delete(&id(2)).await.unwrap());
+    abuse
+        .moderate(&id(3), ModerationAction::Disable, Some(ReasonCode::Malware), None, 2_100)
+        .await
+        .unwrap();
+    abuse
+        .moderate(&id(4), ModerationAction::Delete, Some(ReasonCode::IllegalContent), None, 2_200)
+        .await
+        .unwrap();
+    abuse.moderate(&id(5), ModerationAction::Restore, None, None, 2_300).await.unwrap();
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    copy_open_database(&source, &target.path);
+    pool.close().await;
+    let files = with_sidecars(&target.path);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((dry_run.carried_states, dry_run.carried_ids), (4, 0));
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((outcome.carried_states, outcome.carried_ids), (4, 0));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+
+    assert_eq!(state_of(&target.path, 1).await, ("active".to_owned(), Some(2_000), None, false));
+    assert_eq!(state_of(&target.path, 2).await, ("deleted".to_owned(), None, None, false));
+    assert_eq!(
+        state_of(&target.path, 3).await,
+        ("disabled".to_owned(), None, Some("malware".to_owned()), true)
+    );
+    assert_eq!(
+        state_of(&target.path, 4).await,
+        ("deleted".to_owned(), None, Some("illegal_content".to_owned()), false)
+    );
+    assert_eq!(
+        state_of(&target.path, 5).await,
+        ("disabled".to_owned(), None, Some("spam".to_owned()), true),
+        "re-enabling after the backup is not carried over"
+    );
+    assert_eq!(state_of(&target.path, 6).await, ("active".to_owned(), None, None, true));
+
+    let repo = SqlitePasteRepository::new(db::connect(&target).await.unwrap());
+    for byte in [1, 2, 3, 4, 5] {
+        assert_eq!(repo.load_ciphertext(&id(byte), 5_000).await.unwrap(), None, "{byte}");
+    }
+    assert_eq!(
+        repo.load_ciphertext(&id(6), 5_000).await.unwrap().as_deref(),
+        Some(&b"untouched"[..])
+    );
+    drop(repo);
+
+    let installed: Vec<u8> = with_sidecars(&target.path)
+        .iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .flatten()
+        .collect();
+    for marker in [
+        &b"BURNED-CIPHERTEXT-MARKER"[..],
+        b"OWNER-DELETED-MARKER",
+        b"MODERATION-DELETED-MARKER",
+    ] {
+        assert!(
+            !installed.windows(marker.len()).any(|window| window == marker),
+            "{} left in the installed database",
+            String::from_utf8_lossy(marker)
+        );
+    }
 }

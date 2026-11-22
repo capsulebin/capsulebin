@@ -482,7 +482,7 @@ Four limits target abuse rather than load:
   unaffected.
 
 Buckets key on the TCP peer address unless it appears in `server.trusted_proxies`, in which case the
-right-most untrusted address in `X-Forwarded-For` is used instead. Behind a reverse proxy, set
+right-most untrusted address in `X-Forwarded-For` (all its lines, in order) is used instead. Behind a reverse proxy, set
 `trusted_proxies` to the proxy's own address before turning a limit on — otherwise every client
 behind it shares one bucket. Counters are in memory and reset on restart; this is a single-instance
 mechanism, not one that survives horizontal scaling.

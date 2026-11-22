@@ -40,25 +40,48 @@ pub async fn middleware(State(cidrs): State<CidrList>, mut request: Request, nex
     next.run(request).await
 }
 
+/// The client address: the peer, or - when the peer is a trusted proxy - the
+/// right-most `X-Forwarded-For` entry that is not itself a trusted proxy.
+///
+/// Every `X-Forwarded-For` line counts, in order, as one comma-separated list
+/// (RFC 9110, section 5.3): a proxy that appends its own line instead of
+/// extending the client's must not leave the client's line as the only one
+/// read. The walk goes from the right and stops at the first entry that is not
+/// a bare address (`ip:port`, `unknown`, an empty entry or a line that is not
+/// text): everything left of it may come from the client, so the last trusted
+/// address reached is used, never an entry further left. IPv4-mapped IPv6
+/// addresses (`::ffff:a.b.c.d`, how a dual-stack listener sees IPv4 peers) are
+/// compared and returned as IPv4.
 fn resolve(request: &Request, trusted: &[TrustedCidr]) -> IpAddr {
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip())
-        .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]))
+        .to_canonical();
 
     if !is_trusted(peer, trusted) {
         return peer;
     }
 
-    let header = request.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()).unwrap_or("");
+    // `None` stands for a line that is not text: it cannot be split into
+    // entries, so it ends the walk like an entry that does not parse.
+    let entries: Vec<Option<&str>> = request
+        .headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .flat_map(|line| match line.to_str() {
+            Ok(text) => text.split(',').map(Some).collect::<Vec<_>>(),
+            Err(_) => vec![None],
+        })
+        .collect();
 
     let mut candidate = peer;
-    for part in header.split(',').rev() {
-        let ip: IpAddr = match part.trim().parse() {
-            Ok(ip) => ip,
-            Err(_) => continue,
+    for entry in entries.into_iter().rev() {
+        let Some(ip) = entry.and_then(|part| part.trim().parse::<IpAddr>().ok()) else {
+            return candidate;
         };
+        let ip = ip.to_canonical();
         if !is_trusted(ip, trusted) {
             return ip;
         }
@@ -113,6 +136,8 @@ fn parse_cidr(entry: &str) -> Option<TrustedCidr> {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+
     use super::*;
 
     #[test]
@@ -133,5 +158,67 @@ mod tests {
     fn rejects_invalid_cidr() {
         assert!(parse_cidr("not-an-ip").is_none());
         assert!(parse_cidr("10.0.0.0/33").is_none());
+    }
+
+    /// The address [`resolve`] finds for a request from `peer` with the
+    /// `X-Forwarded-For` lines `lines`, behind the proxies `10.0.0.0/8`.
+    fn client(peer: &str, lines: &[&[u8]]) -> IpAddr {
+        let trusted = vec![parse_cidr("10.0.0.0/8").expect("valid")];
+        let mut builder = Request::builder().uri("/");
+        for line in lines {
+            builder = builder.header("x-forwarded-for", *line);
+        }
+        let mut request = builder.body(Body::empty()).expect("request");
+        let peer: IpAddr = peer.parse().expect("peer");
+        request.extensions_mut().insert(ConnectInfo(std::net::SocketAddr::new(peer, 4711)));
+        resolve(&request, &trusted)
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("ip")
+    }
+
+    #[test]
+    fn an_untrusted_peer_is_the_client() {
+        assert_eq!(client("203.0.113.7", &[b"198.51.100.1"]), ip("203.0.113.7"));
+    }
+
+    #[test]
+    fn the_right_most_untrusted_entry_is_the_client() {
+        assert_eq!(client("10.0.0.1", &[b"198.51.100.9, 203.0.113.7, 10.0.0.2"]), ip("203.0.113.7"));
+        assert_eq!(client("10.0.0.1", &[]), ip("10.0.0.1"));
+    }
+
+    /// A proxy that appends its own line: the client's line comes first and
+    /// must not be the only one read.
+    #[test]
+    fn every_header_line_counts_in_order() {
+        assert_eq!(client("10.0.0.1", &[b"198.51.100.9", b"203.0.113.7"]), ip("203.0.113.7"));
+        assert_eq!(client("10.0.0.1", &[b"198.51.100.9", b"203.0.113.7, 10.0.0.2"]), ip("203.0.113.7"));
+    }
+
+    /// An entry that is not a bare address ends the walk at the last trusted
+    /// address: the entries left of it are never used.
+    #[test]
+    fn an_unparsable_entry_stops_the_walk() {
+        for line in [
+            &b"198.51.100.9, 203.0.113.7:5678"[..],
+            b"198.51.100.9, unknown",
+            b"198.51.100.9,",
+            b"",
+        ] {
+            assert_eq!(client("10.0.0.1", &[line]), ip("10.0.0.1"), "{}", String::from_utf8_lossy(line));
+        }
+        assert_eq!(client("10.0.0.1", &[b"198.51.100.9, unknown, 10.0.0.2"]), ip("10.0.0.2"));
+        assert_eq!(client("10.0.0.1", &[b"198.51.100.9", b"\xff"]), ip("10.0.0.1"));
+    }
+
+    /// A dual-stack listener sees an IPv4 proxy as `::ffff:a.b.c.d`; it is
+    /// still the trusted proxy, and mapped entries count as IPv4.
+    #[test]
+    fn ipv4_mapped_addresses_count_as_ipv4() {
+        assert_eq!(client("::ffff:10.0.0.1", &[b"203.0.113.7"]), ip("203.0.113.7"));
+        assert_eq!(client("::ffff:203.0.113.7", &[b"198.51.100.1"]), ip("203.0.113.7"));
+        assert_eq!(client("10.0.0.1", &[b"203.0.113.7, ::ffff:10.0.0.2"]), ip("203.0.113.7"));
     }
 }
