@@ -65,7 +65,11 @@ Operational parameters set at startup:
   every move. So exactly the bytes that are installed are checked, a `-wal` next to the backup never
   reaches SQLite (SQLite treats database files as trusted input), and disk-full or migration errors
   happen before a live file moves. A missing database next to restore
-  leftovers is a startup error, not a new empty database.
+  leftovers is a startup error, not a new empty database, and `restore` refuses it as well,
+  through the same check and before it creates its own stage (which carries a leftover's name): a
+  restore with nothing at the configured path would carry nothing from the database lying aside and
+  so undo its revocations, burns and retired ids. The operator moves that database back first; it
+  is not picked up automatically.
 - Paste ids are never freed. Delete, burn and moderation keep a tombstone row without ciphertext;
   the retention rules delete the row, and an `AFTER DELETE` trigger on `pastes` puts its id into
   `retired_ids`, a `WITHOUT ROWID` table with the id as its only column that nothing deletes from
@@ -84,7 +88,11 @@ Operational parameters set at startup:
   warning. A failure while writing the ids into the copy (the disk full, for example) stops the
   restore before the cutover like any other step, and so does a read failure that shows up only
   then: it cannot be told apart from a failure on the copy, and an aborted restore keeps the old
-  database, while one installed without the ids would silently free them.
+  database, while one installed without the ids would silently free them. A capsule of the
+  backup whose id the replaced database has retired (purged after the backup) is deleted from the
+  copy in the same transaction, whatever its state; the copy's own trigger retires the id, so the
+  trigger stays the only place that retires ids, and `secure_delete` keeps the ciphertext out of
+  the installed file.
 - CapsuleBin creates the database file itself, exclusively and owner-only (`0600`), instead of
   leaving that to SQLite: SQLite derives the modes of `-wal` and `-shm` from the main file, so this
   keeps all three private without changing the process-wide umask.
