@@ -53,7 +53,8 @@ capsulebin/
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
 │                         reproducible-web.sh — builds the web client twice and compares;
-│                         support-windows.mjs — Node.js/Debian end-of-support check
+│                         support-windows.mjs — Node.js/Debian end-of-support check;
+│                         third-party-licenses.mjs — licence notices of every artefact
 ├── .github/            CI and release workflows (GitHub Actions), Dependabot configuration
 ├── Dockerfile          Container image: web build → release binary → distroless, non-root, /data
 ├── Cargo.toml          Workspace root (members: src/server)
@@ -566,7 +567,8 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
 | `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
-| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; with `CAPSULEBIN_CLI` also CLI put/get/delete (retrieved content compared from the written files), incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
+| `src/server/web/tests/third-party-licenses.test.ts` | `scripts/third-party-licenses.mjs`: SPDX expressions against the allow list (`OR`/`AND`/`WITH`/`A/B`, malformed ones refused), the list read from `deny.toml`; npm notices over temporary package trees (each package once, every licence file incl. `NOTICE`, a shared text printed once, virtual and own modules ignored; no licence text, no or a refused licence fails naming the package); the built `dist/third-party-licenses.txt` (if present) lists `dompurify`, `highlight.js`, `lit`, `lit-html`, `marked` and no `@capsulebin/` package. |
+| `scripts/smoke.sh` | Full lifecycle over a real socket against a release binary, asserts security headers on every response; `/third-party-licenses.txt` served as text listing the bundled packages; with `CAPSULEBIN_CLI` also CLI put/get/delete (retrieved content compared from the written files), incl. the private link channels (no `#v1.` on stderr, link file mode `600`). |
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, response limits and timeouts (exit `7`, retry counts), `put`'s input limit (before reading, endless stdin, `/dev/zero`), `CAPSULEBIN_PASSWORD` bound to `--server`, `CAPSULEBIN_TOKEN` withheld from a `--server` other than `CAPSULEBIN_SERVER`, empty path options refused before any request (no fallback), the 16 384-byte first line of link/token/password sources (stdin left open, `\r\n`, `/dev/zero`), link channels (stdin, `--link-file`, `--delete-link-file`), the delete link kept after a failed `put` (file kept, else printed; `delete_url`/`delete_link_file` in the JSON error), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory also for a single item, `--here`/`-o`, no leading-dot name in any mode, long names shortened so suffixes fit, `item-<n>` on `ENAMETOOLONG`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
 | `src/cli/tests/escape.test.ts` | The escaping functions of `terminal.ts` over every code point and byte in U+0000–U+00FF plus seeded random input: no control character emitted, text without one unchanged. |
 | `src/cli/tests/terminal.test.ts` | The bundled CLI on a real pseudo-terminal (python3 `pty`): hidden password prompt, burn confirmation, Ctrl-C/EOF → exit `8` with no guarded request, `stty` restored after every run. Fails (no skip) without `python3`, with a message naming it (`pty-requirement.test.ts`); skipped on Windows. |
@@ -686,7 +688,7 @@ npm run e2e -w @capsulebin/web
 | `src/i18n/language-next-page.ts` | The switch's "applies from the next page" notice in every language (shown in the chosen language) |
 | `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
 | `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix, default language, name, favicon, source link and (`{{creation}}`, create shell only) creation mode (after escaping, `{name}` in a catalogue text becomes the name token, `{project}` the `CapsuleBin` link to the source token, opened in a new tab); `fillServerTokens()` fills them with the defaults for the dev server (creation mode `DEV_CREATION_MODE` = `public`) |
-| `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
+| `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path; `thirdPartyLicenses()` emits `dist/third-party-licenses.txt` (served at `/third-party-licenses.txt`) from the bundle's modules with `npmNotices` of `scripts/third-party-licenses.mjs` |
 | `public/theme-init.js` | Head script: applies the stored theme and sets the `color-scheme` meta before the paint |
 | `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
@@ -726,7 +728,9 @@ including the acceptance run against a release binary. Dependency advisories are
 on the newest LTS), `Acceptance (release binary)`, `Browser (Chromium, Firefox, WebKit)` (the
 Playwright tests against the acceptance job's binary), `Container image` (builds the `Dockerfile`,
 scans the image with Grype and waits until both an environment-configured container and one configured only by a read-only mounted file report healthy), `Support windows` and
-`Dependency audit` — each a required check. Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
+`Dependency audit` — each a required check. The acceptance job also generates the server's
+`THIRD_PARTY_LICENSES` and the container job checks the notices in the image
+(see [Third-party licence notices](#third-party-licence-notices)). Actions are pinned to commit SHAs; Dependabot proposes updates for them, Cargo, npm
 and the base image digests.
 
 `Support windows` (`scripts/support-windows.mjs`) checks that every place naming the Node.js
@@ -741,6 +745,28 @@ client can be rebuilt and compared. The image scan fails on a high or critical v
 fixed version in the base image's Debian packages; the fix is a new base image digest (Dependabot
 proposes one weekly, or bump it by hand). The release binaries are built from the locked
 dependencies with `SOURCE_DATE_EPOCH` set, but nothing builds them twice and compares.
+
+### Third-party licence notices
+
+`scripts/third-party-licenses.mjs` (Node.js, no dependencies) writes the notices every artefact
+ships; nothing is committed, so a dependency update needs no extra step. A package without a licence
+text (`LICENSE*`, `LICENCE*`, `COPYING*`, `NOTICE*`, `COPYRIGHT*`, `UNLICENSE*`, or the files of a
+`LICENSES/` directory) or whose declared licence `deny.toml`'s `[licenses] allow` list cannot satisfy
+fails the generation, naming every such package. All licence files of a package are printed; a
+text several packages share (whitespace aside) once, naming them.
+- **Web** (`vite.config.ts`, `thirdPartyLicenses()`): `dist/third-party-licenses.txt` from the
+  bundle's module ids; embedded in the binary, served at `/third-party-licenses.txt`; part of the
+  reproducible build.
+- **CLI** (`build` script of `src/cli/package.json`): esbuild's metafile `dist/cli.js.meta.json` →
+  `dist/cli.js.third-party-licenses.txt` (today: no third-party package); released as
+  `capsulebin-cli-<version>-THIRD_PARTY_LICENSES.txt`. The names derive from `dist/cli.js`, so the
+  PTY tests' build into a temp dir (`pty.ts` replaces that path) writes its own copies.
+- **Server** (`server [--target] [--web]`): the crates `cargo metadata --locked --filter-platform`
+  reaches from `capsulebin-server` over normal dependencies, without build/dev dependencies and
+  proc-macro crates (and what only they pull in), then the web notices. The Dockerfile's build stage
+  runs it with Node.js copied from the web stage and puts `THIRD_PARTY_LICENSES` next to the binary
+  (`binary` target, so in the release tarball) and with `LICENSE` into the image's
+  `/usr/share/doc/capsulebin/`.
 
 ## Commits and pull requests
 

@@ -219,6 +219,19 @@ jobs:
           CAPSULEBIN_CLI: src/cli/dist/cli.js
         run: ./scripts/smoke.sh ./target/release/capsulebin
 
+      # The notices the release tarball ships next to the binary (the Dockerfile
+      # runs the same generator): every linked crate's licence text, then the
+      # web bundle's. Fails on a crate without a licence text or with a licence
+      # deny.toml does not allow.
+      - name: Licence notices
+        run: |
+          node scripts/third-party-licenses.mjs server --web src/server/web/dist/third-party-licenses.txt \
+            > THIRD_PARTY_LICENSES
+          for package in axum tokio sqlx-sqlite libsqlite3-sys marked dompurify; do
+            grep -q "^- ${package} " THIRD_PARTY_LICENSES || { echo "::error::${package} missing"; exit 1; }
+          done
+          test -s src/cli/dist/cli.js.third-party-licenses.txt
+
       - name: Upload binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -358,6 +371,18 @@ jobs:
           curl -fsS http://127.0.0.1:8080/health/ready
           echo
           docker exec capsulebin /usr/local/bin/capsulebin backup --output /data/ci-backup.db
+
+      # The image carries the licence notices of everything in it next to the
+      # project's own licence.
+      - name: Licence notices
+        run: |
+          container="$(docker create capsulebin:ci)"
+          docker cp "${container}:/usr/share/doc/capsulebin" image-doc
+          docker rm "${container}"
+          grep -q 'GNU AFFERO GENERAL PUBLIC LICENSE' image-doc/LICENSE
+          for package in axum tokio marked dompurify; do
+            grep -q "^- ${package} " image-doc/THIRD_PARTY_LICENSES || { echo "::error::${package} missing"; exit 1; }
+          done
 
       # The image with its settings in a read-only configuration file passed as
       # `--config … serve`; only what the image itself sets (bind address,

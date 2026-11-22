@@ -112,6 +112,12 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   mounted configuration file, with the database on a `/data` volume and a health check that needs
   no shell or `curl` and nothing but the address it probes. Every change and a weekly run scan it
   for known vulnerabilities in the base image.
+- Third-party licence notices with every artefact: `THIRD_PARTY_LICENSES` in the release tarball
+  and in the image (`/usr/share/doc/capsulebin/`, next to the project's `LICENSE`) for the linked
+  crates and the embedded web client, a notices file next to the CLI bundle, and
+  `/third-party-licenses.txt` on every instance for the code its web client sends to browsers.
+  Generated at build time; a dependency without a licence text or with a licence outside
+  `deny.toml`'s list fails the build.
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
 - Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an

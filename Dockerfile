@@ -29,6 +29,10 @@ RUN npm ci --no-audit --no-fund
 
 COPY src/core src/core
 COPY src/server/web src/server/web
+# The build writes the bundled packages' licence notices into dist
+# (third-party-licenses.txt), checked against deny.toml's licence list.
+COPY deny.toml ./
+COPY scripts/third-party-licenses.mjs scripts/
 RUN npm run build -w @capsulebin/web
 
 # --- server ------------------------------------------------------------------
@@ -51,14 +55,26 @@ RUN multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
     && install -D -m 0644 /usr/share/doc/libgcc-s1/copyright /out/rootfs/usr/share/doc/libgcc-s1/copyright \
     && install -d /out/rootfs/var/lib/dpkg/status.d \
     && dpkg-query --status libgcc-s1 > /out/rootfs/var/lib/dpkg/status.d/libgcc-s1
+# The licence notices of everything the binary contains: the crates linked into
+# it (from cargo metadata and the crate sources this build downloaded) and the
+# embedded web client's packages. Node.js comes from the web stage (same Debian
+# release) only to run the generator; it is not part of any output.
+COPY --from=web /usr/local/bin/node /usr/local/bin/node
+COPY deny.toml LICENSE ./
+COPY scripts/third-party-licenses.mjs scripts/
+RUN node scripts/third-party-licenses.mjs server --web src/server/web/dist/third-party-licenses.txt \
+        > /out/THIRD_PARTY_LICENSES \
+    && install -D -m 0644 /out/THIRD_PARTY_LICENSES /out/rootfs/usr/share/doc/capsulebin/THIRD_PARTY_LICENSES \
+    && install -D -m 0644 LICENSE /out/rootfs/usr/share/doc/capsulebin/LICENSE
 
 # --- binary only -------------------------------------------------------------
-# The release binary on its own, for the release tarballs:
+# The release binary and its licence notices, for the release tarballs:
 #   docker buildx build --target binary --output type=local,dest=out .
 # It is the same build the image ships. Built against glibc 2.36, it runs on
 # Debian 12, Ubuntu 24.04, RHEL 10 and newer.
 FROM scratch AS binary
 COPY --from=server /out/capsulebin /capsulebin
+COPY --from=server /out/THIRD_PARTY_LICENSES /THIRD_PARTY_LICENSES
 
 # --- runtime -----------------------------------------------------------------
 # distroless "base-nossl": glibc, CA certificates and tzdata, but no OpenSSL.

@@ -4,6 +4,9 @@
 !Cargo.toml
 !Cargo.lock
 !rust-toolchain.toml
+!deny.toml
+!LICENSE
+!scripts/third-party-licenses.mjs
 !package.json
 !package-lock.json
 !migrations

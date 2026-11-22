@@ -220,6 +220,8 @@ Releases publish `ghcr.io/capsulebin/capsulebin:<version>` (also tagged `<major>
 locally: it builds the web client, embeds it into the binary and copies the result into a
 distroless image without OpenSSL — no shell, no package manager, user `65532`. It is configured through
 environment variables or a mounted configuration file and keeps the database on the `/data` volume.
+The project's licence and the licence notices of the third-party code in the image are in
+`/usr/share/doc/capsulebin/` (`LICENSE`, `THIRD_PARTY_LICENSES`).
 
 ```sh
 docker pull ghcr.io/capsulebin/capsulebin:1.0.0   # or: docker build -t capsulebin .
