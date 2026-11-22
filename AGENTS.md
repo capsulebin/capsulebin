@@ -480,6 +480,9 @@ npm run dev -w @capsulebin/web
 ```
 
 ### CLI
+
+The command is `capsulebin-cli` (`bin` in `src/cli/package.json`), never `capsulebin` (the server).
+
 ```sh
 npm run build -w @capsulebin/cli
 node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
@@ -703,6 +706,7 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.ts` | Executable entry point (bundled to `dist/cli.js`) |
+| `src/program.ts` | `PROGRAM` = `capsulebin-cli`: the command name (`bin` in `package.json`) used in help, `--version` and every diagnostic prefix; never `capsulebin`, which is the server binary |
 | `src/cli.ts` | Argument parsing, help text, command dispatch; `run(argv, io)` returns the exit code; `put` refuses a server URL with a query or fragment or ending in a language code; `get --server` (else a usable `CAPSULEBIN_SERVER`) is the anchor for `CAPSULEBIN_PASSWORD`; `get --here` (refused together with `-o`); `checkOptions` refuses an empty value of every option in `PATH_OPTIONS` (`--password-file`, `--token-file`, `--delete-link-file`, `--link-file`, `-o`) with exit `2`; error output through `escapeDiagnostic`/`jsonLine`, plus the `deleteLink` of a failed `put` (second stderr line, `delete_url`/`delete_link_file` in the JSON error) |
 | `src/commands/{put,get,delete}.ts` | The three commands; `put` sums regular file sizes and refuses above `MAX_CAPSULE_BYTES` before reading, then reads all inputs (files as streams, stdin) within one shared budget, exit `2` (`the input exceeds the capsule limit of 10485760 bytes`); `put` retries `timeout`, never `response_too_large`; `put --delete-link-file` (exclusive `0600` file written before the upload, removed only if that write fails); once `createWithRetry` is entered a failure carries the delete link (`withDeleteLink`: `{ file }` or `{ url }`), the file is never removed; `put` passes its server to `creationToken`; `get` never writes item content to stdout: every capsule, a single item included, goes to a new `0700` directory `capsule-<local date>-<id prefix>` (non-recursive `mkdir`, free name ` (n)` if taken), `--here` the current directory, `-o DIR` created `0700` with parents; each file opened `wx` with mode `0600` (no temp file, `link` or `rename`), on `EEXIST` the next free name `name (n).ext`, at most 1000 attempts (`no_free_name`); a failed write removes the files and the empty new directory of this run; `safeFileName` keeps the last path component, replaces C0, DEL and C1 and leading dots (`_`, in every output mode) and shortens the name to 249 UTF-8 bytes on a code point boundary (an extension ≤ 32 bytes kept), so `name (999).ext` fits `NAME_MAX`; `ENAMETOOLONG` all the same → `item-<n>` |
 | `src/terminal.ts` | `escapeDiagnostic` (every control character incl. `\n`, for stderr: applied centrally in `run()`'s error output incl. its "capsule may exist" delete link line, to `get`'s `created …`/`wrote …` lines, `put`'s `delete link written to …` line, both `secrets.ts` notices (environment password not used, `CAPSULEBIN_TOKEN` withheld) and `main.ts`'s last-resort message), `jsonLine` (every `--json` output; DEL/C1 as `\u00NN`). Backslashes are not doubled |

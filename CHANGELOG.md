@@ -163,8 +163,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 
 ### Command line client
 
-- `capsulebin put`, `get` and `delete`, sharing `@capsulebin/core` with the web client; runs on
-  Node.js 24 or newer.
+- `capsulebin-cli put`, `get` and `delete`, sharing `@capsulebin/core` with the web client; runs on
+  Node.js 24 or newer. The command is named `capsulebin-cli` so it does not collide with the
+  server binary `capsulebin`.
 - Secrets only from files, environment variables or a prompt — never from arguments.
 - A link, token or password from a file or stdin is its first line, at most 16 384 bytes; a longer
   line, or a source without a line ending such as `/dev/zero`, ends with exit code `2` before any

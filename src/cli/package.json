@@ -9,7 +9,7 @@
         "node": ">=24"
     },
     "bin": {
-        "capsulebin": "./dist/cli.js"
+        "capsulebin-cli": "./dist/cli.js"
     },
     "scripts": {
         "build": "esbuild src/main.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/cli.js --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/cli.js",

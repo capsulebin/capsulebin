@@ -2118,8 +2118,8 @@ describe('terminal output', () => {
         }
     }
 
-    const FORGED = 'bad \x1b[2J\ncapsulebin: forged \u009b';
-    const FORGED_SHOWN = 'bad \\x1b[2J\\x0acapsulebin: forged \\u009b';
+    const FORGED = 'bad \x1b[2J\ncapsulebin-cli: forged \u009b';
+    const FORGED_SHOWN = 'bad \\x1b[2J\\x0acapsulebin-cli: forged \\u009b';
 
     it.each([
         { status: 400, exit: 6, what: 'title' },
@@ -2131,7 +2131,7 @@ describe('terminal output', () => {
         expect(await run(['get', link], io)).toBe(exit);
         expect(io.err()).toContain(FORGED_SHOWN);
         expectEscapedLines(io.err());
-        expect(io.err().match(/^capsulebin:/gm)).toHaveLength(1);
+        expect(io.err().match(/^capsulebin-cli:/gm)).toHaveLength(1);
     });
 
     it.each([
@@ -2147,8 +2147,8 @@ describe('terminal output', () => {
             const io = testIo();
             expect(await run(['get', link], io)).toBe(exit);
             expectEscapedLines(io.err());
-            expect(io.err().match(/^capsulebin:/gm)).toHaveLength(1);
-            expect(io.err()).not.toContain('\ncapsulebin: forged');
+            expect(io.err().match(/^capsulebin-cli:/gm)).toHaveLength(1);
+            expect(io.err()).not.toContain('\ncapsulebin-cli: forged');
         },
     );
 

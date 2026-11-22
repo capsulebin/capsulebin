@@ -2,7 +2,7 @@
  * Recipient-side flow: descriptor → (burn confirmation, password) → reveal
  * token → ciphertext → decrypted, validated capsule.
  *
- * Shared by the web view and `capsulebin get`, so both clients open a capsule
+ * Shared by the web view and `capsulebin-cli get`, so both clients open a capsule
  * through the same sequence of network calls and derivations. The two pauses
  * that need a human (burn confirmation, password entry) are hooks; this module
  * knows nothing about how either is presented.

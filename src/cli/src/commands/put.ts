@@ -1,5 +1,5 @@
 /**
- * `capsulebin put`: seal files or stdin into one capsule and upload it.
+ * `capsulebin-cli put`: seal files or stdin into one capsule and upload it.
  *
  * Everything is encrypted here, before the request; the server receives only
  * the public header, ciphertext and verifiers (ADR-001). The capsule is sealed
@@ -26,6 +26,7 @@ import {
 import { type CliError, usage, withDeleteLink } from '../exit';
 import { type Io, readBounded } from '../io';
 import { buildItem, type ItemInput, type Presentation } from '../items';
+import { PROGRAM } from '../program';
 import { creationToken, newPassword } from '../secrets';
 import { escapeDiagnostic, jsonLine } from '../terminal';
 
@@ -233,7 +234,7 @@ async function createWithRetry(
                 MAX_RETRY_DELAY_MS,
             );
             io.stderr.write(
-                `capsulebin: ${err.code === TIMEOUT ? 'timeout' : err.status === 0 ? 'network error' : `HTTP ${err.status}`}, retrying in ${Math.round(delay / 1000)}s (${attempt + 1}/${retries})\n`,
+                `${PROGRAM}: ${err.code === TIMEOUT ? 'timeout' : err.status === 0 ? 'network error' : `HTTP ${err.status}`}, retrying in ${Math.round(delay / 1000)}s (${attempt + 1}/${retries})\n`,
             );
             await io.sleep(delay);
         }

@@ -143,7 +143,16 @@ when `src/server/web/dist` has changed.
 ### Command line client
 
 `@capsulebin/cli` encrypts and decrypts locally with the same `@capsulebin/core` the web client
-runs, so a capsule created on one side opens on the other:
+runs, so a capsule created on one side opens on the other. Its command is `capsulebin-cli`, so it
+does not collide with the server binary `capsulebin`. A release ships it as one file; run it with
+Node.js 24 or newer, or put it on your `PATH` under that name:
+
+```sh
+node capsulebin-cli-1.0.0.mjs --help
+install -m 0755 capsulebin-cli-1.0.0.mjs ~/.local/bin/capsulebin-cli   # then: capsulebin-cli put …
+```
+
+From a checkout, build it and run the bundle:
 
 ```sh
 npm run build -w @capsulebin/cli
@@ -259,7 +268,7 @@ node src/cli/dist/cli.js delete --link-file notes.link
   whose password parameters the [crypto profile](docs/crypto-profile.md) refuses), `6` rejected by
   the server (token, size, expiry, rate limit), `7` unreachable or server error, `8` needs a
   password or burn confirmation (also a declined, interrupted or closed prompt).
-  `capsulebin --help` lists all options.
+  `capsulebin-cli --help` lists all options.
 - **`put` refuses a server URL whose path ends in an interface language code**
   (`https://example.org/team/de`, exit code `2`): links below it could not be told apart from the
   `/de/` language prefix of the pages. It also refuses one with a query or fragment, even an
