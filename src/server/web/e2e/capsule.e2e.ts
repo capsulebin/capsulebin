@@ -148,7 +148,7 @@ test('the management link deletes a capsule', async ({ page, context }) => {
  * that drops the answer on purpose.
  */
 const DROPPED_CONSOLE =
-    /^console error: (Failed to load resource: net::ERR_FAILED$|ApiError: network error\n|Error$)/;
+    /^console error: (Failed to load resource: net::ERR_FAILED$|ApiError: network error(\n|$)|Error$)/;
 
 test('"Try again" after a dropped answer creates the capsule once, with the delete link shown before', async ({
     browser,
