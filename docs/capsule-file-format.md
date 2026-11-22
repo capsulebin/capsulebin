@@ -103,7 +103,13 @@ Field rules:
   the decoder's problem to police.
 - **`items[].name`** — mandatory string, at most `255` UTF-8 bytes. Display
   and download name; never a filesystem path, never validated for path
-  traversal by the decoder because it is never used as one.
+  traversal by the decoder because it is never used as one. A client that
+  writes items to files derives the file name from it and must treat it as
+  untrusted: keep only the last path component, replace control characters
+  and characters common file systems refuse, never create a name starting
+  with a dot (a sender could otherwise place `.bash_profile` or `.envrc`),
+  and stay within the file system's name length (the reference CLI keeps
+  255 bytes including a ` (n)` suffix for taken names).
 - **`items[].size`** — mandatory non-negative integer, and must be a "safe
   integer" (exactly representable, matters for JSON's `f64` numbers in
   JavaScript). Must equal the number of raw bytes this item contributes.

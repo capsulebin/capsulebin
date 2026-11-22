@@ -1597,6 +1597,12 @@ describe('safeFileName', () => {
         ['a\u0000b\nc', 'a_b_c'],
         ['what?.txt', 'what_.txt'],
         ['a\u009bb\u0080c\u009f', 'a_b_c_'],
+        ['.bash_profile', '_bash_profile'],
+        ['..envrc', '__envrc'],
+        ['...', 'item-1'],
+        [' .npmrc ', '_npmrc'],
+        ['dir/.envrc', '_envrc'],
+        ['a.b', 'a.b'],
     ])('%j → %j', (name, expected) => {
         expect(safeFileName(name, 0)).toBe(expected);
     });
@@ -1605,6 +1611,34 @@ describe('safeFileName', () => {
         // eslint-disable-next-line no-control-regex
         const controls = /[\u0000-\u001f\u007f-\u009f]/;
         expect(safeFileName('\u009b31m\u001b[2Jx.txt', 0)).not.toMatch(controls);
+    });
+
+    const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+    // NAME_MAX (255) less the longest suffix ` (999)`.
+    const LIMIT = 249;
+
+    it('shortens a long name to leave room for a suffix, keeping a short extension', () => {
+        const name = safeFileName(`${'n'.repeat(300)}.txt`, 0);
+        expect(name).toBe(`${'n'.repeat(LIMIT - 4)}.txt`);
+        expect(bytes(name)).toBe(LIMIT);
+        expect(safeFileName('n'.repeat(LIMIT), 0)).toBe('n'.repeat(LIMIT));
+
+        const longExtension = safeFileName(`a.${'b'.repeat(300)}`, 0);
+        expect(longExtension).toBe(`a.${'b'.repeat(LIMIT - 2)}`);
+    });
+
+    it.each([
+        ['ä'.repeat(200) + '.md', '.md'],
+        ['😀'.repeat(100), ''],
+        ['a' + '漢'.repeat(120) + '.txt', '.txt'],
+    ])('cuts %j only between code points', (input, extension) => {
+        const name = safeFileName(input, 0);
+        expect(bytes(name)).toBeLessThanOrEqual(LIMIT);
+        expect(bytes(name)).toBeGreaterThan(LIMIT - 4);
+        expect(name.endsWith(extension)).toBe(true);
+        // No lone surrogate and no broken sequence: the name survives UTF-8.
+        expect(Buffer.from(name, 'utf8').toString('utf8')).toBe(name);
+        expect(input.startsWith(name.slice(0, name.length - extension.length))).toBe(true);
     });
 });
 
@@ -1822,13 +1856,13 @@ describe('file output', () => {
         expect(await run(['get', link], io), io.err()).toBe(0);
         expect(io.out()).toBe('');
         expect(io.err()).toContain(`created ${dir}\n`);
-        expect(wrotePaths(io)).toEqual([join(dir, '.capsulebin-probe')]);
+        expect(wrotePaths(io)).toEqual([join(dir, '_capsulebin-probe')]);
         expect(await readdir(cwd)).toEqual([name]);
-        expect(await readdir(dir)).toEqual(['.capsulebin-probe']);
-        expect(await readFile(join(dir, '.capsulebin-probe'), 'utf8')).toBe('probe');
+        expect(await readdir(dir)).toEqual(['_capsulebin-probe']);
+        expect(await readFile(join(dir, '_capsulebin-probe'), 'utf8')).toBe('probe');
         if (posix) {
             expect(await mode(dir)).toBe(0o700);
-            expect(await mode(join(dir, '.capsulebin-probe'))).toBe(0o600);
+            expect(await mode(join(dir, '_capsulebin-probe'))).toBe(0o600);
         }
 
         const json = testIo();
@@ -1837,7 +1871,7 @@ describe('file output', () => {
         const next = join(cwd, `${name} (1)`);
         expect(result.directory).toBe(next);
         expect(result.items.map((i: { path: string }) => i.path)).toEqual([
-            join(next, '.capsulebin-probe'),
+            join(next, '_capsulebin-probe'),
         ]);
         expect((await readdir(cwd)).sort()).toEqual([name, `${name} (1)`]);
     });
@@ -1861,10 +1895,10 @@ describe('file output', () => {
         expect(await run(['get', single, '--here', '--json'], one), one.err()).toBe(0);
         const result = JSON.parse(one.out());
         expect(result.directory).toBe(cwd);
-        expect(result.items[0].path).toBe(join(cwd, '.capsulebin-probe'));
-        expect(await readFile(join(cwd, '.capsulebin-probe'), 'utf8')).toBe('probe');
+        expect(result.items[0].path).toBe(join(cwd, '_capsulebin-probe'));
+        expect(await readFile(join(cwd, '_capsulebin-probe'), 'utf8')).toBe('probe');
         expect((await readdir(cwd)).sort()).toEqual([
-            '.capsulebin-probe',
+            '_capsulebin-probe',
             'a (1).txt',
             'a.txt',
             'b.txt',
@@ -1916,6 +1950,83 @@ describe('file output', () => {
         expect(result.directory).toBe(next);
         expect(result.items[0].path).toBe(join(next, name));
     });
+
+    it('never writes a name starting with a dot, also with --here or -o', async () => {
+        const link = await putFiles([
+            ['.bash_profile', 'echo owned'],
+            ['.envrc', 'export X=1'],
+        ]);
+        const names = ['_bash_profile', '_envrc'];
+
+        const intoNew = testIo();
+        expect(await run(['get', link], intoNew), intoNew.err()).toBe(0);
+        const dir = join(cwd, capsuleDir(link));
+        expect((await readdir(dir)).sort()).toEqual(names);
+
+        const out = join(cwd, 'out');
+        const intoDir = testIo();
+        expect(await run(['get', link, '-o', out], intoDir), intoDir.err()).toBe(0);
+        expect((await readdir(out)).sort()).toEqual(names);
+        expect(await readFile(join(out, '_bash_profile'), 'utf8')).toBe('echo owned');
+
+        const home = join(cwd, 'home');
+        await mkdir(home);
+        const here = { ...testIo(), cwd: home };
+        expect(await run(['get', link, '--here'], here), here.err()).toBe(0);
+        expect((await readdir(home)).sort()).toEqual(names);
+    });
+
+    it('keeps suffixed names of long item names within the name limit', async () => {
+        const long = `${'n'.repeat(251)}.txt`;
+        expect(Buffer.byteLength(long)).toBe(255);
+        const link = await putFiles([
+            [long, 'first'],
+            [long, 'second'],
+        ]);
+        const short = `${'n'.repeat(245)}.txt`;
+
+        const io = testIo();
+        expect(await run(['get', link, '--json'], io), io.err()).toBe(0);
+        const paths = JSON.parse(io.out()).items.map((i: { path: string }) => i.path);
+        const dir = join(cwd, capsuleDir(link));
+        expect(paths).toEqual([join(dir, short), join(dir, `${'n'.repeat(245)} (1).txt`)]);
+        expect(await readFile(paths[0], 'utf8')).toBe('first');
+        expect(await readFile(paths[1], 'utf8')).toBe('second');
+
+        // An existing entry at the shortened name in -o DIR: the next free name.
+        const out = join(cwd, 'out');
+        await mkdir(out);
+        await writeFile(join(out, short), 'kept');
+        for (let n = 1; n <= 2; n++)
+            await writeFile(join(out, `${'n'.repeat(245)} (${n}).txt`), 'kept');
+        const again = testIo();
+        expect(await run(['get', link, '-o', out, '--json'], again), again.err()).toBe(0);
+        const written = JSON.parse(again.out()).items.map((i: { path: string }) => i.path);
+        expect(written).toEqual([
+            join(out, `${'n'.repeat(245)} (3).txt`),
+            join(out, `${'n'.repeat(245)} (4).txt`),
+        ]);
+        expect(await readFile(join(out, short), 'utf8')).toBe('kept');
+    });
+
+    // Linux: PATH_MAX is 4096. A path that fits only with a short name makes
+    // the item's own name fail with ENAMETOOLONG; the item is still written.
+    it.skipIf(process.platform !== 'linux')(
+        'falls back to item-N when the file system refuses the name as too long',
+        async () => {
+            const name = `${'n'.repeat(200)}.txt`;
+            const link = await putFiles([[name, 'content']]);
+            let deep = join(cwd, 'deep');
+            while (deep.length < 4096 - 120) deep = join(deep, 'd'.repeat(100));
+            deep = deep.slice(0, 4096 - 120).replace(/\/+$/, '');
+
+            const io = testIo();
+            expect(await run(['get', link, '-o', deep, '--json'], io), io.err()).toBe(0);
+            const path = JSON.parse(io.out()).items[0].path;
+            expect(path).toBe(join(deep, 'item-1'));
+            expect(await readFile(path, 'utf8')).toBe('content');
+        },
+    );
 
     // Acceptance (AC17): the capsule's directory is created non-recursively, so an
     // existing directory of that name is not reused.
