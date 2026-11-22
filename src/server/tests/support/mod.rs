@@ -15,7 +15,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use capsulebin_server::api::assets::AssetSource;
 use capsulebin_server::config::{Config, CreationConfig, CreationMode, DatabaseConfig, PastesConfig, PurgeConfig, ServerConfig};
 use capsulebin_server::domain::clock::FixedClock;
-use capsulebin_server::domain::{PasteId, Verifier};
+use capsulebin_server::domain::{Label, PasteId, Verifier};
+use capsulebin_server::repository::CreationTokenRepository as _;
+use capsulebin_server::repository::sqlite::creation_tokens::SqliteCreationTokenRepository;
 use capsulebin_server::{AppState, router};
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
@@ -65,7 +67,7 @@ fn config(dir: &Path, mode: CreationMode, max_plaintext_size: capsulebin_server:
             mode,
             token_hashes: match mode {
                 CreationMode::Token => {
-                    vec![format!("sha256:{}", Verifier::for_creation_token(TOKEN.as_bytes()).encode())]
+                    vec![configured_hash(TOKEN)]
                 }
                 _ => Vec::new(),
             },
@@ -415,6 +417,61 @@ impl Harness {
                 .unwrap(),
         )
         .await
+    }
+}
+
+/// The `creation.token_hashes` entry for `token`.
+pub fn configured_hash(token: &str) -> String {
+    format!("sha256:{}", Verifier::for_creation_token(token.as_bytes()).encode())
+}
+
+/// A configuration file for the real binary over the harness's database and
+/// shells, with `public_url`, the creation `mode` and `token_hashes`.
+pub fn creation_config_file(h: &Harness, public_url: &str, mode: &str, token_hashes: &[String]) -> PathBuf {
+    let path = h.dir.join(format!("capsulebin-{mode}-{}.toml", token_hashes.len()));
+    let hashes: Vec<String> = token_hashes.iter().map(|hash| format!("\"{hash}\"")).collect();
+    std::fs::write(
+        &path,
+        format!(
+            "[server]\npublic_url = \"{public_url}\"\nasset_dir = \"{}\"\n\
+             [database]\npath = \"{}\"\n[creation]\nmode = \"{mode}\"\ntoken_hashes = [{}]\n",
+            h.dir.display(),
+            h.dir.join("capsulebin.db").display(),
+            hashes.join(", ")
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// Creation tokens kept in the harness's database, written through the
+/// repository on the same database file the server reads.
+impl Harness {
+    fn creation_tokens(&self) -> SqliteCreationTokenRepository {
+        SqliteCreationTokenRepository::new(self.pool.clone())
+    }
+
+    /// Stores `token` as an active database token with `label`; returns its id.
+    pub async fn issue_token(&self, token: &str, label: &str) -> String {
+        let label = Label::parse(label).unwrap();
+        self.creation_tokens()
+            .create(&Verifier::for_creation_token(token.as_bytes()), &label, START)
+            .await
+            .unwrap()
+            .id
+    }
+
+    pub async fn revoke_token(&self, id: &str) {
+        self.creation_tokens().revoke(id, START).await.unwrap();
+    }
+
+    /// `last_used_on` of the token with `id`, read straight from the table.
+    pub async fn token_last_used_on(&self, id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT last_used_on FROM creation_tokens WHERE id = ?1")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
     }
 }
 

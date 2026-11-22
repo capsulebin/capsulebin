@@ -56,6 +56,16 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   capsule's metadata; its ciphertext is read only when the request can still be an identical
   replay, so a small request with a taken id cannot make the server load a large payload.
 - Creation modes `token`, `public` and `disabled` (read-only), defaulting to `token`.
+- Creation tokens kept in the database
+  ([ADR-019](docs/adr/ADR-019-creation-tokens-in-the-database.md)): `capsulebin token create
+  [--label …]` issues one and prints it with its invitation link, `token list [--json]` shows every
+  token (active and revoked, with the day it was last used), `token revoke <id>` withdraws one for
+  good — while the server runs, effective from the next create. Only the token's hash, the label,
+  the creation and revocation time and the day of last use are stored; capsules are not linked to
+  tokens. `creation.token_hashes` keeps working alongside them. A `token`-mode instance without any
+  token starts with a warning instead of refusing to start, and `serve` and `check` warn about
+  database tokens that have no effect in `public` or `disabled` mode. `restore` carries the replaced
+  database's tokens and revocations into the restored one, so it never brings back a revoked token.
 - Retention rules (expired, never retrieved, inactive) with a scheduled daily purge and `prune`.
 - A paste id is never used twice: a purged capsule leaves only its id behind, and creating a
   capsule under it answers `409 id_conflict` like an occupied id, so an old link can never open
@@ -108,7 +118,8 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
   without one the default language's text is shown, marked with its `lang`. The built-in privacy
   notice names moderation (reason and time, removal after a report), the creation token a browser
-  may store (`capsulebin.creation_token`), and says that an expired capsule is removed by the next
+  may store (`capsulebin.creation_token`), what is stored per creation token kept in the database,
+  and says that an expired capsule is removed by the next
   clean-up.
 - Operator branding (`[branding]`, [ADR-017](docs/adr/ADR-017-operator-branding.md)): the instance
   name, a slogan (per language with `[branding.<lang>]`), a header logo with an optional dark-theme

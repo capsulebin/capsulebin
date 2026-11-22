@@ -73,8 +73,9 @@ browser, and sends it only as the bearer of the create request.**
   and a new API surface; the mode is fixed per run, so the page can carry it. Revealing it
   discloses nothing new: an unauthorized create already answers `401` or `403`.
 - **An admin UI to issue, list or revoke tokens.** It needs operator authentication on the web,
-  which CapsuleBin does not have; `capsulebin token` and the configured hashes stay the only
-  management.
+  which CapsuleBin does not have; tokens are managed with the operator CLI only: the configured
+  hashes, and since [ADR-019](ADR-019-creation-tokens-in-the-database.md) tokens kept in the
+  database (`capsulebin token create|list|revoke`).
 - **Discovering the mode from a `401` after submitting.** The person would write a draft that can
   never be sent.
 - **Not remembering by default.** Every visit would need the token again; protection is the
@@ -91,7 +92,7 @@ browser, and sends it only as the bearer of the create request.**
 - The browser holds a credential. A script running on the instance's origin can read it; the
   strict CSP, Trusted Types and the absence of third-party resources (ADR-005) are what protect
   it. Whoever has the browser profile or the invitation link has the token, until the operator
-  removes its hash.
+  removes its hash or revokes it (ADR-019).
 - `localStorage` holds a third key next to the theme and the language; the built-in privacy notice
   (English and German) names it, when it is stored, when it is sent and how to remove it. This
   widens ADR-005's rule that only the theme and the language are stored; ADR-005 names the token
@@ -105,3 +106,7 @@ browser, and sends it only as the bearer of the create request.**
   still printed. The new lines come after the existing ones, so scripts that read the token from
   line 2 and the `sha256:` line keep working.
 - The CLI does not accept an invitation link as a token source.
+- Tokens kept in the database, issued and revoked while the server runs, are
+  [ADR-019](ADR-019-creation-tokens-in-the-database.md); `capsulebin token create` prints the same
+  invitation link. The browser side is unchanged: a revoked token gets `401` and is forgotten like
+  any refused one.

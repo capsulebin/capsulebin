@@ -31,6 +31,10 @@ pub(crate) async fn serve(resolved: Resolved, bind_override: Option<String>) -> 
     for warning in db::permission_warnings(&resolved.config.database) {
         tracing::warn!("{warning}");
     }
+    // Token mode without any token, or database tokens without effect.
+    if let Some(warning) = state.creation_token_warning().await.context("could not read the creation tokens")? {
+        tracing::warn!("{warning}");
+    }
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

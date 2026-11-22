@@ -100,6 +100,15 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
          wird. Die technischen Daten der Kapsel, ohne Inhalt, bleiben erhalten, bis eine der Regeln \
          oben sie entfernt. Ist eine Kapsel entfernt, bleibt nur ihre Kennung erhalten, damit sie nie \
          für eine andere Kapsel verwendet werden kann.\n\n\
+         ## Erstellungstokens\n\n\
+         Wenn zum Erstellen einer Kapsel ein Erstellungstoken nötig ist, können wir die Tokens, die \
+         wir ausgeben, in unserer Datenbank führen. Zu jedem davon speichern wir nur einen Prüfwert \
+         (Hash) des Tokens, eine Bezeichnung, die wir ihm geben, wann es erstellt und wann es \
+         widerrufen wurde, und den Tag seiner letzten Verwendung – nur den Tag, nicht jede Verwendung. \
+         Kapseln werden nicht mit dem Token verknüpft, mit dem sie erstellt wurden. Der Eintrag eines \
+         widerrufenen Tokens bleibt erhalten, damit das Token widerrufen bleibt. Rechtsgrundlage: \
+         Art. 6 Abs. 1 lit. f DSGVO, unser berechtigtes Interesse daran, zu bestimmen, wer Kapseln \
+         erstellen kann.\n\n\
          ## IP-Adressen und Server-Logs\n\n",
     );
     if f.client_ip_limits {

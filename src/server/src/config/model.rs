@@ -514,7 +514,8 @@ pub enum CreationMode {
     /// Read-only instance: existing pastes stay retrievable, nothing new is
     /// accepted.
     Disabled,
-    /// A bearer token from `token_hashes` is required.
+    /// A bearer token is required: one from `token_hashes` or an active one
+    /// from the database.
     Token,
     /// Anyone may create. Only sensible behind another access control.
     Public,
@@ -567,12 +568,9 @@ impl CreationConfig {
             creation_tokens.push(verifier);
         }
 
-        // Token mode without tokens accepts nothing, which looks like a broken
-        // server rather than a configuration mistake. Fail loudly instead.
-        if self.mode == CreationMode::Token && creation_tokens.is_empty() {
-            return Err(invalid("creation.mode is \"token\" but creation.token_hashes is empty".to_owned()));
-        }
-
+        // Token mode without configured hashes is valid: the tokens may live in
+        // the database. `serve` and `check` warn when there is none at all
+        // (`creation_token_warning` in the crate root).
         if self.mode != CreationMode::Token && !creation_tokens.is_empty() {
             return Err(invalid(format!(
                 "creation.token_hashes is set but creation.mode is {:?}; \
