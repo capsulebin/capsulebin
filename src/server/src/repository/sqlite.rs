@@ -9,11 +9,32 @@ use crate::domain::{Availability, NewPaste, Paste, PurgeOutcome, PurgePolicy};
 #[derive(Debug, Clone)]
 pub struct SqlitePasteRepository {
     pool: SqlitePool,
+    /// How often a query read a ciphertext blob, shared by every clone.
+    #[cfg(test)]
+    payload_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl SqlitePasteRepository {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            #[cfg(test)]
+            payload_reads: std::sync::Arc::default(),
+        }
+    }
+
+    /// Number of ciphertext blobs read so far (`find`, `load_ciphertext`,
+    /// `retrieve_and_burn`), so a test can prove a path never loads a payload.
+    #[cfg(test)]
+    pub(crate) fn payload_reads(&self) -> usize {
+        self.payload_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Counts one ciphertext read for [`Self::payload_reads`]; does nothing
+    /// outside tests.
+    fn count_payload_read(&self) {
+        #[cfg(test)]
+        self.payload_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -156,6 +177,7 @@ impl PasteRepository for SqlitePasteRepository {
     }
 
     async fn find(&self, id: &PasteId) -> Result<Option<Paste>, RepositoryError> {
+        self.count_payload_read();
         let row = sqlx::query(assembled(format!("SELECT {SELECT_COLUMNS} FROM pastes WHERE id = ?1")))
             .bind(id.encode())
             .fetch_optional(&self.pool)
@@ -179,6 +201,7 @@ impl PasteRepository for SqlitePasteRepository {
     }
 
     async fn load_ciphertext(&self, id: &PasteId, now: i64) -> Result<Option<Vec<u8>>, RepositoryError> {
+        self.count_payload_read();
         let ciphertext: Option<Option<Vec<u8>>> = sqlx::query_scalar(
             "SELECT ciphertext FROM pastes
               WHERE id = ?1
@@ -220,6 +243,7 @@ impl PasteRepository for SqlitePasteRepository {
     }
 
     async fn retrieve_and_burn(&self, id: &PasteId, now: i64) -> Result<Option<BurnedPayload>, RepositoryError> {
+        self.count_payload_read();
         // `BEGIN IMMEDIATE`: a deferred `BEGIN` takes its read snapshot at the
         // first statement and only asks for the write lock at the UPDATE. In
         // WAL mode, if another connection commits a conflicting write in

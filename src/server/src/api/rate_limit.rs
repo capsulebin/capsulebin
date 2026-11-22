@@ -40,8 +40,9 @@
 //! decides by its own rule. The client table evicts its least recently used
 //! bucket - that address starts afresh, which costs nothing an attacker with
 //! many addresses does not already have. The paste table never evicts a
-//! budget: a wrong password on a paste it does not track is refused, a correct
-//! one passes (see [`LimiterState::password_attempt`]). A saturated table logs
+//! budget: every attempt on a paste it has no slot for, correct or wrong,
+//! draws on one shared overflow budget (see
+//! [`LimiterState::password_attempt`]). A saturated table logs
 //! a warning at most once a minute, naming the table and its ceiling, never an
 //! address or an id.
 
@@ -374,7 +375,8 @@ enum WhenFull {
     /// attacker with many addresses gets fresh budgets anyway.
     EvictOldest,
     /// Track nothing new. Right for paste buckets: evicting one would reset a
-    /// password budget, so flooding the table would unlock new guesses.
+    /// password budget, so flooding the table would unlock new guesses. The
+    /// keys without a slot share the table's overflow budget instead.
     Refuse,
 }
 
@@ -408,6 +410,9 @@ struct Table<K> {
     cursor: usize,
     last_warning: Option<Instant>,
     warning_due: bool,
+    /// For a [`WhenFull::Refuse`] table: the one budget the keys it has no
+    /// slot for share, created on first use.
+    overflow: Option<Bucket>,
     /// Entries visited by the last admission.
     #[cfg(test)]
     visits: usize,
@@ -426,6 +431,7 @@ impl<K: Copy + Eq + Hash> Table<K> {
             cursor: 0,
             last_warning: None,
             warning_due: false,
+            overflow: None,
             #[cfg(test)]
             visits: 0,
         }
@@ -464,9 +470,7 @@ impl<K: Copy + Eq + Hash> Table<K> {
 
     /// Adds a bucket for `key`, which has none.
     fn insert(&mut self, key: K, spec: Spec, now: Instant) -> Option<usize> {
-        self.reclaim(now);
-        if self.entries.len() >= self.ceiling {
-            self.note_saturation(now);
+        if !self.has_room(now) {
             match self.when_full {
                 WhenFull::Refuse => return None,
                 WhenFull::EvictOldest => {
@@ -478,6 +482,23 @@ impl<K: Copy + Eq + Hash> Table<K> {
                 }
             }
         }
+        Some(self.push(key, spec, now))
+    }
+
+    /// Whether a new key would get a slot without an eviction: below the
+    /// ceiling once the sweep has reclaimed what it can. Takes the same bounded
+    /// step as an insertion, which it precedes, and notes a full table.
+    fn has_room(&mut self, now: Instant) -> bool {
+        self.reclaim(now);
+        let room = self.entries.len() < self.ceiling;
+        if !room {
+            self.note_saturation(now);
+        }
+        room
+    }
+
+    /// Adds a bucket for `key`, which has none, in a slot that is free.
+    fn push(&mut self, key: K, spec: Spec, now: Instant) -> usize {
         let slot = self.entries.len();
         self.entries.push(Entry {
             key,
@@ -488,11 +509,16 @@ impl<K: Copy + Eq + Hash> Table<K> {
         });
         self.slots.insert(key, slot);
         self.push_newest(slot);
-        Some(slot)
+        slot
     }
 
     fn bucket(&mut self, slot: usize) -> &mut Bucket {
         &mut self.entries[slot].bucket
+    }
+
+    /// The budget shared by the keys this table has no slot for.
+    fn overflow(&mut self, spec: Spec, now: Instant) -> &mut Bucket {
+        self.overflow.get_or_insert_with(|| Bucket::new(spec, now))
     }
 
     /// Walks the sweep cursor [`SWEEP_STEP`] slots on and drops every bucket
@@ -602,7 +628,7 @@ impl SaturationWarning {
             WhenFull::Refuse => tracing::warn!(
                 table,
                 ceiling,
-                "rate limiter table full: wrong passwords on capsules without a bucket are refused until buckets refill"
+                "rate limiter table full: password attempts on capsules without a bucket share one overflow budget until buckets refill"
             ),
         }
     }
@@ -696,8 +722,9 @@ impl LimiterState {
 
     /// The per-paste limit on password attempts: admits one attempt on `paste`
     /// by a link holder, and uses up a token if it `failed` (wrong password).
-    /// `Err(seconds)` when the paste has no attempts left; always `Ok` when the
-    /// limit is switched off.
+    /// `Err(seconds)` when the paste has no attempts left, or when it has no
+    /// bucket and must share an overflow budget that is used up (below);
+    /// always `Ok` when the limit is switched off.
     ///
     /// Called by the retrieve handler with the id it looked up, never by the
     /// middleware: only the handler knows whether the caller proved the link.
@@ -712,14 +739,21 @@ impl LimiterState {
     /// all pass the check before any of them was charged.
     ///
     /// A paste without a bucket has its whole budget, so a correct password
-    /// creates none. With the paste table at its ceiling and nothing to
-    /// reclaim, a wrong password on such a paste is refused: no budget is ever
-    /// evicted to make room, and admitting it without one would be an unlimited
-    /// guessing path. Correct passwords still pass, so whoever fills the table
-    /// with pastes of their own cannot lock others out. The refusal's
-    /// `Retry-After` is the time one token takes to refill (6 s at the
-    /// default), not a full refill: that is when a tracked paste would admit
-    /// the next attempt. A slot in the table may free up only later.
+    /// creates none and, while the paste table has room, passes. Whether it has
+    /// room is decided by the same bounded sweep as an insertion, so a correct
+    /// password never fills the table. With the table at its ceiling and nothing
+    /// to reclaim, no budget is ever evicted to make room, and admitting a
+    /// paste without one would be an unlimited guessing path. Then every
+    /// attempt on an untracked paste, correct or wrong, takes a token from one
+    /// overflow budget shared by all such pastes, with the per-paste spec: the
+    /// answer must not depend on the password, or the difference between a
+    /// pass and a `429` would tell a link holder which guess is right without
+    /// spending any budget. Flooding the table thus never gives more guesses on
+    /// a paste than a tracked one allows; the price is that first retrieves
+    /// share that budget while the table stays full. Tracked pastes keep using
+    /// their own bucket only. A refusal's `Retry-After` is the time one token
+    /// of the refusing bucket takes to refill (6 s at the default), not a full
+    /// refill.
     pub fn password_attempt(&self, paste: PasteId, failed: bool) -> Result<(), u64> {
         let Some(spec) = self.inner.config.spec(BucketKind::InvalidCapabilityPerPaste) else {
             return Ok(());
@@ -727,21 +761,17 @@ impl LimiterState {
         let now = (self.inner.now)();
         let (result, warning) = {
             let mut pastes = lock(&self.inner.pastes);
-            let slot = match pastes.find(&paste) {
-                Some(slot) => Some(slot),
-                None if !failed => return Ok(()),
-                None => pastes.insert(paste, spec, now),
-            };
-            let result = match slot {
-                Some(slot) => {
-                    let bucket = pastes.bucket(slot);
-                    bucket.check(spec, now).map(|()| {
-                        if failed {
-                            bucket.tokens -= 1.0;
-                        }
-                    })
+            let result = match pastes.find(&paste) {
+                Some(slot) => charge_attempt(pastes.bucket(slot), spec, now, failed),
+                None if pastes.has_room(now) => {
+                    if failed {
+                        let slot = pastes.push(paste, spec, now);
+                        charge_attempt(pastes.bucket(slot), spec, now, failed)
+                    } else {
+                        Ok(())
+                    }
                 }
-                None => Err(spec.seconds_to_refill(1.0)),
+                None => pastes.overflow(spec, now).try_consume(spec, 1.0, now),
             };
             (result, pastes.take_warning())
         };
@@ -781,6 +811,16 @@ fn problem(state: &LimiterState, request_id: &str, error: ApiError) -> Response 
 
 fn too_many_requests(state: &LimiterState, request_id: &str, retry_after: u64) -> Response {
     with_retry_after(problem(state, request_id, ApiError::RateLimited), retry_after)
+}
+
+/// Admits a password attempt on a paste's own bucket, taking a token only if
+/// it `failed`.
+fn charge_attempt(bucket: &mut Bucket, spec: Spec, now: Instant, failed: bool) -> Result<(), u64> {
+    bucket.check(spec, now).map(|()| {
+        if failed {
+            bucket.tokens -= 1.0;
+        }
+    })
 }
 
 /// Takes one token, never below zero: used after the fact, when the request
@@ -1142,21 +1182,135 @@ mod tests {
         assert_eq!(state.password_attempt(target, true), Ok(()));
     }
 
-    #[test]
-    fn untracked_pastes_refuse_wrong_passwords_when_saturated() {
-        let (state, _clock) = bounded(RateLimitConfig::default(), 10, 10);
-        for n in 0..10 {
-            assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+    /// Fills the paste table up to `ceiling` with buckets two wrong passwords
+    /// into their budget: none is full again after one token's refill time,
+    /// so nothing is reclaimable while the tests move the clock by that much.
+    fn fill_pastes(state: &LimiterState, ceiling: u32) {
+        for n in 0..ceiling {
+            for _ in 0..2 {
+                assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+            }
         }
+        assert_eq!(sizes(state).1, ceiling as usize);
+    }
+
+    /// Tokens left in the bucket of a tracked `paste`.
+    fn tokens(state: &LimiterState, paste: PasteId) -> f64 {
+        let pastes = lock(&state.inner.pastes);
+        pastes.entries[pastes.slots[&paste]].bucket.tokens
+    }
+
+    /// The overflow budget answers correct and wrong attempts alike, so a
+    /// full table is no oracle for the password.
+    #[test]
+    fn untracked_pastes_share_the_overflow_budget_when_saturated() {
+        let (state, _clock) = bounded(RateLimitConfig::default(), 10, 10);
+        fill_pastes(&state, 10);
         let untracked = paste(1_000);
 
-        assert_eq!(state.password_attempt(untracked, false), Ok(()));
+        for n in 0..10 {
+            assert_eq!(state.password_attempt(untracked, n % 2 == 1), Ok(()), "attempt {n}");
+        }
+        let correct = state.password_attempt(untracked, false);
+        let wrong = state.password_attempt(untracked, true);
         assert!(
-            state.password_attempt(untracked, true).is_err_and(|wait| wait > 0),
-            "a wrong password on an untracked paste passed a full table"
+            correct.is_err_and(|wait| wait > 0),
+            "a correct password passed an empty overflow budget"
         );
+        assert_eq!(correct, wrong, "correct and wrong passwords were answered differently");
         assert_eq!(sizes(&state), (0, 10));
         assert!(!lock(&state.inner.pastes).slots.contains_key(&untracked));
+    }
+
+    #[test]
+    fn the_overflow_budget_is_shared_by_all_untracked_pastes() {
+        let (state, clock) = bounded(RateLimitConfig::default(), 10, 10);
+        fill_pastes(&state, 10);
+
+        for n in 0..10 {
+            assert_eq!(state.password_attempt(paste(1_000 + n), n % 2 == 0), Ok(()), "attempt {n}");
+        }
+        let other = paste(2_000);
+        let Err(wait) = state.password_attempt(other, false) else {
+            panic!("a correct password on another untracked paste passed an empty overflow budget");
+        };
+        assert_eq!(state.password_attempt(other, true), Err(wait));
+        assert_eq!(wait, 6, "one token of 10 a minute");
+
+        clock.advance(Duration::from_secs(wait));
+        assert_eq!(state.password_attempt(paste(3_000), false), Ok(()));
+        // That was the one refilled token.
+        assert_eq!(state.password_attempt(paste(3_001), false), Err(wait));
+        assert_eq!(sizes(&state), (0, 10));
+    }
+
+    #[test]
+    fn tracked_pastes_ignore_an_empty_overflow_budget() {
+        let (state, _clock) = bounded(RateLimitConfig::default(), 10, 10);
+        fill_pastes(&state, 10);
+        for n in 0..10 {
+            assert_eq!(state.password_attempt(paste(1_000 + n), true), Ok(()));
+        }
+        assert!(state.password_attempt(paste(2_000), false).is_err());
+
+        let tracked = paste(0);
+        assert_eq!(tokens(&state, tracked), 8.0);
+        assert_eq!(state.password_attempt(tracked, false), Ok(()));
+        assert_eq!(tokens(&state, tracked), 8.0, "a correct password was charged");
+        assert_eq!(state.password_attempt(tracked, true), Ok(()));
+        assert_eq!(tokens(&state, tracked), 7.0);
+        assert!(
+            state.password_attempt(paste(2_000), true).is_err(),
+            "the overflow budget was refilled"
+        );
+
+        let drained = paste(1);
+        for _ in 0..8 {
+            assert_eq!(state.password_attempt(drained, true), Ok(()));
+        }
+        let Err(wait) = state.password_attempt(drained, true) else {
+            panic!("a wrong password passed a used-up budget");
+        };
+        assert_eq!(state.password_attempt(drained, false), Err(wait));
+    }
+
+    #[test]
+    fn the_overflow_budget_is_untouched_while_the_table_has_room() {
+        let (state, _clock) = bounded(RateLimitConfig::default(), 10, 10);
+        // A free slot.
+        for n in 0..20 {
+            assert_eq!(state.password_attempt(paste(n), false), Ok(()), "correct attempt {n}");
+        }
+        assert_eq!(sizes(&state).1, 0, "a correct password created a bucket");
+        assert_eq!(state.password_attempt(paste(100), true), Ok(()));
+        assert!(lock(&state.inner.pastes).slots.contains_key(&paste(100)));
+        assert!(lock(&state.inner.pastes).overflow.is_none(), "the overflow budget was charged");
+
+        // Reclaimable slots only: every bucket of the full table has refilled.
+        let (state, clock) = bounded(RateLimitConfig::default(), 10, 10);
+        fill_pastes(&state, 10);
+        clock.advance(Duration::from_secs(60));
+        for n in 1_000..1_020 {
+            assert_eq!(state.password_attempt(paste(n), false), Ok(()), "correct attempt {n}");
+        }
+        assert_eq!(state.password_attempt(paste(2_000), true), Ok(()));
+        assert!(lock(&state.inner.pastes).slots.contains_key(&paste(2_000)));
+        assert!(lock(&state.inner.pastes).overflow.is_none(), "the overflow budget was charged");
+    }
+
+    #[test]
+    fn no_overflow_budget_without_the_per_paste_limit() {
+        let config = RateLimitConfig {
+            invalid_capability_per_paste: limit(0, 0, 0),
+            ..RateLimitConfig::default()
+        };
+        let (state, _clock) = bounded(config, 10, 10);
+        for n in 0..100 {
+            assert_eq!(state.password_attempt(paste(n), true), Ok(()));
+            assert_eq!(state.password_attempt(paste(n), false), Ok(()));
+        }
+        assert_eq!(sizes(&state), (0, 0));
+        assert!(lock(&state.inner.pastes).overflow.is_none());
     }
 
     #[test]
@@ -1276,6 +1430,167 @@ mod tests {
                 "a paste id was logged: {text}"
             );
         }
+    }
+
+    /// A correct password that meets the full table counts as saturation too,
+    /// although it never asks for a bucket.
+    #[test]
+    fn correct_passwords_on_a_full_table_warn_once_a_minute() {
+        // An hourly refill: no bucket becomes full while the clock moves a minute.
+        let config = RateLimitConfig {
+            invalid_capability_per_paste: limit(0, 1, 5),
+            ..RateLimitConfig::default()
+        };
+        let (state, clock) = bounded(config.clone(), 5, 5);
+        let ids = |n: u32| paste(0xc0ff_ee00 + n);
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).with_ansi(false).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // See `saturation_warns_once_a_minute_without_identifiers`.
+            let warm = bounded(config, 1, 1).0;
+            let _ = warm.password_attempt(ids(100), true);
+            let _ = warm.password_attempt(ids(101), true);
+            tracing::callsite::rebuild_interest_cache();
+            lock(&capture.0).clear();
+
+            for n in 0..5 {
+                assert_eq!(state.password_attempt(ids(n), true), Ok(()));
+            }
+            assert_eq!(capture.warnings("paste"), 0, "the table is not full yet");
+            let _ = state.password_attempt(ids(10), false);
+            assert_eq!(capture.warnings("paste"), 1);
+            let _ = state.password_attempt(ids(11), false);
+            clock.advance(Duration::from_secs(59));
+            let _ = state.password_attempt(ids(12), false);
+            assert_eq!(capture.warnings("paste"), 1);
+            clock.advance(Duration::from_secs(1));
+            let _ = state.password_attempt(ids(13), false);
+            assert_eq!(capture.warnings("paste"), 2);
+        });
+
+        let text = capture.text();
+        assert!(text.contains("ceiling=5"), "the warning does not name the ceiling: {text}");
+        for n in 0..14 {
+            let id = ids(n);
+            assert!(
+                !text.contains(&id.encode()) && !text.contains(&id.prefix()),
+                "a paste id was logged: {text}"
+            );
+        }
+    }
+
+    /// Through the retrieve handler: at a full paste table with the overflow
+    /// budget used up, the right and a wrong password on an untracked paste
+    /// get the same `429`, and the refusal comes before the burn.
+    #[tokio::test]
+    async fn a_saturated_retrieve_answers_correct_and_wrong_passwords_alike() {
+        use crate::test_support::{self, REVEAL_TOKEN, TestServer};
+
+        const CEILING: u32 = 4;
+        let (mut app_state, _wall_clock) = test_support::state("saturated-retrieve", |_| {}).await;
+        let (limiter, clock) = bounded(RateLimitConfig::default(), 100, CEILING as usize);
+        app_state.limiter = limiter.clone();
+        let server = TestServer::new(app_state);
+
+        let ciphertext = b"\x00\xffsealed capsule".to_vec();
+        for n in 0..=CEILING + 1 {
+            let answer = server.create(&test_support::create_body(&paste(n), &ciphertext)).await;
+            assert_eq!(answer.status, StatusCode::CREATED);
+        }
+        let target = paste(100);
+        let mut body = test_support::create_body(&target, &ciphertext);
+        body["burn_after_retrieval"] = serde_json::json!(true);
+        assert_eq!(server.create(&body).await.status, StatusCode::CREATED);
+
+        // Wrong passwords on other pastes fill the table, two each so that no
+        // bucket is full again after one token's refill time.
+        for n in 0..CEILING {
+            for _ in 0..2 {
+                assert_eq!(server.retrieve(&paste(n), b"guess").await.status, StatusCode::NOT_FOUND);
+            }
+        }
+        // Another untracked paste uses up the overflow budget.
+        let decoy = paste(CEILING);
+        for _ in 0..10 {
+            assert_eq!(server.retrieve(&decoy, b"guess").await.status, StatusCode::NOT_FOUND);
+        }
+        assert_eq!(sizes(&limiter).1, CEILING as usize);
+
+        let correct = server.retrieve(&target, REVEAL_TOKEN).await;
+        let wrong = server.retrieve(&target, b"guess").await;
+        assert_eq!(correct.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(wrong.status, correct.status);
+        assert_eq!(correct.header("retry-after"), Some("6"));
+        assert_eq!(wrong.header("retry-after"), correct.header("retry-after"));
+        let without_request_id = |answer: &test_support::Answer| {
+            let mut json = answer.json();
+            let object = json.as_object_mut().expect("a problem object");
+            assert!(object.remove("request_id").is_some());
+            assert!(object.remove("instance").is_none());
+            json
+        };
+        assert_eq!(correct.json()["code"], "rate_limited");
+        assert_eq!(without_request_id(&correct), without_request_id(&wrong));
+
+        clock.advance(Duration::from_secs(6));
+        let opened = server.retrieve(&target, REVEAL_TOKEN).await;
+        assert_eq!(opened.status, StatusCode::OK);
+        assert_eq!(opened.json()["ciphertext"], test_support::b64(&ciphertext));
+        // Burned by that retrieve, not by the refused ones before it.
+        clock.advance(Duration::from_secs(60));
+        let burned = server.retrieve(&target, REVEAL_TOKEN).await;
+        assert_eq!(burned.status, StatusCode::NOT_FOUND);
+    }
+
+    /// AC4 at the handler level: with room in the paste table, correct
+    /// retrieves on untracked pastes pass and neither take a slot nor touch the
+    /// overflow budget; after the table is filled, the overflow budget still
+    /// holds its whole burst.
+    #[tokio::test]
+    async fn correct_retrieves_with_room_spend_neither_slots_nor_overflow() {
+        use crate::test_support::{self, REVEAL_TOKEN, TestServer, create_body};
+
+        const CEILING: u32 = 4;
+        let (mut app_state, _wall) = test_support::state("acceptance-room", |_| {}).await;
+        // The limiter clock is never advanced: no bucket refills, nothing is reclaimed.
+        let (limiter, _clock) = bounded(RateLimitConfig::default(), 100, CEILING as usize);
+        app_state.limiter = limiter.clone();
+        let server = TestServer::new(app_state);
+
+        let ciphertext = b"sealed".to_vec();
+        for n in 0..40 {
+            assert_eq!(
+                server.create(&create_body(&paste(n), &ciphertext)).await.status,
+                StatusCode::CREATED
+            );
+        }
+
+        // 20 correct retrieves on distinct untracked pastes: all pass.
+        for n in 20..40 {
+            assert_eq!(server.retrieve(&paste(n), REVEAL_TOKEN).await.status, StatusCode::OK, "paste {n}");
+        }
+        assert_eq!(sizes(&limiter).1, 0, "a correct retrieve took a slot");
+        // Had they taken slots, the table would be full and these wrong
+        // attempts would hit the overflow budget instead of getting buckets.
+        for n in 0..CEILING {
+            for _ in 0..2 {
+                assert_eq!(server.retrieve(&paste(n), b"guess").await.status, StatusCode::NOT_FOUND);
+            }
+        }
+        // Now full: the overflow budget must still have all 10 tokens.
+        let untracked = paste(CEILING);
+        for attempt in 0..10 {
+            let token: &[u8] = if attempt % 2 == 0 { REVEAL_TOKEN } else { b"guess" };
+            let status = server.retrieve(&untracked, token).await.status;
+            assert_ne!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "attempt {attempt}: overflow was charged earlier"
+            );
+        }
+        let refused = server.retrieve(&untracked, REVEAL_TOKEN).await;
+        assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(refused.header("retry-after"), Some("6"));
     }
 
     #[test]

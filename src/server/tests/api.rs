@@ -63,23 +63,58 @@ async fn an_identical_create_is_a_replay_not_a_conflict() {
     assert_eq!(replay.json(), first.json());
 }
 
+/// Every mismatch is the same `409`: its body, apart from the request id, is
+/// the one an occupied id gives a request from someone else, whichever field
+/// differed and whether or not the payload had to be compared.
 #[tokio::test]
 async fn a_replay_must_match_every_capability_and_option() {
     let h = harness("replay-mismatch").await;
     h.post("/api/v1/pastes", create_body(&id(21))).await;
 
-    let mutations: [(&str, serde_json::Value); 4] = [
+    let mut same_length = ciphertext();
+    same_length[0] ^= 1;
+    let mutations: [(&str, serde_json::Value); 8] = [
         ("reveal_verifier", serde_json::json!(Verifier::for_reveal_token(b"other").encode())),
         ("delete_verifier", serde_json::json!(Verifier::for_delete_secret(b"other").encode())),
+        (
+            "describe_verifier",
+            serde_json::json!(Verifier::for_describe_token(b"other").encode()),
+        ),
         ("public_header", serde_json::json!(b64(&[0xAA, 0xBB]))),
         ("expires_in", serde_json::json!(3600)),
+        ("burn_after_retrieval", serde_json::json!(true)),
+        ("ciphertext", serde_json::json!(b64(b"a ciphertext of another length"))),
+        ("ciphertext", serde_json::json!(b64(&same_length))),
     ];
+
+    let mut foreign = create_body(&id(21));
+    foreign["public_header"] = serde_json::json!(b64(&[0x11, 0x22, 0x33]));
+    foreign["ciphertext"] = serde_json::json!(b64(b"someone else's content"));
+    foreign["reveal_verifier"] = serde_json::json!(Verifier::for_reveal_token(b"foreign").encode());
+    foreign["delete_verifier"] = serde_json::json!(Verifier::for_delete_secret(b"foreign").encode());
+    foreign["describe_verifier"] = serde_json::json!(Verifier::for_describe_token(b"foreign").encode());
+    let occupied = h.post("/api/v1/pastes", foreign).await;
+    assert_eq!(occupied.status, StatusCode::CONFLICT);
+    assert_eq!(occupied.code(), "id_conflict");
+
     for (field, value) in mutations {
         let mut body = create_body(&id(21));
         body[field] = value;
         let answer = h.post("/api/v1/pastes", body).await;
         assert_eq!(answer.status, StatusCode::CONFLICT, "a different {field} was accepted as a replay");
+        assert_eq!(
+            without_request_id(&answer),
+            without_request_id(&occupied),
+            "the conflict for a different {field} differs from an occupied id's"
+        );
     }
+}
+
+/// A problem body without its request id, which is unique per request.
+fn without_request_id(answer: &Answer) -> serde_json::Value {
+    let mut json = answer.json();
+    json["request_id"] = serde_json::json!("");
+    json
 }
 
 #[tokio::test]

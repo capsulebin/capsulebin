@@ -19,17 +19,25 @@ No separate key and no table: **the paste id is the idempotency key.** It is alr
 client-generated randomness, unique per sealed paste, and the server already rejects a second insert
 under it.
 
-When an insert hits an existing id, the server loads that row and answers `201` with the original
-`CreateResponse` if — and only if — the request is a replay of the one that created it
-(`Paste::is_replayed_by`):
+When an insert hits an existing id, the server answers `201` with the original `CreateResponse` if
+— and only if — the request is a replay of the one that created it:
 
-- reveal, delete and describe verifiers, public header and ciphertext are identical, compared in
-  constant time with every comparison evaluated;
+- reveal, delete and describe verifiers and public header are identical, compared in constant time
+  with every comparison evaluated; the ciphertext is compared (in constant time) only once they and
+  the metadata below match;
 - `format_version` and `burn_after_retrieval` are identical, and the requested lifetime resolves to
   the original one (`expires_at - created_at`);
 - the paste is still retrievable now — not expired, consumed, disabled or deleted.
 
 Every other collision stays `409 id_conflict`.
+
+The check runs in two steps (`replayed` in `api/pastes/handlers.rs`). First it reads the row
+without its payload (`find_metadata`) and decides everything but the ciphertext bytes
+(`Paste::may_be_replayed_by`): the verifiers and the public header, the stored `payload_size`
+against the request's ciphertext length, and the lifecycle conditions above. Only if all of that
+matches does it load the stored ciphertext (`load_ciphertext`) and compare it in constant time
+(`NewPaste::carries_ciphertext`). A paste burned or deleted between the two reads has no
+ciphertext left and is a conflict.
 
 An id is never freed. Delete, burn and moderation keep a tombstone row; a row the retention rules
 delete leaves its id in the table `retired_ids` (migration `0004`, filled by an `AFTER DELETE`
@@ -55,12 +63,21 @@ retired id cannot succeed: its row, and with it the original request, is gone.
 - **Checking `retired_ids` in a separate `SELECT`.** A purge committing between the check and the
   insert would retire the id after it was checked.
 - **A distinct code for a retired id.** It would tell "was purged" from "is live".
+- **Loading the whole row on every conflict.** In `public` mode anyone who knows an id could make
+  the server read a ciphertext of up to 10 MiB with a request of a few bytes. Deciding from the
+  metadata first means only a request that already carries all three verifiers and the public
+  header — in practice the creator — can reach the payload read, so the timing difference of that
+  read tells nothing to someone who knows only the id.
+- **Comparing the ciphertext in SQL (`ciphertext = ?`) or storing a digest of the request.** Either
+  adds a query form or a schema change for no gain over a metadata check followed by one
+  constant-time comparison.
 
 ## Consequences
 
 - Clients may retry a create with the *same* `SealedPaste` on network errors, timeouts, `429` and
   `5xx`. `capsulebin put` does. Re-sealing on retry is wrong: it produces a new id and a duplicate.
-- A replay costs one extra `SELECT` on the conflict path only; the normal path is unchanged.
+- The conflict path costs one metadata `SELECT`, and a possible replay one more for the ciphertext;
+  the normal path is unchanged. A mismatched request never reads the stored payload.
 - A replay reveals nothing new: the caller already holds every verifier and the ciphertext, and a
   mismatched request receives a plain `409`.
 - Rate limits apply to replays like to any other create request.

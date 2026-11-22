@@ -322,11 +322,18 @@ In-memory only, resets on restart. Two tables, client buckets and paste buckets 
 attempts), each capped at 100 000 entries (`CLIENT_CEILING`/`PASTE_CEILING`, fixed, no setting);
 work per admission is bounded (a new key lets a sweep cursor drop up to `SWEEP_STEP` = 8 refilled
 buckets, never a full scan under the lock). At the ceiling the client table evicts its least
-recently used bucket; the paste table never evicts a budget — a wrong password on an untracked paste
-is `429` with `Retry-After` = one token's refill time (6 s at the default, when a tracked paste
-would admit the next attempt; a slot may free up only later), a correct one passes and creates no bucket. A saturated table warns at
-most once a minute (table and ceiling, no address or id). The clock is injectable for tests
-(`bounded_for_tests`).
+recently used bucket; the paste table never evicts a budget. With room (a free slot or one the
+bounded sweep reclaims, decided by `Table::has_room` under the same lock) a wrong password on an
+untracked paste gets a bucket and a correct one passes without creating one. Without room every
+attempt on an untracked paste, correct or wrong, takes a token from one overflow budget
+(`Table::overflow`, shared by all untracked pastes, spec of `invalid_capability_per_paste`, off with
+it, no setting); empty → `429` for both, `Retry-After` = one overflow token's refill time (6 s at the
+default). Answering correct and wrong alike is the point: a pass for one and a `429` for the other
+would be a password oracle; the accepted price is that first retrieves share that budget while the
+table is held full. Tracked pastes use only their own bucket. A saturated table warns at most once a
+minute (table and ceiling, no address or id), also when a correct attempt meets it. The clock is
+injectable for tests (`bounded_for_tests`); `src/test_support.rs` (`#[cfg(test)]`) builds an
+`AppState` over a temporary database for handler-level tests inside the crate.
 
 ## Build and test
 
@@ -400,6 +407,7 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/retired_ids_acceptance.rs` | Against the real binary: after its `prune` removed a reported capsule, `reports list` (text and `--json`) and `reports show` print the paste as `gone`, `moderation disable`/`delete` answer "no paste" and record nothing, re-creating the id is `409 id_conflict`, a new report is answered `202` and not stored. |
 | `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text; the access log's `path` is a route template (also on `429`/`413`/`401`), a served asset or `{unmatched}`, also for seeded random paths. **Mandatory CI gate.** |
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
+| Handler tests inside the crate (`src/server/src/test_support.rs`: helpers only, no tests) | Requests through `router()` over an `AppState` the test may change (e.g. a small limiter ceiling), next to the code they cover. `api/rate_limit.rs`: `a_saturated_retrieve_answers_correct_and_wrong_passwords_alike` (a full paste table's overflow budget answers correct and wrong passwords with the same status, `Retry-After` and body; a burn paste is not consumed by a `429`), `correct_retrieves_with_room_spend_neither_slots_nor_overflow`. `api/pastes/handlers.rs`: `a_conflict_is_decided_before_the_payload_is_read`, `replays_of_unretrievable_pastes_read_no_payload`, `a_foreign_request_on_a_taken_id_reads_no_payload` (conflicting creates read no ciphertext, a possible replay at most once; counted by the `#[cfg(test)]` `payload_reads` counter of `SqlitePasteRepository`). |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
@@ -443,7 +451,7 @@ npm run e2e -w @capsulebin/web
 | 008 | Capsule file format | Bespoke binary container (magic + version + manifest + items + PADMÉ zero padding), not CBOR/protobuf |
 | 009 | TS CLI and core | Single TypeScript implementation shared by web client and CLI; no WASM |
 | 010 | Repository layout | `src/{server,cli,core}` with `web/` nested inside `server/` |
-| 011 | Idempotent create | The paste id is the idempotency key: an identical re-submission returns the original `201`, anything else stays `409`; ids are never freed (`retired_ids`), so creation permission can test whether one id is taken or was ever used |
+| 011 | Idempotent create | The paste id is the idempotency key: an identical re-submission returns the original `201`, anything else stays `409`; a conflict is decided from metadata, the ciphertext read only for a possible replay; ids are never freed (`retired_ids`), so creation permission can test whether one id is taken or was ever used |
 | 012 | No OpenAPI document | Contract = capsule format, crypto profile, golden vectors; if ever needed, generate from `wire.rs` |
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
