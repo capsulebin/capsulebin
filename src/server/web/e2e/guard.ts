@@ -4,6 +4,7 @@ declare global {
     interface Window {
         __capsulebinViolation?: (directive: string, detail: string) => void;
         __capsulebinXss?: (where: string) => void;
+        __capsulebinInlineStyle?: (where: string) => void;
     }
 }
 
@@ -20,8 +21,10 @@ export interface Guard {
 
 /**
  * Records everything in a browser context that must never happen: CSP and
- * Trusted Types violations, uncaught page errors, console errors, and the XSS
- * canary `__capsulebinXss()` being called from injected markup.
+ * Trusted Types violations, uncaught page errors, console errors, the XSS
+ * canary `__capsulebinXss()` being called from injected markup, and an inline
+ * `style` attribute on any element of a page, also one set through the CSSOM
+ * (`element.style`), which the CSP does not block.
  *
  * The reports go through bindings rather than page state, so they survive the
  * page being closed or navigated before the test looks at them.
@@ -43,12 +46,38 @@ export async function installGuard(context: BrowserContext): Promise<Guard> {
     await context.exposeBinding('__capsulebinXss', (_page, where: string) => {
         recorded.push({ message: `XSS canary executed: ${where}` });
     });
+    await context.exposeBinding('__capsulebinInlineStyle', (_page, where: string) => {
+        recorded.push({ message: `inline style attribute: ${where}` });
+    });
     await context.addInitScript(() => {
         document.addEventListener('securitypolicyviolation', (event) => {
             window.__capsulebinViolation?.(
                 event.violatedDirective,
                 `blocked=${event.blockedURI} at ${event.sourceFile}:${event.lineNumber}`,
             );
+        });
+        const report = (element: Element) =>
+            window.__capsulebinInlineStyle?.(
+                `<${element.localName}> style="${element.getAttribute('style')}" on ${location.pathname}`,
+            );
+        new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'attributes') {
+                    const element = mutation.target as Element;
+                    if (element.hasAttribute('style')) report(element);
+                    continue;
+                }
+                for (const node of mutation.addedNodes) {
+                    if (!(node instanceof Element)) continue;
+                    if (node.hasAttribute('style')) report(node);
+                    node.querySelectorAll('[style]').forEach(report);
+                }
+            }
+        }).observe(document, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['style'],
         });
     });
 

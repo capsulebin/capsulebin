@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { create } from './create';
+import { create, sealedLinks } from './create';
 import { expect, test } from './guard';
 
 /**
@@ -266,10 +266,8 @@ test('a password of only spaces is refused before anything is sent', async ({ pa
     const password = 'the real one';
     await page.fill('#create-password', password);
     await page.click('[data-create-submit]');
-    const shareField = page.locator('#share-link');
-    await expect(shareField).not.toHaveValue('', { timeout: 30_000 });
+    const { share } = await sealedLinks(page);
     expect(createPosts).toHaveLength(1);
-    const share = await shareField.inputValue();
 
     const view = await context.newPage();
     await view.goto(share);

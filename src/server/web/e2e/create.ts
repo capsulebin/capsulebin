@@ -20,11 +20,13 @@ type Item =
     | { type: 'code'; name?: string; lang: string; text: string }
     | { type: 'download'; name: string; bytes: number[] };
 
-interface Capsule {
+export interface Capsule {
     title?: string;
     items: Item[];
     password?: string;
     burn?: boolean;
+    /** A value of the expiry select (seconds, `''` for none); its default if left out. */
+    expiry?: string;
 }
 
 /**
@@ -36,7 +38,19 @@ export async function create(
     capsule: Capsule,
     language = 'en',
 ): Promise<{ share: string; manage: string }> {
+    await fill(page, capsule, language);
+    await page.click('[data-create-submit]');
+    return sealedLinks(page);
+}
+
+/** Opens the create page in `language` and fills it in with `capsule`, without submitting. */
+export async function fill(page: Page, capsule: Capsule, language = 'en'): Promise<void> {
     await page.goto(`${prefixOf(language)}/`);
+    await fillForm(page, capsule);
+}
+
+/** Fills in the create page `page` shows with `capsule`, without submitting. */
+export async function fillForm(page: Page, capsule: Capsule): Promise<void> {
     await expect(page.locator('[data-create-form]')).toBeVisible();
     if (capsule.title) await page.fill('#create-title', capsule.title);
 
@@ -61,9 +75,21 @@ export async function create(
     }
     if (capsule.password) await page.fill('#create-password', capsule.password);
     if (capsule.burn) await page.check('#create-burn');
+    if (capsule.expiry !== undefined) await page.selectOption('#create-expiry', capsule.expiry);
+}
 
-    await page.click('[data-create-submit]');
-    const share = page.locator('#share-link');
-    await expect(share).not.toHaveValue('', { timeout: 30_000 });
-    return { share: await share.inputValue(), manage: await page.inputValue('#delete-link') };
+/**
+ * The two links of the sealed page, once it shows them: the share link (with its
+ * key) and the management link, as text of `[data-share-link]`/`[data-delete-link]`.
+ */
+export async function sealedLinks(
+    page: Page,
+    timeout = 30_000,
+): Promise<{ share: string; manage: string }> {
+    const share = page.locator('[data-share-link]');
+    await expect(share).toHaveText(/#/, { timeout });
+    return {
+        share: (await share.textContent()) ?? '',
+        manage: (await page.locator('[data-delete-link]').textContent()) ?? '',
+    };
 }

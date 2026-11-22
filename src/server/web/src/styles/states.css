@@ -1,0 +1,43 @@
+/* State pages (manage page phases and other hexagon-led states). The hexagon
+ * itself is in base.css, shared by every page. */
+
+/* One state: the hexagon, a heading, text and actions, centred in the main
+ * column. Quiet: no frame, the hexagon carries the state. */
+.cb-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--cb-space-3);
+    width: 100%;
+    max-width: 34rem;
+    margin: auto;
+    text-align: center;
+}
+
+.cb-state .cb-hex {
+    margin-bottom: var(--cb-space-1);
+}
+
+.cb-state .cb-chips {
+    justify-content: center;
+}
+
+/* A short note under the text, e.g. that a delete cannot be undone. */
+.cb-state-note {
+    margin: 0;
+    max-width: var(--cb-measure);
+    font-size: 0.9375rem;
+    color: var(--cb-text-muted);
+}
+
+.cb-state-note strong {
+    color: var(--cb-warning);
+}
+
+.cb-state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--cb-space-2);
+    margin-top: var(--cb-space-2);
+}

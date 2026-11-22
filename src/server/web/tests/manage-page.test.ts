@@ -157,3 +157,88 @@ describe('management page in German', () => {
         );
     });
 });
+
+describe('management page states', () => {
+    /** The state hexagon of the current phase: the first element of `.cb-state`. */
+    function stateHexagon(): string | null {
+        const states = document.querySelectorAll('[data-manage-root] .cb-state');
+        expect(states).toHaveLength(1);
+        const hexagons = document.querySelectorAll('[data-manage-root] [data-hexagon]');
+        expect(hexagons).toHaveLength(1);
+        expect(states[0]!.firstElementChild).toBe(hexagons[0]);
+        expect(document.querySelector('.cb-spinner, .cb-pulse')).toBeNull();
+        return hexagons[0]!.getAttribute('data-hexagon');
+    }
+
+    function heading(): string {
+        return document.querySelector('[data-manage-root] h1')!.textContent!.trim();
+    }
+
+    it('runs the hexagon while loading the capsule', async () => {
+        vi.stubGlobal('fetch', () => new Promise<Response>(() => {}));
+        await loadPage();
+        expect(stateHexagon()).toBe('running');
+        expect(heading()).toBe(de['manage.title']);
+    });
+
+    it('shows the warning hexagon on the delete confirmation', async () => {
+        await loadPage();
+        expect(stateHexagon()).toBe('warning');
+        expect(heading()).toBe(de['manage.confirm']);
+        const state = document.querySelector('.cb-state')!;
+        // The irreversible delete is the danger variant of the button.
+        expect(state.querySelector('[data-delete-btn]')!.classList).toContain('cb-btn-danger');
+        // The burn flag is the warning chip, the other facts are plain chips.
+        expect(document.querySelector('[data-meta-burn]')!.classList).toContain('cb-chip-warning');
+        expect(document.querySelector('[data-meta-expires]')!.classList).not.toContain(
+            'cb-chip-warning',
+        );
+    });
+
+    it('marks no chip as a warning for a capsule without burn', async () => {
+        stubServer(
+            () =>
+                new Response(JSON.stringify({ ...descriptor(), burn_after_retrieval: false }), {
+                    status: 200,
+                }),
+        );
+        await loadPage();
+        expect(text('meta-burn')).toBe(de['manage.noBurn']);
+        expect(document.querySelector('.cb-chip-warning')).toBeNull();
+    });
+
+    it('runs the hexagon while deleting', async () => {
+        vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) =>
+            init?.method === 'DELETE'
+                ? new Promise<Response>(() => {})
+                : new Response(JSON.stringify(descriptor()), { status: 200 }),
+        );
+        await loadPage();
+        document.querySelector<HTMLButtonElement>('[data-delete-btn]')!.click();
+        await flush();
+        expect(stateHexagon()).toBe('running');
+        expect(heading()).toBe(de['manage.deleting']);
+    });
+
+    it('shows the empty hexagon once deleted', async () => {
+        await loadPage();
+        document.querySelector<HTMLButtonElement>('[data-delete-btn]')!.click();
+        await flush();
+        expect(stateHexagon()).toBe('empty');
+        expect(heading()).toBe(de['manage.deleted']);
+    });
+
+    it('shows the empty hexagon for an unavailable capsule', async () => {
+        stubServer(() => new Response(JSON.stringify({ code: 'not_found' }), { status: 404 }));
+        await loadPage();
+        expect(stateHexagon()).toBe('empty');
+        expect(heading()).toBe(de['manage.unavailable']);
+        expect(text('error-message')).toBe(de['manage.unavailableLede']);
+    });
+
+    it('shows the empty hexagon for a link without a key', async () => {
+        await loadPage('');
+        expect(stateHexagon()).toBe('empty');
+        expect(text('error-message')).toBe(de['link.noKey']);
+    });
+});

@@ -33,6 +33,9 @@ import { formatExpiry, formatSize, localPath, t, tn } from '../language';
 import { byAttr, initShell, isLeavingPage, languageFromNextPage } from './shell';
 import { openCapsule, type PasswordRetry } from './open-capsule';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
+import { CopyFeedback, createLiveRegion } from './copy-state';
+import { type HexagonState, hexagon } from './hexagon';
+import { type IconName, icon } from './icons';
 import {
     downloadItem,
     itemName,
@@ -65,10 +68,9 @@ class CbViewPage extends LitElement {
         items: {},
         activeIndex: {},
         sourceView: {},
-        copiedIndex: {},
-        overflow: {},
-        moreOpen: {},
+        menuOpen: {},
         expiresAt: {},
+        burnAfterRetrieval: {},
     };
 
     // `declare`-only: these must not emit constructor field initializers, which
@@ -84,27 +86,41 @@ class CbViewPage extends LitElement {
     declare activeIndex: number;
     /** Markdown items currently shown as source instead of rendered. */
     declare sourceView: ReadonlySet<number>;
-    /** The item whose content was just copied, for the button's feedback. */
-    declare copiedIndex: number | null;
-    /** Items whose tabs do not fit in the bar (counted on the "N more" button). */
-    declare overflow: readonly number[];
-    declare moreOpen: boolean;
+    /** The "All N" list is open. */
+    declare menuOpen: boolean;
     declare expiresAt: number | null;
+    /** From the descriptor: this retrieval deleted the capsule. */
+    declare burnAfterRetrieval: boolean;
 
     #pwdContext: PasswordContext | null = null;
     #resolvePassword: ((key: Uint8Array) => void) | null = null;
     #resolveBurnConfirm: (() => void) | null = null;
-    #copiedTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Announces a copy; rendered with the display so it is in place before it speaks. */
+    #liveRegion = createLiveRegion();
+    #copyFeedback = new CopyFeedback(this.#liveRegion);
     #resizeObserver: ResizeObserver | undefined;
+    /**
+     * Decorative SVG nodes, built once per place and state or icon: given the
+     * same node again, Lit leaves it in the DOM, so a re-render keeps a running
+     * hexagon's animation going. Keyed by place, as a node has one parent.
+     */
+    #drawings = new Map<string, SVGSVGElement>();
     #onDocumentClick = (event: MouseEvent): void => {
-        if (this.moreOpen && !this.querySelector('.cb-more')?.contains(event.target as Node)) {
-            this.moreOpen = false;
+        const target = event.target as Node;
+        if (
+            this.menuOpen &&
+            !this.#allButton()?.contains(target) &&
+            !this.#menu()?.contains(target)
+        ) {
+            this.menuOpen = false;
         }
     };
     #onDocumentKey = (event: KeyboardEvent): void => {
-        if (event.key === 'Escape' && this.moreOpen) {
-            this.moreOpen = false;
-            this.querySelector<HTMLElement>('.cb-more-btn')?.focus();
+        if (event.key === 'Escape' && this.menuOpen) {
+            this.menuOpen = false;
+            // After the update, like #chooseFromMenu: focusing while the menu is
+            // still rendered open lets Chromium move focus again on the re-render.
+            void this.updateComplete.then(() => this.#allButton()?.focus());
         }
     };
 
@@ -119,10 +135,9 @@ class CbViewPage extends LitElement {
         this.items = [];
         this.activeIndex = 0;
         this.sourceView = new Set();
-        this.copiedIndex = null;
-        this.overflow = [];
-        this.moreOpen = false;
+        this.menuOpen = false;
         this.expiresAt = null;
+        this.burnAfterRetrieval = false;
     }
 
     override createRenderRoot(): this {
@@ -138,7 +153,7 @@ class CbViewPage extends LitElement {
 
     override disconnectedCallback(): void {
         super.disconnectedCallback();
-        clearTimeout(this.#copiedTimer);
+        this.#copyFeedback.restore();
         this.#resizeObserver?.disconnect();
         document.removeEventListener('click', this.#onDocumentClick);
         document.removeEventListener('keydown', this.#onDocumentKey);
@@ -165,7 +180,7 @@ class CbViewPage extends LitElement {
 
         if (changed.has('activeIndex') && changed.get('activeIndex') !== undefined) {
             revealActiveItem(
-                this.querySelector<HTMLElement>('.cb-viewer-head'),
+                this.querySelector<HTMLElement>('[data-sheet] .cb-sheet-bar'),
                 this.querySelector<HTMLElement>('.cb-item-panel'),
             );
         }
@@ -192,6 +207,7 @@ class CbViewPage extends LitElement {
 
     #renderLoading() {
         return html`
+            ${this.#hexagon('state', 'running')}
             <h1 class="cb-h1">${t('view.opening')}</h1>
             <p class="cb-lede">${t('view.openingLede')}</p>
         `;
@@ -199,14 +215,15 @@ class CbViewPage extends LitElement {
 
     #renderDecrypting() {
         return html`
+            ${this.#hexagon('state', 'running')}
             <h1 class="cb-h1">${t('view.decrypting')}</h1>
-            <div class="cb-spinner"></div>
-            <p class="cb-lede cb-pulse">${t('view.decryptingLede')}</p>
+            <p class="cb-lede">${t('view.decryptingLede')}</p>
         `;
     }
 
     #renderBurned() {
         return html`
+            ${this.#hexagon('state', 'empty')}
             <h1 class="cb-h1">${t('view.burned')}</h1>
             <p class="cb-lede">${t('view.burnedLede')}</p>
             <p><a href=${localPath('/')} class="cb-btn">${t('view.createOwn')}</a></p>
@@ -215,6 +232,7 @@ class CbViewPage extends LitElement {
 
     #renderBurnWarning() {
         return html`
+            ${this.#hexagon('state', 'warning')}
             <h1 class="cb-h1">${t('view.burnWarning')}</h1>
             <p class="cb-lede">${t('view.burnWarningLede')}</p>
             <div class="cb-callout cb-callout-danger">
@@ -232,6 +250,7 @@ class CbViewPage extends LitElement {
 
     #renderPasswordPrompt() {
         return html`
+            ${this.#hexagon('state', 'locked')}
             <h1 class="cb-h1">${t('view.passwordTitle')}</h1>
             <p class="cb-lede">${t('view.passwordLede')}</p>
             <form class="cb-form" @submit=${(e: SubmitEvent) => this.#handlePasswordSubmit(e)}>
@@ -247,8 +266,8 @@ class CbViewPage extends LitElement {
                 />
                 <p class="cb-error" ?hidden=${!this.passwordError}>${this.passwordError}</p>
                 <div class="cb-kdf-progress" ?hidden=${!this.passwordBusy}>
-                    <div class="cb-spinner"></div>
-                    <p class="cb-lede cb-pulse">${this.kdfProgressLabel}</p>
+                    ${this.passwordBusy ? this.#hexagon('kdf', 'running') : ''}
+                    <p class="cb-lede">${this.kdfProgressLabel}</p>
                 </div>
                 <button type="submit" class="cb-btn" .disabled=${this.passwordBusy}>
                     ${t('view.decrypt')}
@@ -259,222 +278,320 @@ class CbViewPage extends LitElement {
 
     #renderError() {
         return html`
+            ${this.#hexagon('state', 'empty')}
             <h1 class="cb-h1">${t('view.unavailable')}</h1>
             <p class="cb-lede">${this.errorMessage || t('view.unavailableLede')}</p>
             <p><a href=${localPath('/')} class="cb-btn">${t('view.createOwn')}</a></p>
         `;
     }
 
+    /**
+     * The decrypted capsule: title, chip row, and one sheet holding the tab bar
+     * (several items), the active item's actions, its content and (several
+     * items) the previous/next row.
+     */
     #renderDisplay() {
         const items = this.items;
         const index = Math.min(this.activeIndex, items.length - 1);
         const active = items[index];
         const multi = items.length > 1;
 
-        const totalBytes = items.reduce((sum, item) => sum + (item.bytes?.length ?? 0), 0);
-        const statusParts: string[] = [];
-        if (multi) statusParts.push(tn('view.itemCount', items.length));
-        statusParts.push(t('view.totalSize', { size: formatSize(totalBytes) }));
-        statusParts.push(formatExpiry(this.expiresAt));
-
         return html`
-            ${
-                this.capsuleTitle
-                    ? html`<h1 class="cb-h1">${this.capsuleTitle}</h1>`
-                    : html`<h1 class="cb-sr-only">${t('view.capsule')}</h1>`
-            }
+            <div class="cb-view-head">
+                ${
+                    this.capsuleTitle
+                        ? html`<h1 class="cb-h1">${this.capsuleTitle}</h1>`
+                        : html`<h1 class="cb-sr-only">${t('view.capsule')}</h1>`
+                }
+                ${this.#renderChips(items)}
+            </div>
             ${
                 active
                     ? html`
-                      <div class="cb-viewer-head">
-                          ${multi ? this.#renderTabs(items, index) : ''}
-                          ${this.#renderItemBar(active, index)}
-                      </div>
-                      <div
-                          class="cb-item-panel"
-                          role=${multi ? 'tabpanel' : 'region'}
-                          id="cb-item-panel"
-                          aria-labelledby=${multi ? `cb-item-tab-${index}` : 'cb-item-name'}
-                      >
-                          ${renderItemContent(active, {
-                              source: this.sourceView.has(index),
-                              index,
-                          })}
+                      <div class="cb-sheet cb-view-sheet" data-sheet>
+                          <div class="cb-sheet-bar">
+                              ${multi ? this.#renderTabs(items, index) : this.#renderItemName(active, index)}
+                              ${this.#renderItemActions(active, index)}
+                              ${multi ? this.#renderAllMenu(items, index) : ''}
+                          </div>
+                          <div
+                              class="cb-item-panel"
+                              role=${multi ? 'tabpanel' : 'region'}
+                              id="cb-item-panel"
+                              aria-labelledby=${multi ? `cb-item-tab-${index}` : 'cb-item-name'}
+                          >
+                              ${renderItemContent(active, {
+                                  source: this.sourceView.has(index),
+                                  index,
+                              })}
+                          </div>
+                          ${multi ? this.#renderItemNav(items, index) : ''}
                       </div>
                   `
                     : ''
             }
-            <p class="cb-status cb-capsule-status">
-                ${statusParts.map((part) => html`<span>${part}</span>`)}
-            </p>
+            ${this.#liveRegion}
+        `;
+    }
+
+    /** Lifecycle and size under the title; a burn capsule's warning comes first. */
+    #renderChips(items: DisplayItem[]) {
+        const size = formatSize(items.reduce((sum, item) => sum + (item.bytes?.length ?? 0), 0));
+        const amount = items.length > 1 ? `${tn('view.itemCount', items.length)} · ${size}` : size;
+        return html`
+            <ul class="cb-chips" data-chips>
+                ${
+                    this.burnAfterRetrieval
+                        ? html`<li class="cb-chip cb-chip-warning" data-chip="burn">
+                          ${t('view.deletedAfterRetrieval')}
+                      </li>`
+                        : ''
+                }
+                <li class="cb-chip" data-chip="expiry">${this.#icon('chip', 'clock')}${formatExpiry(this.expiresAt)}</li>
+                <li class="cb-chip" data-chip="size">${this.#icon('chip', 'stack')}${amount}</li>
+                <li class="cb-chip" data-chip="local">${this.#icon('chip', 'lock')}${t('view.decryptedLocally')}</li>
+            </ul>
+        `;
+    }
+
+    #renderItemName(item: DisplayItem, index: number) {
+        return html`
+            <span class="cb-view-item">
+                <span class="cb-itembar-name" id="cb-item-name">${itemName(item, index)}</span>
+                <span class="cb-itembar-meta">${itemMeta(item)}</span>
+            </span>
         `;
     }
 
     #renderTabs(items: DisplayItem[], active: number) {
         return html`
-            <div class="cb-itemtabs-row">
-                <div
-                    class="cb-itemtabs"
-                    role="tablist"
-                    aria-label=${t('view.items')}
-                    @keydown=${(e: KeyboardEvent) => this.#onTabKey(e)}
-                >
-                    ${items.map(
-                        (item, i) => html`
-                            <button
-                                type="button"
-                                role="tab"
-                                class="cb-itemtab"
-                                id="cb-item-tab-${i}"
-                                aria-selected=${i === active ? 'true' : 'false'}
-                                aria-controls="cb-item-panel"
-                                tabindex=${i === active ? 0 : -1}
-                                title=${`${itemName(item, i)} · ${itemMeta(item)}`}
-                                @click=${() => this.#select(i)}
-                            >
-                                <span class="cb-itemtab-kind">${kindBadge(item)}</span>
-                                <span class="cb-itemtab-name">${itemName(item, i)}</span>
-                            </button>
-                        `,
-                    )}
-                </div>
-                <div class="cb-more" hidden>
-                    <button
-                        type="button"
-                        class="cb-btn-secondary cb-more-btn"
-                        aria-haspopup="menu"
-                        aria-expanded=${this.moreOpen ? 'true' : 'false'}
-                        aria-controls="cb-more-menu"
-                        @click=${() => {
-                            this.moreOpen = !this.moreOpen;
-                            if (this.moreOpen) {
-                                void this.updateComplete.then(() =>
-                                    this.querySelector<HTMLElement>(
-                                        '.cb-menu [aria-checked="true"]',
-                                    )?.focus(),
-                                );
-                            }
-                        }}
-                    >
-                        ${t('items.more', { count: this.overflow.length })}
-                    </button>
-                    <div
-                        id="cb-more-menu"
-                        class="cb-menu"
-                        role="menu"
-                        ?hidden=${!this.moreOpen}
-                        @keydown=${(e: KeyboardEvent) => this.#onMenuKey(e)}
-                    >
-                        ${items.map(
-                            (item, i) => html`
-                                <button
-                                    type="button"
-                                    role="menuitemradio"
-                                    aria-checked=${i === active ? 'true' : 'false'}
-                                    @click=${() => {
-                                        this.moreOpen = false;
-                                        this.#select(i);
-                                    }}
-                                >
-                                    <span class="cb-itemtab-kind">${kindBadge(item)}</span>
-                                    <span class="cb-itemtab-name">${itemName(item, i)}</span>
-                                </button>
-                            `,
-                        )}
-                    </div>
-                </div>
+            <div
+                class="cb-itemtabs"
+                role="tablist"
+                aria-label=${t('view.items')}
+                @keydown=${(e: KeyboardEvent) => this.#onTabKey(e)}
+            >
+                ${items.map(
+                    (item, i) => html`
+                        <button
+                            type="button"
+                            role="tab"
+                            class="cb-itemtab"
+                            id="cb-item-tab-${i}"
+                            aria-selected=${i === active ? 'true' : 'false'}
+                            aria-controls="cb-item-panel"
+                            tabindex=${i === active ? 0 : -1}
+                            title=${`${itemName(item, i)} · ${itemMeta(item)}`}
+                            @click=${() => this.#select(i)}
+                        >
+                            <span class="cb-itemtab-kind">${kindBadge(item)}</span>
+                            <span class="cb-itemtab-name">${itemName(item, i)}</span>
+                        </button>
+                    `,
+                )}
+            </div>
+            <button
+                type="button"
+                class="cb-quiet cb-all-btn"
+                data-items-all
+                hidden
+                aria-haspopup="menu"
+                aria-expanded=${this.menuOpen ? 'true' : 'false'}
+                aria-controls="cb-all-menu"
+                @click=${() => this.#toggleMenu()}
+            >
+                <span>${t('items.all', { count: items.length })}</span>${this.#icon('all', 'chevron-down')}
+            </button>
+        `;
+    }
+
+    /** Every item in manifest order, the same list whatever the width hides. */
+    #renderAllMenu(items: DisplayItem[], active: number) {
+        return html`
+            <div
+                id="cb-all-menu"
+                class="cb-menu cb-all-menu"
+                role="menu"
+                aria-label=${t('view.items')}
+                ?hidden=${!this.menuOpen}
+                @keydown=${(e: KeyboardEvent) => this.#onMenuKey(e)}
+            >
+                ${items.map(
+                    (item, i) => html`
+                        <button
+                            type="button"
+                            class="cb-menu-row"
+                            role="menuitemradio"
+                            tabindex="-1"
+                            aria-checked=${i === active ? 'true' : 'false'}
+                            @click=${() => this.#chooseFromMenu(i)}
+                        >
+                            <span class="cb-itemtab-kind">${kindBadge(item)}</span>
+                            <span class="cb-itemtab-name">${itemName(item, i)}</span>
+                            <span class="cb-menu-size">${formatSize(item.bytes?.length ?? 0)}</span>
+                        </button>
+                    `,
+                )}
             </div>
         `;
     }
 
-    /** Hides the tabs that do not fit; the "N more" menu then lists every item. Runs
-     *  after every render and on resize; settles after at most one re-render
-     *  (the menu's count changes only when the fit does). */
+    /** Previous/next below the content, for whoever has read an item to its end. */
+    #renderItemNav(items: DisplayItem[], index: number) {
+        const previous = index > 0 ? itemName(items[index - 1]!, index - 1) : '';
+        const next = index < items.length - 1 ? itemName(items[index + 1]!, index + 1) : '';
+        return html`
+            <div class="cb-item-nav">
+                <button
+                    type="button"
+                    class="cb-quiet"
+                    data-item-previous
+                    aria-label=${t('items.previous')}
+                    ?disabled=${index === 0}
+                    @click=${() => this.#select(index - 1)}
+                >
+                    ${this.#icon('nav', 'chevron-left')}<span class="cb-bar-label">${previous}</span>
+                </button>
+                <span class="cb-item-nav-position">
+                    ${t('items.position', { index: index + 1, count: items.length })}
+                </span>
+                <button
+                    type="button"
+                    class="cb-quiet"
+                    data-item-next
+                    aria-label=${t('items.next')}
+                    ?disabled=${index === items.length - 1}
+                    @click=${() => this.#select(index + 1)}
+                >
+                    <span class="cb-bar-label">${next}</span>${this.#icon('nav', 'chevron-right')}
+                </button>
+            </div>
+        `;
+    }
+
+    /** Hides the tabs that do not fit and shows the "All N" button if any do not.
+     *  Runs after every render and on resize. */
     #fitTabs(): void {
-        const row = this.querySelector<HTMLElement>('.cb-itemtabs-row');
+        const row = this.querySelector<HTMLElement>('[data-sheet] .cb-sheet-bar');
         const bar = row?.querySelector<HTMLElement>('[role="tablist"]');
-        const more = row?.querySelector<HTMLElement>('.cb-more');
-        if (!row || !bar || !more) return;
+        const all = this.#allButton();
+        if (!row || !bar || !all) return;
 
         if (!this.#resizeObserver) {
             this.#resizeObserver = new ResizeObserver(() => this.#fitTabs());
             this.#resizeObserver.observe(row);
         }
 
-        const hidden = fitTabs(bar, more, this.activeIndex);
-        if (hidden.join() !== this.overflow.join()) this.overflow = hidden;
-        if (hidden.length === 0 && this.moreOpen) this.moreOpen = false;
+        const hidden = fitTabs(bar, all, this.activeIndex);
+        if (hidden.length === 0 && this.menuOpen) this.menuOpen = false;
     }
 
-    #renderItemBar(item: DisplayItem, index: number) {
+    #renderItemActions(item: DisplayItem, index: number) {
         const isMarkdown = item.presentation === 'markdown';
         const isFile = item.presentation === 'download';
         const source = this.sourceView.has(index);
-        const copied = this.copiedIndex === index;
 
         return html`
-            <div class="cb-itembar">
+            <div class="cb-bar-actions">
                 ${
-                    this.items.length > 1
-                        ? ''
-                        : html`<span class="cb-itembar-name" id="cb-item-name"
-                          >${itemName(item, index)}</span
-                      >`
-                }
-                <span class="cb-itembar-meta">${itemMeta(item)}</span>
-                <span class="cb-itembar-actions">
-                    ${
-                        isMarkdown
-                            ? html`
-                              <span class="cb-segmented" role="group" aria-label=${t('view.markdownView')}>
-                                  <button
-                                      type="button"
-                                      aria-pressed=${source ? 'false' : 'true'}
-                                      @click=${() => this.#setSource(index, false)}
-                                  >
-                                      ${t('view.preview')}
-                                  </button>
-                                  <button
-                                      type="button"
-                                      aria-pressed=${source ? 'true' : 'false'}
-                                      @click=${() => this.#setSource(index, true)}
-                                  >
-                                      ${t('view.source')}
-                                  </button>
-                              </span>
-                          `
-                            : ''
-                    }
-                    ${
-                        isFile
-                            ? ''
-                            : html`
+                    isMarkdown
+                        ? html`
+                          <span class="cb-view-switch" role="group" aria-label=${t('view.markdownView')}>
                               <button
                                   type="button"
-                                  class="cb-btn-secondary cb-btn-sm"
-                                  @click=${() => this.#copy(item, index)}
+                                  aria-pressed=${source ? 'false' : 'true'}
+                                  @click=${() => this.#setSource(index, false)}
                               >
-                                  ${t(copied ? 'view.copied' : 'view.copy')}
+                                  ${t('view.preview')}
                               </button>
-                          `
-                    }
-                    <button
-                        type="button"
-                        class="cb-btn-secondary cb-btn-sm"
-                        @click=${() => downloadItem(item, index)}
-                    >
-                        ${t('view.download')}
-                    </button>
-                </span>
-                <span class="cb-sr-only" aria-live="polite">${copied ? t('view.copiedToClipboard') : ''}</span>
+                              <button
+                                  type="button"
+                                  aria-pressed=${source ? 'true' : 'false'}
+                                  @click=${() => this.#setSource(index, true)}
+                              >
+                                  ${t('view.source')}
+                              </button>
+                          </span>
+                      `
+                        : ''
+                }
+                ${
+                    isFile
+                        ? ''
+                        : html`
+                          <button
+                              type="button"
+                              class="cb-quiet"
+                              data-item-copy
+                              @click=${(e: MouseEvent) =>
+                                  this.#copy(e.currentTarget as HTMLButtonElement, item)}
+                          >
+                              ${this.#icon('action', 'copy')}<span class="cb-bar-label">${t('view.copy')}</span>
+                          </button>
+                      `
+                }
+                <button
+                    type="button"
+                    class="cb-quiet"
+                    data-item-download
+                    @click=${() => downloadItem(item, index)}
+                >
+                    ${this.#icon('action', 'download')}<span class="cb-bar-label">${t('view.download')}</span>
+                </button>
             </div>
         `;
     }
 
+    /** The hexagon for `state` at `place`, the same node on every render. */
+    #hexagon(place: string, state: HexagonState): SVGSVGElement {
+        return this.#drawing(`hexagon:${place}:${state}`, () => hexagon(state));
+    }
+
+    /** The icon `name` at `place`, the same node on every render. */
+    #icon(place: string, name: IconName): SVGSVGElement {
+        return this.#drawing(`icon:${place}:${name}`, () => icon(name));
+    }
+
+    #drawing(key: string, build: () => SVGSVGElement): SVGSVGElement {
+        let node = this.#drawings.get(key);
+        if (!node) {
+            node = build();
+            this.#drawings.set(key, node);
+        }
+        return node;
+    }
+
+    #allButton(): HTMLButtonElement | null {
+        return this.querySelector<HTMLButtonElement>('[data-items-all]');
+    }
+
+    #menu(): HTMLElement | null {
+        return this.querySelector<HTMLElement>('#cb-all-menu');
+    }
+
+    #toggleMenu(): void {
+        this.menuOpen = !this.menuOpen;
+        if (this.menuOpen) {
+            void this.updateComplete.then(() =>
+                this.#menu()?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus(),
+            );
+        }
+    }
+
+    /** A row of the "All N" list: the item becomes the active (visible) tab. */
+    #chooseFromMenu(index: number): void {
+        this.menuOpen = false;
+        this.#select(index);
+        void this.updateComplete.then(() =>
+            this.querySelector<HTMLElement>(`#cb-item-tab-${index}`)?.focus(),
+        );
+    }
+
     #select(index: number): void {
-        if (index === this.activeIndex) return;
+        if (index === this.activeIndex || index < 0 || index >= this.items.length) return;
+        // The copy button stays in place for the next item; its "Copied" was for this one.
+        this.#copyFeedback.restore();
         this.activeIndex = index;
-        this.copiedIndex = null;
     }
 
     #onTabKey(e: KeyboardEvent): void {
@@ -488,7 +605,9 @@ class CbViewPage extends LitElement {
     }
 
     #onMenuKey(e: KeyboardEvent): void {
-        const options = [...this.querySelectorAll<HTMLElement>('.cb-menu button')];
+        const options = [
+            ...(this.#menu()?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? []),
+        ];
         const index = options.indexOf(document.activeElement as HTMLElement);
         const key =
             e.key === 'ArrowDown' ? 'ArrowRight' : e.key === 'ArrowUp' ? 'ArrowLeft' : e.key;
@@ -505,19 +624,10 @@ class CbViewPage extends LitElement {
         this.sourceView = next;
     }
 
-    async #copy(item: DisplayItem, index: number): Promise<void> {
-        try {
-            await navigator.clipboard.writeText(item.text);
-        } catch {
-            // Clipboard access denied (permissions, insecure context): leave the
-            // button as it is; selecting the text by hand still works.
-            return;
-        }
-        this.copiedIndex = index;
-        clearTimeout(this.#copiedTimer);
-        this.#copiedTimer = setTimeout(() => {
-            if (this.copiedIndex === index) this.copiedIndex = null;
-        }, 2000);
+    /** Copies the item's text; a refused clipboard leaves the button as it is
+     *  (selecting the text by hand still works). */
+    #copy(button: HTMLButtonElement, item: DisplayItem): void {
+        void this.#copyFeedback.copy(button, item.text);
     }
 
     #confirmBurn(): void {
@@ -609,6 +719,7 @@ class CbViewPage extends LitElement {
                 this.items = toDisplayItems(outcome.items);
                 this.activeIndex = 0;
                 this.expiresAt = outcome.expiresAt;
+                this.burnAfterRetrieval = outcome.burnAfterRetrieval;
                 this.phase = 'display';
                 forgetKey();
                 break;

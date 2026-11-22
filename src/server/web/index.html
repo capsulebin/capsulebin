@@ -41,18 +41,21 @@
             <!--/capsulebin:tagline-->
             <span class="cb-push cb-head-tools">
                 <nav
-                    class="cb-segmented"
+                    class="cb-lang"
                     aria-label="{{shell.language}}"
                     data-language-switch
                     hidden
                 ></nav>
                 <button
                     type="button"
-                    class="cb-btn-icon"
+                    class="cb-quiet"
                     data-theme-toggle
                     aria-label="{{theme.switch}}"
                 >
-                    ◐
+                    <svg class="cb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="8" r="5.8" />
+                        <path class="cb-icon-solid" d="M8 2.2v11.6A5.8 5.8 0 0 0 8 2.2Z" />
+                    </svg>
                 </button>
             </span>
         </header>
@@ -80,8 +83,7 @@
         <!-- templates ----------------------------------------------------------- -->
 
         <template id="tmpl-edit">
-            <h1 class="cb-h1">{{create.heading}}</h1>
-            <p class="cb-lede">{{create.lede}}</p>
+            <h1 class="cb-sr-only">{{create.heading}}</h1>
             <p class="cb-callout" role="status" data-token-notice hidden></p>
             <p class="cb-token-line" data-token-line hidden>
                 <span data-token-line-text></span>
@@ -90,189 +92,239 @@
                     {{create.token.forget}}
                 </button>
             </p>
-            <form class="cb-form cb-form--full" data-create-form novalidate>
+            <form class="cb-form cb-form--full cb-create-form" data-create-form novalidate>
                 <label class="cb-sr-only" for="create-title">{{create.titleLabel}}</label>
                 <input
                     id="create-title"
-                    class="cb-input cb-title-input"
+                    class="cb-input cb-create-title"
                     type="text"
                     maxlength="200"
                     autocomplete="off"
                     placeholder="{{create.titleLabel}}"
                     data-capsule-title
                 />
-                <div class="cb-viewer-head">
-                    <div class="cb-itemtabs-row" data-tabs-row>
-                        <div
-                            class="cb-itemtabs"
-                            role="tablist"
-                            aria-label="{{create.items}}"
-                            data-item-tabs
-                        ></div>
-                        <div class="cb-more" data-more hidden>
-                            <button
-                                type="button"
-                                class="cb-btn-secondary cb-more-btn"
-                                aria-haspopup="menu"
-                                aria-expanded="false"
-                                aria-controls="cb-more-menu"
-                                data-more-btn
-                            >
-                                {{create.more}}
-                            </button>
+                <div class="cb-editor-frame cb-create-editor" data-editor>
+                    <div class="cb-create-head" data-editor-head>
+                        <div class="cb-sheet-bar cb-create-bar" data-tabs-row>
                             <div
-                                id="cb-more-menu"
-                                class="cb-menu"
-                                role="menu"
-                                data-more-menu
-                                hidden
+                                class="cb-itemtabs"
+                                role="tablist"
+                                aria-label="{{create.items}}"
+                                data-item-tabs
                             ></div>
-                        </div>
-                        <div class="cb-add">
-                            <button
-                                type="button"
-                                class="cb-btn-secondary cb-add-btn"
-                                aria-haspopup="menu"
-                                aria-expanded="false"
-                                aria-controls="cb-add-menu"
-                                data-item-add
-                            >
-                                {{create.addItem}}
-                            </button>
-                            <div id="cb-add-menu" class="cb-menu" role="menu" data-add-menu hidden>
-                                <button type="button" role="menuitem" data-add-type="plain">
-                                    {{create.type.plain}}
+                            <div class="cb-create-menu cb-create-more" data-more hidden>
+                                <button
+                                    type="button"
+                                    class="cb-quiet cb-create-all"
+                                    aria-haspopup="menu"
+                                    aria-expanded="false"
+                                    aria-controls="cb-more-menu"
+                                    data-more-btn
+                                ></button>
+                                <div
+                                    id="cb-more-menu"
+                                    class="cb-menu cb-create-all-menu"
+                                    role="menu"
+                                    data-more-menu
+                                    hidden
+                                ></div>
+                            </div>
+                            <div class="cb-create-menu">
+                                <button
+                                    type="button"
+                                    class="cb-quiet cb-create-add"
+                                    aria-haspopup="menu"
+                                    aria-expanded="false"
+                                    aria-controls="cb-add-menu"
+                                    data-item-add
+                                >
+                                    {{create.addItem}}
                                 </button>
-                                <button type="button" role="menuitem" data-add-type="code">
-                                    {{create.type.code}}
-                                </button>
-                                <button type="button" role="menuitem" data-add-type="markdown">
-                                    {{create.type.markdown}}
-                                </button>
-                                <button type="button" role="menuitem" data-add-type="download">
-                                    {{create.type.download}}
-                                </button>
+                                <div
+                                    id="cb-add-menu"
+                                    class="cb-menu"
+                                    role="menu"
+                                    data-add-menu
+                                    hidden
+                                >
+                                    <button type="button" role="menuitem" data-add-type="plain">
+                                        {{create.type.plain}}
+                                    </button>
+                                    <button type="button" role="menuitem" data-add-type="code">
+                                        {{create.type.code}}
+                                    </button>
+                                    <button type="button" role="menuitem" data-add-type="markdown">
+                                        {{create.type.markdown}}
+                                    </button>
+                                    <button type="button" role="menuitem" data-add-type="download">
+                                        {{create.type.download}}
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    <div class="cb-itembar">
-                        <label class="cb-sr-only" for="create-item-type">{{create.itemType}}</label>
-                        <select
-                            id="create-item-type"
-                            class="cb-input cb-select cb-input-sm"
-                            data-item-type
-                        >
-                            <option value="plain">{{create.type.plain}}</option>
-                            <option value="code">{{create.type.code}}</option>
-                            <option value="markdown">{{create.type.markdown}}</option>
-                            <option value="download">{{create.type.download}}</option>
-                        </select>
-                        <label class="cb-sr-only" for="create-item-name">{{create.itemName}}</label>
-                        <input
-                            id="create-item-name"
-                            class="cb-input cb-input-sm cb-item-name-input"
-                            type="text"
-                            maxlength="200"
-                            spellcheck="false"
-                            autocomplete="off"
-                            placeholder="{{create.itemNamePlaceholder}}"
-                            data-item-name
-                        />
-                        <label class="cb-sr-only" for="create-item-lang"
-                            >{{create.codeLanguage}}</label
-                        >
-                        <select
-                            id="create-item-lang"
-                            class="cb-input cb-select cb-input-sm"
-                            data-item-lang
-                            hidden
-                        >
-                            <option value="plaintext">{{create.plainText}}</option>
-                            <option value="bash">Bash</option>
-                            <option value="css">CSS</option>
-                            <option value="diff">Diff</option>
-                            <option value="html">HTML</option>
-                            <option value="ini">INI / TOML</option>
-                            <option value="javascript">JavaScript</option>
-                            <option value="json">JSON</option>
-                            <option value="markdown">Markdown</option>
-                            <option value="python">Python</option>
-                            <option value="rust">Rust</option>
-                            <option value="sql">SQL</option>
-                            <option value="typescript">TypeScript</option>
-                            <option value="yaml">YAML</option>
-                        </select>
-                        <span class="cb-itembar-actions">
-                            <span
-                                class="cb-segmented"
-                                role="group"
-                                aria-label="{{create.markdownEditor}}"
-                                data-preview-switch
+                        <div class="cb-create-tools">
+                            <label class="cb-sr-only" for="create-item-type"
+                                >{{create.itemType}}</label
+                            >
+                            <select
+                                id="create-item-type"
+                                class="cb-input cb-select cb-input-sm"
+                                data-item-type
+                            >
+                                <option value="plain">{{create.type.plain}}</option>
+                                <option value="code">{{create.type.code}}</option>
+                                <option value="markdown">{{create.type.markdown}}</option>
+                                <option value="download">{{create.type.download}}</option>
+                            </select>
+                            <label class="cb-sr-only" for="create-item-name"
+                                >{{create.itemName}}</label
+                            >
+                            <input
+                                id="create-item-name"
+                                class="cb-input cb-input-sm cb-item-name-input"
+                                type="text"
+                                maxlength="200"
+                                spellcheck="false"
+                                autocomplete="off"
+                                placeholder="{{create.itemNamePlaceholder}}"
+                                data-item-name
+                            />
+                            <label class="cb-sr-only" for="create-item-lang"
+                                >{{create.codeLanguage}}</label
+                            >
+                            <select
+                                id="create-item-lang"
+                                class="cb-input cb-select cb-input-sm"
+                                data-item-lang
                                 hidden
                             >
-                                <button type="button" aria-pressed="true" data-preview-write>
-                                    {{create.write}}
-                                </button>
-                                <button type="button" aria-pressed="false" data-preview-show>
-                                    {{create.preview}}
+                                <option value="plaintext">{{create.plainText}}</option>
+                                <option value="bash">Bash</option>
+                                <option value="css">CSS</option>
+                                <option value="diff">Diff</option>
+                                <option value="html">HTML</option>
+                                <option value="ini">INI / TOML</option>
+                                <option value="javascript">JavaScript</option>
+                                <option value="json">JSON</option>
+                                <option value="markdown">Markdown</option>
+                                <option value="python">Python</option>
+                                <option value="rust">Rust</option>
+                                <option value="sql">SQL</option>
+                                <option value="typescript">TypeScript</option>
+                                <option value="yaml">YAML</option>
+                            </select>
+                            <span class="cb-bar-actions" data-item-actions>
+                                <span
+                                    class="cb-create-switch"
+                                    role="group"
+                                    aria-label="{{create.markdownEditor}}"
+                                    data-preview-switch
+                                    hidden
+                                >
+                                    <button
+                                        type="button"
+                                        class="cb-quiet"
+                                        aria-pressed="true"
+                                        data-preview-write
+                                    >
+                                        {{create.write}}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="cb-quiet"
+                                        aria-pressed="false"
+                                        data-preview-show
+                                    >
+                                        {{create.preview}}
+                                    </button>
+                                </span>
+                                <button type="button" class="cb-quiet" data-item-remove hidden>
+                                    <span class="cb-bar-label">{{create.remove}}</span>
                                 </button>
                             </span>
-                            <button type="button" class="cb-btn-secondary" data-item-remove hidden>
-                                {{create.remove}}
+                        </div>
+                    </div>
+
+                    <div class="cb-item-panel" role="tabpanel" id="cb-create-panel" data-item-panel>
+                        <textarea
+                            class="cb-input cb-textarea cb-item-text"
+                            rows="10"
+                            maxlength="10485760"
+                            placeholder="{{create.textPlaceholder}}"
+                            aria-label="{{create.itemContent}}"
+                            data-item-text
+                        ></textarea>
+                        <div class="cb-item-preview" data-item-preview hidden></div>
+                        <div class="cb-drop" data-item-drop hidden>
+                            <p data-item-drop-label>{{create.drop}}</p>
+                            <button type="button" class="cb-btn-secondary" data-item-choose>
+                                {{create.chooseFile}}
                             </button>
-                        </span>
+                            <input
+                                type="file"
+                                class="cb-item-file"
+                                data-item-file
+                                hidden
+                                multiple
+                            />
+                        </div>
+                    </div>
+                    <div class="cb-create-foot">
+                        <svg class="cb-size-bar" aria-hidden="true" focusable="false" data-size-bar>
+                            <rect class="cb-size-track" width="100%" height="100%" rx="2" />
+                            <rect
+                                class="cb-size-fill"
+                                width="0%"
+                                height="100%"
+                                rx="2"
+                                data-size-fill
+                            />
+                        </svg>
+                        <p class="cb-size-meter" data-size-meter></p>
                     </div>
                 </div>
 
-                <div class="cb-item-panel" role="tabpanel" id="cb-create-panel" data-item-panel>
-                    <textarea
-                        class="cb-input cb-textarea cb-item-text"
-                        rows="10"
-                        maxlength="10485760"
-                        placeholder="{{create.textPlaceholder}}"
-                        aria-label="{{create.itemContent}}"
-                        data-item-text
-                    ></textarea>
-                    <div class="cb-item-preview" data-item-preview hidden></div>
-                    <div class="cb-drop" data-item-drop hidden>
-                        <p data-item-drop-label>{{create.drop}}</p>
-                        <button type="button" class="cb-btn-secondary" data-item-choose>
-                            {{create.chooseFile}}
-                        </button>
-                        <input type="file" class="cb-item-file" data-item-file hidden multiple />
+                <div class="cb-create-options">
+                    <div class="cb-create-field">
+                        <label class="cb-label" for="create-expiry">{{create.expires}}</label>
+                        <select id="create-expiry" class="cb-input cb-select">
+                            <option value="3600">{{create.expiry.hour}}</option>
+                            <option value="86400">{{create.expiry.day}}</option>
+                            <option value="604800" selected>{{create.expiry.week}}</option>
+                            <option value="2592000">{{create.expiry.30days}}</option>
+                            <option value="7776000">{{create.expiry.90days}}</option>
+                            <option value="">{{expiry.none}}</option>
+                        </select>
+                    </div>
+                    <div class="cb-create-field" role="group" aria-labelledby="create-burn-label">
+                        <span class="cb-label" id="create-burn-label">{{create.burnLabel}}</span>
+                        <label class="cb-check cb-create-burn">
+                            <input type="checkbox" id="create-burn" />
+                            <span>{{create.burn}}</span>
+                        </label>
+                    </div>
+                    <div class="cb-create-field cb-create-field-wide">
+                        <label class="cb-label" for="create-password">{{create.password}}</label>
+                        <input
+                            type="password"
+                            id="create-password"
+                            class="cb-input"
+                            placeholder="{{create.passwordPlaceholder}}"
+                            autocomplete="new-password"
+                            aria-describedby="create-password-error create-password-note"
+                        />
                     </div>
                 </div>
-                <p class="cb-size-meter" data-size-meter></p>
-
-                <div class="cb-form-row">
-                    <label class="cb-label" for="create-expiry">{{create.expires}}</label>
-                    <select id="create-expiry" class="cb-input cb-select">
-                        <option value="3600">{{create.expiry.hour}}</option>
-                        <option value="86400">{{create.expiry.day}}</option>
-                        <option value="604800" selected>{{create.expiry.week}}</option>
-                        <option value="2592000">{{create.expiry.30days}}</option>
-                        <option value="7776000">{{create.expiry.90days}}</option>
-                        <option value="">{{expiry.none}}</option>
-                    </select>
-                </div>
-                <label class="cb-check">
-                    <input type="checkbox" id="create-burn" />
-                    <span>{{create.burn}}</span>
-                </label>
-                <div class="cb-form-row">
-                    <label class="cb-label" for="create-password">{{create.password}}</label>
-                    <input
-                        type="password"
-                        id="create-password"
-                        class="cb-input"
-                        placeholder="{{create.passwordPlaceholder}}"
-                        autocomplete="new-password"
-                        aria-describedby="create-password-error"
-                    />
-                    <span class="cb-label-note"> {{create.passwordNote}} </span>
-                </div>
+                <p class="cb-label-note" id="create-password-note" data-password-note hidden>
+                    {{create.passwordNote}}
+                </p>
                 <p class="cb-error" id="create-password-error" data-password-error hidden></p>
-                <button type="submit" class="cb-btn" data-create-submit>{{create.submit}}</button>
+                <div class="cb-create-submit">
+                    <button type="submit" class="cb-btn" data-create-submit>
+                        {{create.submit}}
+                    </button>
+                    <p class="cb-create-trust" data-trust-line>{{create.lede}}</p>
+                </div>
             </form>
         </template>
 
@@ -314,48 +366,63 @@
         </template>
 
         <template id="tmpl-encrypting">
-            <h1 class="cb-h1">{{create.encrypting}}</h1>
-            <div class="cb-spinner"></div>
-            <p class="cb-lede cb-pulse">{{create.encryptingLede}}</p>
+            <div class="cb-create-state">
+                <span data-hexagon-slot></span>
+                <h1 class="cb-h1">{{create.encrypting}}</h1>
+                <p class="cb-lede">{{create.encryptingLede}}</p>
+            </div>
         </template>
 
         <template id="tmpl-done">
-            <h1 class="cb-h1">{{create.done}}</h1>
-            <p class="cb-lede">{{create.doneLede}}</p>
-            <div class="cb-callout">
-                <label class="cb-label" for="share-link">{{create.shareLink}}</label>
-                <div class="cb-copy-row">
-                    <input id="share-link" class="cb-input" type="text" readonly data-share-link />
-                    <button type="button" class="cb-btn cb-btn-sm" data-copy="share-link">
-                        {{create.copy}}
+            <div class="cb-sealed">
+                <div class="cb-sealed-head">
+                    <span data-hexagon-slot></span>
+                    <div class="cb-sealed-title">
+                        <h1 class="cb-h1">{{create.done}}</h1>
+                        <ul class="cb-chips" data-summary></ul>
+                    </div>
+                </div>
+                <div class="cb-link-panel">
+                    <p class="cb-sealed-link" id="share-link" data-share-link></p>
+                    <div class="cb-sealed-row">
+                        <p class="cb-sealed-note">{{create.keyNote}}</p>
+                        <button type="button" class="cb-btn" data-copy="share-link">
+                            <span>{{create.copyLink}}</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="cb-sealed-delete" data-delete-row>
+                    <div class="cb-sealed-delete-text">
+                        <strong>{{create.deleteLink}}</strong>
+                        <span
+                            class="cb-sealed-delete-link"
+                            id="delete-link"
+                            data-delete-link
+                        ></span>
+                        <span class="cb-sealed-note">{{create.deleteLinkNote}}</span>
+                    </div>
+                    <button
+                        type="button"
+                        class="cb-btn cb-btn-ghost cb-btn-sm"
+                        data-copy="delete-link"
+                    >
+                        <span>{{create.copy}}</span>
                     </button>
                 </div>
+                <p>
+                    <a href="{{prefix}}/" class="cb-sealed-another">{{create.another}}</a>
+                </p>
             </div>
-            <div class="cb-callout">
-                <label class="cb-label" for="delete-link">{{create.deleteLink}}</label>
-                <div class="cb-copy-row">
-                    <input
-                        id="delete-link"
-                        class="cb-input"
-                        type="text"
-                        readonly
-                        data-delete-link
-                    />
-                    <button type="button" class="cb-btn cb-btn-sm" data-copy="delete-link">
-                        {{create.copy}}
-                    </button>
-                </div>
-            </div>
-            <p>
-                <a href="{{prefix}}/" class="cb-btn">{{create.another}}</a>
-            </p>
         </template>
 
         <template id="tmpl-error">
-            <h1 class="cb-h1">{{create.error}}</h1>
-            <p class="cb-lede" data-error-message></p>
-            <div data-token-slot></div>
-            <p><button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button></p>
+            <div class="cb-create-state">
+                <span data-hexagon-slot></span>
+                <h1 class="cb-h1">{{create.error}}</h1>
+                <p class="cb-lede" data-error-message></p>
+                <div data-token-slot></div>
+                <p><button type="button" class="cb-btn" data-retry-btn>{{create.retry}}</button></p>
+            </div>
         </template>
     </body>
 </html>

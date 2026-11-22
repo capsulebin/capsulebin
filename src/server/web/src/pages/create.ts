@@ -6,19 +6,14 @@
  */
 
 import { MAX_ITEM_BYTES, MAX_ITEMS, Paste, PasteApi, generateUlid } from '@capsulebin/core';
-import {
-    byAttr,
-    byId,
-    initShell,
-    languageFromNextPage,
-    setValue,
-    showTemplate,
-    setText,
-} from './shell';
+import { byAttr, byId, initShell, languageFromNextPage, showTemplate, setText } from './shell';
+import { CopyFeedback, createLiveRegion } from './copy-state';
 import { apiErrorText, isTokenRefused } from './errors';
+import { type HexagonState, hexagon } from './hexagon';
+import { icon } from './icons';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import { CreationToken, creationMode, takeInvitation, validToken } from '../creation-token';
-import { formatSize, t, type TextKey } from '../language';
+import { formatExpiry, formatSize, t, tn, type TextKey } from '../language';
 import { renderMarkdown } from '../render-markdown';
 import { trustedHtml } from '../trusted-html';
 
@@ -50,7 +45,7 @@ let items: ItemState[] = [];
 let activeId: string | null = null;
 let addMenuOpen = false;
 let moreOpen = false;
-/** Items whose tabs do not fit in the bar (counted on the "N more" button). */
+/** Items whose tabs do not fit in the bar; the "All N" button shows while there are any. */
 let overflow: number[] = [];
 
 /** Listeners on `document` and the resize observer belong to one edit form;
@@ -223,6 +218,16 @@ function restoreFields(draft: Draft): void {
     byId<HTMLInputElement>('create-password').value = draft.password;
 }
 
+/** The password hint shows only while the password field has content. */
+function refreshPasswordNote(): void {
+    byAttr('password-note').hidden = byId<HTMLInputElement>('create-password').value === '';
+}
+
+/** Puts the state hexagon into the shown template's `[data-hexagon-slot]`. */
+function placeHexagon(state: HexagonState): void {
+    byAttr('hexagon-slot').replaceWith(hexagon(state));
+}
+
 // --- phases ------------------------------------------------------------------
 
 /**
@@ -305,10 +310,15 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
     showTemplate('tmpl-edit', 'data-create-root');
     showNotice(notice);
     mountTokenLine();
+    byAttr('item-remove').prepend(icon('remove'));
+    byAttr('create-submit').prepend(icon('lock'));
+    byAttr('trust-line').prepend(icon('lock'));
 
     items = draft ? draft.items : [newItem('plain')];
     activeId = draft ? draft.activeId : items[0]!.id;
     if (draft) restoreFields(draft);
+    refreshPasswordNote();
+    byId<HTMLInputElement>('create-password').addEventListener('input', refreshPasswordNote);
     addMenuOpen = false;
     moreOpen = false;
     overflow = [];
@@ -391,7 +401,7 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
         { signal },
     );
 
-    // "N more" menu for tabs that do not fit, refitted whenever the row resizes.
+    // "All N" menu for tabs that do not fit, refitted whenever the row resizes.
     const moreButton = byAttr<HTMLButtonElement>('more-btn');
     const moreMenu = byAttr<HTMLElement>('more-menu');
     moreButton.addEventListener('click', () => setMoreMenu(!moreOpen));
@@ -411,7 +421,16 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
         }
     });
     moreMenu.addEventListener('click', (event) => {
-        const option = (event.target as HTMLElement).closest<HTMLElement>('[data-more-id]');
+        const target = event.target as HTMLElement;
+        const remove = target.closest<HTMLElement>('[data-menu-remove-id]');
+        if (remove) {
+            removeItem(remove.dataset.menuRemoveId!);
+            // The menu was rebuilt (or closed, once every tab fits again).
+            if (moreOpen) focusCheckedRow();
+            else focusActiveTab();
+            return;
+        }
+        const option = target.closest<HTMLElement>('[data-more-id]');
         if (!option) return;
         setMoreMenu(false);
         selectItem(option.dataset.moreId!);
@@ -420,7 +439,8 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
     document.addEventListener(
         'click',
         (event) => {
-            if (moreOpen && !more.contains(event.target as Node)) setMoreMenu(false);
+            // The path, not the target: a removed row is no longer inside the menu.
+            if (moreOpen && !event.composedPath().includes(more)) setMoreMenu(false);
         },
         { signal },
     );
@@ -570,10 +590,15 @@ function selectItem(id: string): void {
             .querySelector<HTMLElement>(`[data-tab-id="${id}"]`)
             ?.focus();
     }
-    revealActiveItem(
-        document.querySelector<HTMLElement>('.cb-viewer-head'),
-        byAttr<HTMLElement>('item-panel'),
-    );
+    revealActiveItem(byAttr<HTMLElement>('editor-head'), byAttr<HTMLElement>('item-panel'));
+}
+
+function focusActiveTab(): void {
+    byAttr<HTMLElement>('item-tabs').querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+}
+
+function focusCheckedRow(): void {
+    byAttr<HTMLElement>('more-menu').querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
 }
 
 function setAddMenu(open: boolean): void {
@@ -678,10 +703,10 @@ function updatePreview(item: ItemState): void {
     previewArea.innerHTML = trustedHtml(`<div class="cb-prose">${html}</div>`);
 }
 
-/** Keeps the size line and the submit button's disabled state live while
- *  typing, without a full render() (which would reset the textarea's value
- *  and cursor position). Disabling the button here means an oversized capsule
- *  never gets far enough to hit the server's 413. */
+/** Keeps the size line, its bar and the submit button's disabled state live
+ *  while typing, without a full render() (which would reset the textarea's
+ *  value and cursor position). Disabling the button here means an oversized
+ *  capsule never gets far enough to hit the server's 413. */
 function refreshSizeMeter(): void {
     const totalBytes = totalPayloadBytes();
     const overBudget = totalBytes > MAX_ITEM_BYTES;
@@ -699,6 +724,10 @@ function refreshSizeMeter(): void {
     const meter = byAttr<HTMLElement>('size-meter');
     meter.classList.toggle('cb-size-meter-over', overBudget);
     meter.textContent = parts.join(' · ');
+    // A presentation attribute, not a style: the CSP allows no inline style.
+    const share = Math.min(100, (totalBytes / MAX_ITEM_BYTES) * 100);
+    byAttr('size-fill').setAttribute('width', `${share.toFixed(1)}%`);
+    byAttr('size-bar').classList.toggle('cb-size-bar-over', overBudget);
 
     byAttr<HTMLButtonElement>('create-submit').disabled = overBudget;
 }
@@ -709,20 +738,68 @@ function render(): void {
     renderTabs();
     renderEditor(getActive());
     refreshSizeMeter();
-    byAttr<HTMLButtonElement>('item-add').disabled = items.length >= MAX_ITEMS;
+    const full = items.length >= MAX_ITEMS;
+    const addButton = byAttr<HTMLButtonElement>('item-add');
+    addButton.disabled = full;
+    addButton.textContent = full
+        ? t('create.itemsFull', { count: items.length, max: MAX_ITEMS })
+        : t('create.addItem');
 }
 
 function setMoreMenu(open: boolean): void {
     moreOpen = open && overflow.length > 0;
     byAttr<HTMLElement>('more-menu').hidden = !moreOpen;
     byAttr<HTMLButtonElement>('more-btn').setAttribute('aria-expanded', String(moreOpen));
-    if (moreOpen)
-        byAttr<HTMLElement>('more-menu')
-            .querySelector<HTMLElement>('[aria-checked="true"]')
-            ?.focus();
+    if (moreOpen) focusCheckedRow();
 }
 
-/** Hides the tabs that do not fit and fills the "N more" menu. */
+/** Kind badge and name of an item, as in its tab and its "All N" row. */
+function itemLabel(item: ItemState, index: number): HTMLElement[] {
+    const kind = document.createElement('span');
+    kind.className = 'cb-itemtab-kind';
+    kind.textContent = t(KIND_BADGE[item.presentation]);
+    const name = document.createElement('span');
+    name.className = 'cb-itemtab-name';
+    name.textContent = displayName(item, index);
+    return [kind, name];
+}
+
+/** The control that removes `item`, named "Remove {name}". */
+function removeControl(item: ItemState, index: number, className: string): HTMLButtonElement {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = className;
+    remove.title = t('create.removeItem', { name: displayName(item, index) });
+    remove.setAttribute('aria-label', remove.title);
+    remove.append(icon('remove'));
+    return remove;
+}
+
+/** One row of the "All N" menu: the item, and its remove control while there is more than one. */
+function menuLine(item: ItemState, index: number): HTMLElement {
+    const line = document.createElement('div');
+    line.className = 'cb-menu-line';
+    line.setAttribute('role', 'none');
+
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'cb-menu-row';
+    option.setAttribute('role', 'menuitemradio');
+    option.setAttribute('aria-checked', String(item.id === activeId));
+    option.dataset.moreId = item.id;
+    option.append(...itemLabel(item, index));
+    line.append(option);
+
+    if (items.length > 1) {
+        const remove = removeControl(item, index, 'cb-quiet cb-menu-remove');
+        remove.setAttribute('role', 'menuitem');
+        remove.dataset.menuRemoveId = item.id;
+        line.append(remove);
+    }
+    return line;
+}
+
+/** Hides the tabs that do not fit and fills the "All N" menu. */
 function layoutTabs(): void {
     const index = items.findIndex((item) => item.id === activeId);
     overflow = fitTabs(
@@ -730,26 +807,12 @@ function layoutTabs(): void {
         byAttr<HTMLElement>('more'),
         Math.max(0, index),
     );
-    byAttr<HTMLElement>('more-btn').textContent = t('items.more', { count: overflow.length });
-    // Once anything overflows, the menu lists every item - one complete list is
-    // easier to navigate than "whatever did not fit".
-    byAttr<HTMLElement>('more-menu').replaceChildren(
-        ...items.map((item, i) => {
-            const option = document.createElement('button');
-            option.type = 'button';
-            option.setAttribute('role', 'menuitemradio');
-            option.setAttribute('aria-checked', String(item.id === activeId));
-            option.dataset.moreId = item.id;
-            const kind = document.createElement('span');
-            kind.className = 'cb-itemtab-kind';
-            kind.textContent = t(KIND_BADGE[item.presentation]);
-            const name = document.createElement('span');
-            name.className = 'cb-itemtab-name';
-            name.textContent = displayName(item, i);
-            option.append(kind, name);
-            return option;
-        }),
-    );
+    const label = document.createElement('span');
+    label.textContent = t('items.all', { count: items.length });
+    byAttr<HTMLElement>('more-btn').replaceChildren(label, icon('chevron-down'));
+    // The menu lists every item in creation order, whatever fits: an item is
+    // always at the same place, at every width.
+    byAttr<HTMLElement>('more-menu').replaceChildren(...items.map(menuLine));
     if (overflow.length === 0 && moreOpen) setMoreMenu(false);
 }
 
@@ -773,24 +836,13 @@ function renderTabs(): void {
             tab.setAttribute('aria-controls', 'cb-create-panel');
             tab.tabIndex = selected ? 0 : -1;
 
-            const kind = document.createElement('span');
-            kind.className = 'cb-itemtab-kind';
-            kind.textContent = t(KIND_BADGE[item.presentation]);
-            const name = document.createElement('span');
-            name.className = 'cb-itemtab-name';
-            name.textContent = displayName(item, index);
-            tab.append(kind, name);
+            tab.append(...itemLabel(item, index));
             wrap.append(tab);
 
             if (removable) {
-                const remove = document.createElement('button');
-                remove.type = 'button';
-                remove.className = 'cb-itemtab-close';
+                const remove = removeControl(item, index, 'cb-itemtab-close');
                 remove.dataset.removeId = item.id;
                 remove.tabIndex = -1;
-                remove.textContent = '×';
-                remove.title = t('create.removeItem', { name: displayName(item, index) });
-                remove.setAttribute('aria-label', remove.title);
                 wrap.append(remove);
             }
             return wrap;
@@ -887,20 +939,61 @@ function collectItems(): ItemData[] {
 function showEncrypting(): void {
     endEditSession();
     showTemplate('tmpl-encrypting', 'data-create-root');
+    placeHexagon('running');
 }
 
-function showDone(shareUrl: string, deleteUrl: string): void {
+/**
+ * The facts of the capsule as the creator submitted it (`draft`), never taken
+ * from the server's answer: items and their size, expiry, password, burn.
+ */
+function summaryParts(draft: Draft): string[] {
+    const filled = draft.items.filter((item) => !isItemEmpty(item));
+    const bytes = filled.reduce((sum, item) => sum + itemByteLength(item), 0);
+    const now = Math.floor(Date.now() / 1000);
+    const expiry = draft.expiry === '' ? null : now + parseInt(draft.expiry, 10);
+    const parts = [
+        tn('create.summary.items', filled.length, { size: formatSize(bytes) }),
+        formatExpiry(expiry, now),
+        t(draft.password === '' ? 'create.summary.noPassword' : 'create.summary.password'),
+    ];
+    if (draft.burn) parts.push(t('create.summary.burn'));
+    return parts;
+}
+
+/** The share link as text, with the part from `#` on (the key) in its own element. */
+function showShareLink(shareUrl: string): void {
+    const hash = shareUrl.indexOf('#');
+    const key = document.createElement('span');
+    key.className = 'cb-sealed-key';
+    key.dataset.shareKey = '';
+    key.textContent = hash < 0 ? '' : shareUrl.slice(hash);
+    byAttr('share-link').replaceChildren(hash < 0 ? shareUrl : shareUrl.slice(0, hash), key);
+}
+
+/** The sealed page: both links in full, the summary of `draft`, a copy button per link. */
+function showDone(shareUrl: string, deleteUrl: string, draft: Draft): void {
     showTemplate('tmpl-done', 'data-create-root');
+    placeHexagon('sealed');
 
-    setValue('share-link', shareUrl);
-    setValue('delete-link', deleteUrl);
+    byAttr('summary').replaceChildren(
+        ...summaryParts(draft).map((part) => {
+            const chip = document.createElement('li');
+            chip.className = 'cb-chip';
+            chip.textContent = part;
+            return chip;
+        }),
+    );
+    showShareLink(shareUrl);
+    setText('delete-link', deleteUrl);
 
-    for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
-        btn.addEventListener('click', () => {
-            const inputId = btn.dataset.copy!;
-            const input = byId<HTMLInputElement>(inputId);
-            input.select();
-            navigator.clipboard.writeText(input.value).catch(() => {});
+    const region = createLiveRegion();
+    byAttr('create-root').append(region);
+    const feedback = new CopyFeedback(region);
+    const links: Record<string, string> = { 'share-link': shareUrl, 'delete-link': deleteUrl };
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+        button.prepend(icon('copy'));
+        button.addEventListener('click', () => {
+            void feedback.copy(button, links[button.dataset.copy!]!);
         });
     }
 }
@@ -908,6 +1001,7 @@ function showDone(shareUrl: string, deleteUrl: string): void {
 /** A failed create; "Back to editing" brings back `draft` as it was submitted. */
 function showError(message: string, draft: Draft): void {
     showTemplate('tmpl-error', 'data-create-root');
+    placeHexagon('empty');
     setText('error-message', message);
     byAttr('retry-btn').addEventListener('click', () => showEdit(draft));
 }
@@ -935,7 +1029,7 @@ async function publish(paste: Paste, draft: Draft): Promise<void> {
             new PasteApi('', { creationToken }),
             window.location.origin,
         );
-        showDone(shareUrl, deleteUrl);
+        showDone(shareUrl, deleteUrl, draft);
     } catch (err) {
         console.error(err);
         if (mode === 'token' && isTokenRefused(err)) {

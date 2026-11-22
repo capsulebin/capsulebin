@@ -100,6 +100,11 @@ against the pairs and thresholds of the built-in theme (WCAG 2.2 contrast ratio)
 | --- | --- | --- |
 | `text`, `text_muted`, `accent`, `danger`, `warning`, `success` | `bg`, `surface`, `surface_sunken` | 4.5:1 |
 | `accent_text` | `accent` | 4.5:1 |
+| `accent` | `tint_accent` | 4.5:1 |
+| `danger` | `tint_danger` | 4.5:1 |
+| `warning` | `tint_warning` | 4.5:1 |
+| `success` | `tint_success` | 4.5:1 |
+| `text` | `tint_accent`, `tint_danger`, `tint_warning`, `tint_success` | 4.5:1 |
 | `border_strong` | `bg`, `surface`, `surface_sunken` | 3:1 |
 | `focus_ring` | `bg` | 3:1 |
 
@@ -109,7 +114,10 @@ below 4.5:1`. A warning names both keys even if only one of them is configured (
 built-in value). The built-in palette gives none. Warnings never stop anything: `serve` logs each
 once at `WARN` at startup; `check` prints each as `warning: …` to stderr, still prints its `ok:`
 line to stdout and exits 0. The other subcommands load the same configuration silently. Tokens
-outside the table (`border`, `accent_hover`, the `tint_*` tokens, text on a tint) are not checked.
+outside the table (`border`, `accent_hover`) are not checked. A tint set as dark as its status
+colour is warned about, e.g. a light `tint_warning = "#b45309"` gives
+`light theme: branding.colors.light.warning on branding.colors.light.tint_warning has a contrast
+of 1.00:1, below 4.5:1`.
 
 ### Serving the files
 
@@ -180,6 +188,9 @@ Every page of the five shells (create, view, manage, report, and the three legal
   three theme blocks of ADR-005: without `data-theme` on `<html>` the system preference decides
   (`prefers-color-scheme: dark` → dark logo), `data-theme="light"`/`"dark"` (the manual toggle)
   overrides it in both directions. Without `logo_dark` the one logo shows in both themes.
+- **The state hexagon stays.** The symbol on the progress, password, warning and "gone" pages
+  ([web-interface.md](web-interface.md#state-hexagon)) is CapsuleBin's own and is shown also with
+  `logo`: it signals a state, not the brand. It is drawn in the theme's colour tokens.
 - The name appears only in the web pages: not in the API (`problem+json`), the CLI, the logs or
   the binary name.
 
@@ -258,7 +269,7 @@ It links no colour stylesheet and shows the built-in colours only.
 | Test | Covers |
 | --- | --- |
 | `src/server/src/config/tests.rs` | Defaults, env equivalents (incl. `CAPSULEBIN__BRANDING__DE__TAGLINE` and every colour key), unknown keys and subtables (colours included), refused colour values, `[branding.colors]` next to `[branding.de]`, tagline limits, every `validate` and file error (temporary files) |
-| `src/server/src/branding/colors.rs` (unit) | Colour syntax and normalisation, WCAG ratio, warnings on the merged palette per theme, the exact stylesheet text; `TOKENS` equal to all four palette blocks of `tokens.css`, `CONTRAST_PAIRS` equal to the fixture, the example configuration's colour sections equal to `TOKENS` |
+| `src/server/src/branding/colors.rs` (unit) | Colour syntax and normalisation, WCAG ratio, warnings on the merged palette per theme (also a tint equal to its status colour), the exact stylesheet text; `TOKENS` equal to all four palette blocks of `tokens.css`, `CONTRAST_PAIRS` equal to the fixture, the example configuration's colour sections equal to `TOKENS` |
 | `src/server/src/branding.rs`, `src/server/src/api/assets.rs` (unit) | Signatures, hash length, tagline fallback and trimming; `render()` with default, escaped and token-like values, logo, dark logo, tagline per page language, incomplete regions; every template carries tokens and regions once, the tagline region only in `index.html` |
 | `src/server/tests/branding.rs` | `/branding/` serving (both asset modes, read once at startup, same file twice, generic `404`), and every page in `en`/`de` from its own test shells via `server.asset_dir`: default, escaped name, token-like name, logo, `hide_name`, all keys set, favicon alone; tagline for every language, overridden by `[branding.de]`, only `[branding.de]`, empty, escaped and literal; the attribution with only the project's name linked |
 | `src/server/tests/branding_colors.rs` | The stylesheet served from memory in both asset modes; without colours every `/branding/…css` the generic `404`; every page in `en`/`de` (legal pages included) with exactly one link last in the head and otherwise unchanged, without colours no link |
@@ -389,6 +400,12 @@ real shells are covered by the shell tests and the browser tests.
   that a test keeps equal to `src/server/web/tests/fixtures/contrast-pairs.json`, so production
   code does not depend on a file under `web/tests`; `TOKENS` is kept equal to `tokens.css` the same
   way.
+- **Coloured text on the tints is checked too** — the pages put `accent`, `danger`, `warning`,
+  `success` and `text` on the `tint_*` tokens (chips, the copy buttons' copied state, the warning
+  states, the danger button's hover; see [web-interface.md](web-interface.md)), so a tint that
+  leaves its text unreadable is worth a warning. The built-in palette passes (lowest: light
+  `warning` on `tint_warning`, 4.57:1); an operator palette may now get a warning for these pairs,
+  never an error.
 - **Warnings only from `serve` and `check`** — the two commands where an operator looks at the
   configuration; `check` writes them to stderr so its stdout stays one `ok:` line.
 - **Branding file URLs reach the access log as route templates** — the log records only the
@@ -400,8 +417,8 @@ real shells are covered by the shell tests and the browser tests.
 - No SVG logos or favicons, no custom fonts, no operator CSS, no layout changes.
 - Colours: no `--cb-shadow-card` or other non-colour token, no syntax beyond `#rgb`/`#rrggbb`, no
   colours per language. The built-in `/favicon.svg` and the Vite dev server keep the built-in
-  colours. Contrast is checked only for the pairs above (not text on the tint tokens, not
-  `accent_hover`); a failing pair never stops the start.
+  colours. Contrast is checked only for the pairs above (not `border`, not `accent_hover`); a
+  failing pair never stops the start.
 - The name and the colours are not used in the CLI, the API's `problem+json`, the logs or the
   binary name.
 - Changing a file or a colour needs a restart; there is no reload.

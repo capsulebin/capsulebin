@@ -51,6 +51,15 @@
     --cb-radius-md: 8px;
     --cb-radius-lg: 12px;
 
+    /* Radius scale by role: controls (buttons, inputs, selects) and surfaces
+     * (sheet, editor frame, link panel, menus). Not configurable and not a
+     * colour token, so not part of [branding.colors]. */
+    --cb-radius-control: var(--cb-radius-md);
+    --cb-radius-surface: var(--cb-radius-lg);
+
+    /* Hover and state changes of buttons and tabs. */
+    --cb-duration-quick: 120ms;
+
     --cb-space-1: 0.25rem;
     --cb-space-2: 0.5rem;
     --cb-space-3: 0.75rem;

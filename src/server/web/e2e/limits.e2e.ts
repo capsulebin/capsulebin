@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { MAX_CAPSULE_BYTES, MAX_ITEM_BYTES } from '@capsulebin/core';
+import { sealedLinks } from './create';
 import { expect, test } from './guard';
 
 /**
@@ -45,11 +46,10 @@ test('a capsule at the size limit is created, opened and downloaded intact', asy
     await expect(meter).toHaveText('9.9 MiB of 9.9 MiB');
     await expect(meter).not.toHaveClass(/cb-size-meter-over/);
     await page.click('[data-create-submit]');
-    const share = page.locator('#share-link');
-    await expect(share).not.toHaveValue('', { timeout: 60_000 });
+    const { share } = await sealedLinks(page, 60_000);
 
     const view = await context.newPage();
-    await view.goto(await share.inputValue());
+    await view.goto(share);
     const panel = view.locator('.cb-item-panel');
     const button = panel.getByRole('button', { name: /download/i }).first();
     await expect(button).toBeVisible({ timeout: 60_000 });

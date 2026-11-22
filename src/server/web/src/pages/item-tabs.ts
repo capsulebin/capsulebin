@@ -41,9 +41,9 @@ export function revealActiveItem(header: HTMLElement | null, panel: HTMLElement 
 
 /**
  * Fits the tabs of `bar` into its width: tabs that do not fit are hidden and
- * their indices returned, for the page to list in its "N more" menu. The active
- * tab is always kept visible - if it would overflow, it takes the last visible
- * place. `more` is the menu button next to the bar; it is shown only when
+ * their indices returned; the page then shows its "All N" button (`more`), whose
+ * menu lists every item. The active tab is always kept visible - if it would
+ * overflow, it takes the last visible place. `more` is shown only when
  * something overflows.
  *
  * Works on the bar's direct children (tab buttons on the view page, tab

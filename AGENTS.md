@@ -19,7 +19,10 @@ token from a field or an invitation link (`<public_url>/#token=<token>`) and kee
 browser (ADR-018). The web interface is in English and German: the default language
 without a path prefix, the other under its prefix (`/de/`). Operators can set the instance's name,
 tagline, logo, favicon and theme colours (`[branding]`); every page says "Powered by CapsuleBin",
-with "CapsuleBin" linked to the source code.
+with "CapsuleBin" linked to the source code. The pages put the capsule content first: quiet chrome
+and controls, the view page as one sheet with lifecycle chips under the title, an editor-first
+create page, a "Sealed" page showing the share link with its key part highlighted, and one state
+hexagon on every progress/password/warning/gone page ([`docs/web-interface.md`](docs/web-interface.md)).
 
 ## Repository layout
 
@@ -43,6 +46,7 @@ capsulebin/
 │   ├── privacy-notice.md        What an instance processes; template for the operator's notice
 │   ├── i18n.md                  Interface languages: paths, default, catalogues, adding a language
 │   ├── branding.md              Operator branding: name, tagline, logo, favicon, colours, attribution link
+│   ├── web-interface.md         Page design: chrome, view sheet, create/sealed pages, state hexagon, "All N"
 │   └── test-vectors/             Golden vectors for cross-implementation conformance
 ├── scripts/            smoke.sh — acceptance test for a release binary; release-notes.sh;
 │                         reproducible-web.sh — builds the web client twice and compares;
@@ -69,7 +73,7 @@ only standalone client. (See [ADR-010](docs/adr/ADR-010-repository-layout.md).)
 | CLI | TypeScript, esbuild, Node.js 24 (version in `.node-version`) |
 | Core library | TypeScript (no DOM, no build step), Web Crypto API |
 | Database | SQLite via SQLx, WAL mode, `synchronous = full`, `secure_delete = on`, `journal_size_limit` 64 MiB |
-| CSS | Design tokens in `src/server/web/src/styles/tokens.css`, CSP without inline styles |
+| CSS | Design tokens in `src/server/web/src/styles/tokens.css`, CSP without inline styles (no `style` attribute, also not via the CSSOM), all motion in CSS honouring `prefers-reduced-motion` |
 | Formatting | Rust: `rustfmt`; TypeScript/CSS/HTML/JSON: Prettier (4-space indent, single quotes, 100-col) |
 
 ## Key design invariants
@@ -465,7 +469,8 @@ npm run e2e -w @capsulebin/web
 | `src/core/tests/limits.test.ts`, `limits.acceptance.test.ts` | Core API client against a fake `fetch`: oversized bodies (every endpoint, error statuses, without/wrong/correct `Content-Length`) cancelled after at most the limit plus one chunk; a capsule at `MAX_CAPSULE_BYTES` still opens; total and idle deadlines with fake timers abort the signal. `limits.acceptance.test.ts`: the edges (an error body of exactly 64 KiB read, one byte more cut off; a create still waiting after 30 s; a describe or error body stalled for 30 s times out). Shared fakes (`endlessBody`, `stallingBody`, `observe`, `sealedPaste`) in `limits-support.ts`. |
 | `src/core/tests/redirect.test.ts` | The API client follows no redirect, against two real HTTP servers. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
-| `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
+| `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings; includes `accent`/`danger`/`warning`/`success` on their tint and `text` on every tint) on all four palette blocks. |
+| `src/server/web/tests/icons.test.ts`, `copy-state.test.ts`, `view-page-display.test.ts`, `render-items.test.ts`, `create-page.test.ts`, `manage-page.test.ts`, `catalogue-references.test.ts` | Page design ([`docs/web-interface.md`](docs/web-interface.md)): icons and the hexagon per state; the "Copied" state (fake timers, live region, refused clipboard); view sheet, chip order (burn × one/many items), "All N", previous/next; code gutter with `<code>` text unchanged; editor, size bar, password hint, "16 of 16", sealed page (link, key part, summary, copy); hexagon on every create and manage state; every catalogue key still referenced by a page, shell or script, `create.keyNote` naming no colour. |
 | `src/server/web/tests/xss.test.ts`, `trusted-html-usage.test.ts` | XSS vectors through the marked + DOMPurify pipeline; no bare `innerHTML` assignment in the sources (jsdom does not enforce Trusted Types). |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
 | `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; only the create shell carries `<meta name="capsulebin-creation" content="%%capsulebin:creation%%">` (exactly once, in the head), which `fillServerTokens()` fills with `public`; the tagline markers wrap the create page's slogan only. |
@@ -480,7 +485,7 @@ npm run e2e -w @capsulebin/web
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, response limits and timeouts (exit `7`, retry counts), `put`'s input limit (before reading, endless stdin, `/dev/zero`), `CAPSULEBIN_PASSWORD` bound to `--server`, `CAPSULEBIN_TOKEN` withheld from a `--server` other than `CAPSULEBIN_SERVER`, empty path options refused before any request (no fallback), the 16 384-byte first line of link/token/password sources (stdin left open, `\r\n`, `/dev/zero`), link channels (stdin, `--link-file`, `--delete-link-file`), the delete link kept after a failed `put` (file kept, else printed; `delete_url`/`delete_link_file` in the JSON error), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory also for a single item, `--here`/`-o`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
 | `src/cli/tests/escape.test.ts` | The escaping functions of `terminal.ts` over every code point and byte in U+0000–U+00FF plus seeded random input: no control character emitted, text without one unchanged. |
 | `src/cli/tests/terminal.test.ts` | The bundled CLI on a real pseudo-terminal (python3 `pty`): hidden password prompt, burn confirmation, Ctrl-C/EOF → exit `8` with no guarded request, `stty` restored after every run. Fails (no skip) without `python3`, with a message naming it (`pty-requirement.test.ts`); skipped on Windows. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), the create page on `token` and `disabled` instances: token field, bearer on create only, invitation links on `/`, `/de/`, `/en/`, remember off, forget, a refused token with the draft kept, a German flow (`creation-token.e2e.ts`, real token from `creationToken()` in `e2e/instance.ts`; only its refused-token tests accept the expected `401` console lines), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), the create page on `token` and `disabled` instances: token field, bearer on create only, invitation links on `/`, `/de/`, `/en/`, remember off, forget, a refused token with the draft kept, a German flow (`creation-token.e2e.ts`, real token from `creationToken()` in `e2e/instance.ts`; only its refused-token tests accept the expected `401` console lines), the page design measured from computed styles (`layout.e2e.ts`: quiet header/footer, radii, transitions and reduced motion, 400 px, accent only on the active tab and the primary action, reading measure, editor-first create page; `items.e2e.ts`: 16 items, "All N", previous/next, remove from the list; `states.e2e.ts`: sealed page and every state's hexagon, copied state; `acceptance.e2e.ts`: no border or shadow inside the item panel, burn chip first in the warning colour, code gutter hidden and unselectable, item action labels at 1280 px; helpers in `e2e/style.ts`), failing on any CSP/Trusted Types violation, inline `style` attribute (also one set through the CSSOM), page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -569,20 +574,23 @@ npm run e2e -w @capsulebin/web
 
 | File | Purpose |
 |------|---------|
-| `src/pages/create.ts` | Creation form: item tabs, "+ Add item" menu, per-item editor, drag & drop; phases per creation mode (`showCreate`: disabled notice, token panel, editor with the token line), invitation handling at boot, `assemblePaste` + `publish(paste, draft)` (bearer in `token` mode, refused token → `showTokenRefused` resending the same `Paste`), `Draft` restored by "Back to editing" after every error |
+| `src/pages/create.ts` | Creation form, editor first: borderless title, one editor frame (item tabs, "All N" with remove controls, the add button `create.addItem` / `create.itemsFull` "16 of 16", per-item editor, size bar), options row, password hint only with content, drag & drop; sealed page (`showDone`: share link with the key part in `[data-share-key]`, summary from the submitted `Draft`, dashed delete-link row, `CopyFeedback`); hexagon on encrypting/error (`placeHexagon`); phases per creation mode (`showCreate`: disabled notice, token panel, editor with the token line), invitation handling at boot, `assemblePaste` + `publish(paste, draft)` (bearer in `token` mode, refused token → `showTokenRefused` resending the same `Paste`), `Draft` restored by "Back to editing" after every error |
 | `src/creation-token.ts` | Creation token (ADR-018): `creationMode()` from the create shell's meta (missing/unknown → `public`), `validToken` (trimmed, 1–1024 chars U+0021–U+007E), `parseInvitation`/`takeInvitation` (`#token=`, no percent-decoding, removed by `history.replaceState`), class `CreationToken` (remembered in `localStorage['capsulebin.creation_token']` or page-only, `use`, `forget`; storage access never throws) |
-| `src/pages/view.ts` | Capsule view: decrypt, sticky item tabs, copy/download/source per item |
-| `src/pages/manage.ts` | Management page (delete, burn status) |
-| `src/pages/open-capsule.ts` | Password prompt + decrypt flow |
-| `src/pages/render-items.ts` | Item rendering dispatch |
+| `src/pages/view.ts` | Capsule view: decrypt; title, chip row (burn first, expiry, size, "Decrypted locally"), one sheet `[data-sheet]` (sticky tab bar or item name, "All N" menu, copy/download/Preview–Source actions, item panel, previous/next row); hexagon on every other phase; hexagon and icons kept as the same SVG nodes across renders (`#drawings`), so a running hexagon's animation does not restart |
+| `src/pages/icons.ts` | `icon(name)`: inline SVG icons built as DOM (`aria-hidden`); `drawing()` |
+| `src/pages/hexagon.ts` | `hexagon(state)` (`running`/`sealed`/`locked`/`warning`/`empty`): the state symbol as an SVG with `data-hexagon`, animated by CSS only |
+| `src/pages/copy-state.ts` | `CopyFeedback`: "Copied" + check icon on a copy button for `COPIED_FOR_MS` (2 s), polite live region (`createLiveRegion`), the button's own nodes parked and restored |
+| `src/pages/manage.ts` | Management page (delete, burn status); `showState(template, state)` puts the hexagon into every phase's `.cb-state`; delete as `.cb-btn-danger` |
+| `src/pages/open-capsule.ts` | Password prompt + decrypt flow; passes the descriptor's `burnAfterRetrieval` to the view |
+| `src/pages/render-items.ts` | Item rendering dispatch, content without a card; `code` items with an `aria-hidden` line-number gutter beside `<code>` (highlight output not split) |
 | `src/pages/item-tabs.ts` | Shared item tab behaviour (keyboard, reveal) for create and view |
-| `src/pages/shell.ts` | Page shell (theme, layout, language switch; `languageFromNextPage`/`isLeavingPage` keep the switch and a retrieval, deletion or draft from interfering) |
+| `src/pages/shell.ts` | Page shell (imports the stylesheets; theme, layout, language switch as quiet text buttons; `languageFromNextPage`/`isLeavingPage` keep the switch and a retrieval, deletion or draft from interfering) |
 | `src/pages/errors.ts` | Catalogue error texts by HTTP status and problem `code`; `isTokenRefused` (`unauthorized`) |
 | `src/pages/report.ts` | Abuse report form (strips the fragment, only the id is sent) |
 | `src/pages/legal.ts` | Legal pages: shell only, the server renders the text (ADR-015) |
 | `src/render-markdown.ts` | Markdown rendering (marked + DOMPurify) |
 | `src/render-code.ts` | Code rendering (highlight.js) |
-| `src/theme.ts` | Theme switching |
+| `src/theme.ts` | Theme switching; the toggle shows an SVG icon per choice (never a glyph), name `theme.switch`, choice as `title` |
 | `src/language.ts` | Page language from `<html lang>`, `register()` and `t()`/`tn()` over the registered catalogue, `Intl` formatting, paths in a language (default from the meta's `data-default`), switch logic |
 | `src/language-prefix.ts` | `languagePrefix(defaultLanguage, language)`: the one prefix rule (none for the default language, `/<lang>` otherwise), no imports and no DOM; shared by `language.ts`, the shell generator (and through `fillServerTokens()` the dev server), tests |
 | `src/i18n/<lang>.json` | Catalogues (plain text, plural keys `<key>#<category>`) |
@@ -594,12 +602,13 @@ npm run e2e -w @capsulebin/web
 | `public/theme-init.js` | Head script: applies the stored theme and sets the `color-scheme` meta before the paint |
 | `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
 | `src/trusted-html.ts` | Trusted HTML helper (CSP compliance) |
-| `src/styles/tokens.css` | Design tokens |
-| `src/styles/base.css` | Base styles |
+| `src/styles/tokens.css` | Design tokens (incl. `--cb-radius-control` 8 px, `--cb-radius-surface` 12 px, `--cb-duration-quick` 120 ms; not colour tokens) |
+| `src/styles/base.css` | Base styles: chrome, reduced-motion rule, shared components (`.cb-quiet`, `.cb-bar-label`, `.cb-copied`, chips, sheet, editor frame, link panel, menu rows, tabs, `.cb-btn-danger`, `.cb-hex*`) |
+| `src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet; editor and sealed page; `.cb-state` layout of the state pages |
 | `src/styles/code.css` | Code block styles |
 | `src/styles/prose.css` | Prose/typography styles |
 | `public/favicon.svg` | Built-in favicon (the symbol), linked unless `branding.favicon` is set |
-| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{prefix}}`/`{{default}}`/`{{name}}`/`{{favicon}}`/`{{<key>}}` placeholders and the logo/wordmark marker regions in the header (`index.html` also the tagline region around its slogan, `<meta name="capsulebin-creation" content="{{creation}}">` and the templates `tmpl-token`, `tmpl-token-form`, `tmpl-disabled`); no literal `CapsuleBin`: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
+| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{prefix}}`/`{{default}}`/`{{name}}`/`{{favicon}}`/`{{<key>}}` placeholders, the logo/wordmark marker regions and the inline-SVG theme toggle in the header (`index.html` also the tagline region around its slogan, `<meta name="capsulebin-creation" content="{{creation}}">` and the templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done` (sealed page), `tmpl-error`, `tmpl-token`, `tmpl-token-form`, `tmpl-disabled`); no literal `CapsuleBin`: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
 
 ### CLI (`src/cli/`)
 

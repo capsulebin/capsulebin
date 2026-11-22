@@ -40,26 +40,33 @@ body {
     border-radius: var(--cb-radius-sm);
 }
 
+/* Reduced motion: no transition and no animation takes time. A zero-length
+ * animation still ends (animationend fires), so the entry animation's class is
+ * removed as usual; the hexagon's own rules switch its animations off. */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
-        transition-duration: 0.01ms !important;
-        animation-duration: 0.01ms !important;
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
         animation-iteration-count: 1 !important;
         scroll-behavior: auto !important;
     }
 }
 
-/* --- Header --- */
+/* --- Header ---
+ * No band and no border: the header sits on the page background, so the
+ * content is the first thing that stands out. */
 
 .cb-head {
     display: flex;
     align-items: center;
     gap: var(--cb-space-3);
     padding: var(--cb-space-3) var(--cb-space-4);
-    background: var(--cb-surface);
-    border-bottom: 1px solid var(--cb-border);
+    background: transparent;
+    border: 0;
 }
 
 .cb-logo {
@@ -142,7 +149,20 @@ body {
 .cb-head-tools {
     display: flex;
     align-items: center;
-    gap: var(--cb-space-2);
+    gap: var(--cb-space-1);
+}
+
+/* The language switch: one quiet text button per offered language. The page's
+ * own language (aria-current) reads in the text colour, the others muted; no
+ * fill, the accent is kept for the active tab and the one primary action. */
+.cb-lang {
+    display: flex;
+    align-items: center;
+}
+
+.cb-lang button[aria-current="true"] {
+    color: var(--cb-text);
+    font-weight: 600;
 }
 
 /* --- Content --- */
@@ -186,8 +206,8 @@ body {
     gap: var(--cb-space-3);
     flex-wrap: wrap;
     padding: var(--cb-space-3) var(--cb-space-4);
-    background: var(--cb-surface);
-    border-top: 1px solid var(--cb-border);
+    background: transparent;
+    border: 0;
     font-size: 0.8125rem;
     color: var(--cb-text-muted);
 }
@@ -218,7 +238,7 @@ body {
     padding: var(--cb-space-2) var(--cb-space-4);
     min-height: 2.5rem;
     border: 1px solid transparent;
-    border-radius: var(--cb-radius-sm);
+    border-radius: var(--cb-radius-control);
     background: var(--cb-accent);
     color: var(--cb-accent-text);
     text-decoration: none;
@@ -239,21 +259,18 @@ body {
     background: var(--cb-surface-sunken);
 }
 
-.cb-btn-icon {
-    font: inherit;
-    font-size: 0.8125rem;
-    padding: var(--cb-space-1) var(--cb-space-2);
-    min-height: 2rem;
-    min-width: 2rem;
+/* An irreversible action (the manage page's delete). Combined with .cb-btn,
+ * which gives it radius, transitions and the disabled state. Only pairs held
+ * by tests/fixtures/contrast-pairs.json: danger on surface, danger on
+ * tint_danger; a filled danger button has no covered text colour. */
+.cb-btn-danger {
     background: var(--cb-surface);
-    color: var(--cb-text-muted);
-    border: 1px solid var(--cb-border-strong);
-    border-radius: var(--cb-radius-sm);
-    cursor: pointer;
+    color: var(--cb-danger);
+    border-color: var(--cb-danger);
 }
 
-.cb-btn-icon:hover {
-    color: var(--cb-text);
+.cb-btn-danger:hover {
+    background: var(--cb-tint-danger);
 }
 
 /* --- Forms --- */
@@ -271,23 +288,6 @@ body {
     max-width: none;
 }
 
-.cb-form-row {
-    display: flex;
-    align-items: center;
-    gap: var(--cb-space-3);
-}
-
-/* On a phone, label, field and note stack instead of squeezing into one row. */
-@media (max-width: 34rem) {
-    .cb-form-row {
-        flex-wrap: wrap;
-    }
-
-    .cb-form-row .cb-label-note {
-        flex-basis: 100%;
-    }
-}
-
 .cb-label {
     display: block;
     font-size: 0.8125rem;
@@ -303,7 +303,7 @@ body {
     padding: var(--cb-space-2) var(--cb-space-3);
     min-height: 2.5rem;
     border: 1px solid var(--cb-border-strong);
-    border-radius: var(--cb-radius-sm);
+    border-radius: var(--cb-radius-control);
     background: var(--cb-surface);
     color: var(--cb-text);
 }
@@ -344,15 +344,6 @@ body {
     accent-color: var(--cb-accent);
 }
 
-.cb-copy-row {
-    display: flex;
-    gap: var(--cb-space-2);
-}
-
-.cb-copy-row .cb-input {
-    flex: 1;
-}
-
 .cb-btn-sm {
     font-size: 0.8125rem;
     min-height: 2rem;
@@ -361,22 +352,6 @@ body {
 }
 
 /* --- Content display --- */
-
-.cb-card {
-    padding: var(--cb-space-3);
-    border: 1px solid var(--cb-border);
-    border-radius: var(--cb-radius-md);
-    background: var(--cb-surface);
-    width: 100%;
-}
-
-/* Every item type fills .cb-card at the same width - no reading-measure cap
- * on markdown/plain text, so switching between items doesn't change the
- * width of the box. .cb-prose has its own max-width for use elsewhere (the
- * create-page preview); this overrides it only inside the viewer's card. */
-.cb-card .cb-prose {
-    max-width: none;
-}
 
 .cb-pre {
     margin: 0;
@@ -390,7 +365,7 @@ body {
 
 .cb-callout {
     padding: var(--cb-space-3);
-    border-radius: var(--cb-radius-md);
+    border-radius: var(--cb-radius-surface);
     border: 1px solid var(--cb-border);
     background: var(--cb-surface);
     font-size: 0.9375rem;
@@ -490,49 +465,11 @@ body {
     animation-delay: 230ms;
 }
 
-/* Pulsing indicator for loading states (encrypting / decrypting). */
-@keyframes cb-pulse {
-    0%,
-    100% {
-        opacity: 1;
-    }
-    50% {
-        opacity: 0.5;
-    }
-}
-
-.cb-pulse {
-    animation: cb-pulse 1.2s ease-in-out infinite;
-}
-
-/* Spinner for indeterminate wait states. Pure CSS — no image, no JS. */
-@keyframes cb-spin {
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-.cb-spinner {
-    display: block;
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 2px solid var(--cb-border);
-    border-top-color: var(--cb-accent);
-    border-radius: 50%;
-    animation: cb-spin 0.6s linear infinite;
-}
-
 .cb-kdf-progress {
     display: flex;
     align-items: center;
     gap: var(--cb-space-3);
     margin-bottom: var(--cb-space-4);
-}
-
-.cb-kdf-progress .cb-spinner {
-    width: 1.1rem;
-    height: 1.1rem;
-    flex: 0 0 auto;
 }
 
 .cb-kdf-progress p {
@@ -545,10 +482,6 @@ body {
     margin: 0;
     font-size: 0.875rem;
     color: var(--cb-danger);
-}
-
-.cb-form-row {
-    margin-bottom: var(--cb-space-4);
 }
 
 /* The creation token held by the create page, above the form. */
@@ -593,7 +526,7 @@ body {
     color: var(--cb-text);
     background: var(--cb-surface);
     border: 1px solid var(--cb-border);
-    border-radius: var(--cb-radius-sm);
+    border-radius: var(--cb-radius-control);
     cursor: pointer;
 }
 
@@ -688,34 +621,7 @@ cb-view-page {
     width: 100%;
 }
 
-/* Tab bar plus the active item's bar, pinned while a long item scrolls, so
- * another item is always one click away. Opaque, so scrolled content does not
- * show through. */
-.cb-viewer-head {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--cb-bg);
-    padding-top: var(--cb-space-2);
-    /* A band of background below the divider, so scrolled content disappears
-     * a little below the line instead of running right up against it. */
-    padding-bottom: var(--cb-space-2);
-}
-
-/* ...and fades out into it rather than being cut off hard. At the top of the
- * page the fade lies over the gap before the first item, where it is invisible. */
-.cb-viewer-head::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 100%;
-    height: var(--cb-space-3);
-    background: linear-gradient(var(--cb-bg), transparent);
-    pointer-events: none;
-}
-
-/* Tabs that do not fit go into the "N more" menu (fitTabs), so the bar never
+/* Tabs that do not fit go into the "All N" menu (fitTabs), so the bar never
  * scrolls; overflow is clipped only while the fit is being measured. */
 .cb-itemtabs {
     display: flex;
@@ -724,6 +630,9 @@ cb-view-page {
     border-bottom: 1px solid var(--cb-border);
 }
 
+/* A tab has no border of its own (the bar's divider is the only line); the
+ * active one is marked by an accent underline drawn as an inset shadow, so the
+ * border width stays 0 in every state. */
 .cb-itemtab {
     display: inline-flex;
     align-items: center;
@@ -731,28 +640,23 @@ cb-view-page {
     flex: 0 0 auto;
     max-width: 16rem;
     padding: var(--cb-space-2) var(--cb-space-3);
-    margin-bottom: -1px;
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     color: var(--cb-text-muted);
     background: transparent;
-    border: 1px solid transparent;
-    border-bottom: 2px solid transparent;
+    border: 0;
     border-radius: var(--cb-radius-sm) var(--cb-radius-sm) 0 0;
     cursor: pointer;
 }
 
 .cb-itemtab:hover {
     color: var(--cb-text);
-    background: var(--cb-surface-sunken);
 }
 
 .cb-itemtab[aria-selected="true"] {
     color: var(--cb-text);
     font-weight: 600;
-    background: var(--cb-surface);
-    border-color: var(--cb-border);
-    border-bottom: 2px solid var(--cb-accent);
+    box-shadow: inset 0 -2px 0 var(--cb-accent);
 }
 
 .cb-itemtab:focus-visible {
@@ -760,17 +664,20 @@ cb-view-page {
     outline-offset: -2px;
 }
 
+/* Kind badge of a tab or an "All N" row: quiet, in the accent only when active. */
 .cb-itemtab-kind {
     flex: 0 0 auto;
-    padding: 0 var(--cb-space-1);
     font-family: var(--cb-font-mono);
     font-size: 0.625rem;
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
+    color: var(--cb-text-muted);
+}
+
+.cb-itemtab[aria-selected="true"] .cb-itemtab-kind,
+.cb-menu-row[aria-checked="true"] .cb-itemtab-kind {
     color: var(--cb-accent);
-    background: var(--cb-tint-accent);
-    border-radius: var(--cb-radius-sm);
 }
 
 .cb-itemtab-name {
@@ -779,16 +686,7 @@ cb-view-page {
     white-space: nowrap;
 }
 
-/* The active item's name, size and actions. */
-.cb-itembar {
-    display: flex;
-    align-items: center;
-    gap: var(--cb-space-2) var(--cb-space-3);
-    flex-wrap: wrap;
-    padding: var(--cb-space-2) 0;
-    border-bottom: 1px solid var(--cb-border);
-}
-
+/* The single item's name and size in the view's sheet head. */
 .cb-itembar-name {
     font-family: var(--cb-font-mono);
     font-size: 0.9375rem;
@@ -801,49 +699,6 @@ cb-view-page {
     color: var(--cb-text-muted);
 }
 
-.cb-itembar-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--cb-space-2);
-    margin-left: auto;
-}
-
-/* .cb-btn-secondary comes later in this file than .cb-btn-sm and would win on
- * size and padding; the action buttons share the segmented switch's size. */
-.cb-itembar-actions .cb-btn-secondary,
-.cb-segmented button {
-    min-height: 2rem;
-    padding: var(--cb-space-1) var(--cb-space-3);
-    font-size: 0.8125rem;
-    font-weight: 500;
-}
-
-/* Two-state switch: Preview | Source. */
-.cb-segmented {
-    display: inline-flex;
-    border: 1px solid var(--cb-border-strong);
-    border-radius: var(--cb-radius-sm);
-    overflow: hidden;
-}
-
-.cb-segmented button {
-    font-family: inherit;
-    color: var(--cb-text-muted);
-    background: var(--cb-surface);
-    border: 0;
-    cursor: pointer;
-}
-
-.cb-segmented button + button {
-    border-left: 1px solid var(--cb-border-strong);
-}
-
-.cb-segmented button[aria-pressed="true"],
-.cb-segmented button[aria-current="true"] {
-    color: var(--cb-accent-text);
-    background: var(--cb-accent);
-}
-
 .cb-file-card {
     display: flex;
     flex-direction: column;
@@ -853,20 +708,6 @@ cb-view-page {
 
 .cb-file-card .cb-lede {
     margin: 0;
-}
-
-/* Create page: tabs on the left, "+ Add item" on the right of one row. */
-.cb-itemtabs-row {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--cb-space-3);
-    border-bottom: 1px solid var(--cb-border);
-}
-
-.cb-itemtabs-row .cb-itemtabs {
-    flex: 1 1 auto;
-    min-width: 0;
-    border-bottom: 0;
 }
 
 .cb-itemtab-wrap {
@@ -903,33 +744,7 @@ cb-view-page {
     background: var(--cb-tint-danger);
 }
 
-.cb-add {
-    position: relative;
-    flex: 0 0 auto;
-    padding-bottom: var(--cb-space-1);
-}
-
-.cb-add-btn {
-    min-height: 2rem;
-    padding: var(--cb-space-1) var(--cb-space-3);
-    font-size: 0.8125rem;
-    white-space: nowrap;
-}
-
-.cb-more {
-    position: relative;
-    flex: 0 0 auto;
-    padding-bottom: var(--cb-space-1);
-}
-
-.cb-more-btn {
-    min-height: 2rem;
-    padding: var(--cb-space-1) var(--cb-space-3);
-    font-size: 0.8125rem;
-    white-space: nowrap;
-}
-
-/* Dropdown for "+ Add item" and "N more". */
+/* Dropdown for "+ Item" and "All N". */
 .cb-menu {
     max-height: 20rem;
     overflow-y: auto;
@@ -943,7 +758,7 @@ cb-view-page {
     padding: var(--cb-space-1);
     background: var(--cb-surface);
     border: 1px solid var(--cb-border);
-    border-radius: var(--cb-radius-md);
+    border-radius: var(--cb-radius-surface);
     box-shadow: var(--cb-shadow-card);
 }
 
@@ -963,23 +778,10 @@ cb-view-page {
     cursor: pointer;
 }
 
-.cb-menu button[aria-checked="true"] {
-    font-weight: 600;
-    box-shadow: inset 2px 0 0 var(--cb-accent);
-}
-
 .cb-menu button:hover,
 .cb-menu button:focus-visible {
     background: var(--cb-tint-accent);
     outline: none;
-}
-
-/* Optional capsule title on the create page: reads like the heading the
- * recipient will see. */
-.cb-title-input {
-    font-size: 1.125rem;
-    font-weight: 600;
-    max-width: 40rem;
 }
 
 /* Compact controls in the item bar. */
@@ -1002,10 +804,6 @@ cb-view-page {
     margin: 0;
 }
 
-.cb-capsule-status {
-    padding-top: var(--cb-space-2);
-}
-
 .cb-item-text {
     display: block;
     width: 100%;
@@ -1018,4 +816,349 @@ cb-view-page {
     border: 1px solid var(--cb-border);
     border-radius: var(--cb-radius-sm);
     margin-bottom: var(--cb-space-2);
+}
+
+/* ----- shared components (view, create, manage) ------------------------- */
+
+/* A quiet bar action: icon and label, no border, no fill until hovered. Used
+ * in the header (language switch, theme toggle), item action bars and the
+ * previous/next row. */
+.cb-quiet {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--cb-space-2);
+    min-height: 2rem;
+    padding: var(--cb-space-1) var(--cb-space-2);
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--cb-text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: var(--cb-radius-control);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.cb-quiet:hover {
+    color: var(--cb-text);
+    background: var(--cb-surface-sunken);
+}
+
+.cb-quiet:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Inline SVG icons (pages/icons.ts, pages/hexagon.ts draw with currentColor). */
+.cb-icon {
+    display: block;
+    flex: 0 0 auto;
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.cb-icon .cb-icon-solid {
+    fill: currentColor;
+    stroke: none;
+}
+
+/* The label of a bar action. On a narrow screen only the icon stays visible;
+ * the label is still the button's accessible name. */
+@media (max-width: 34rem) {
+    .cb-bar-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+    }
+}
+
+/* A button just used to copy (pages/copy-state.ts): tinted for a moment. */
+.cb-btn.cb-copied,
+.cb-btn-ghost.cb-copied,
+.cb-btn-secondary.cb-copied,
+.cb-quiet.cb-copied {
+    color: var(--cb-accent);
+    background: var(--cb-tint-accent);
+}
+
+/* Chip row: facts about a capsule (lifecycle, size), each with an icon. */
+.cb-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--cb-space-1) var(--cb-space-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.875rem;
+    color: var(--cb-text-muted);
+}
+
+.cb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cb-space-2);
+}
+
+/* A chip that warns, e.g. "Deleted after this retrieval": first, coloured. */
+.cb-chip-warning {
+    padding: 0 var(--cb-space-2);
+    font-weight: 600;
+    color: var(--cb-warning);
+    background: var(--cb-tint-warning);
+    border-radius: var(--cb-radius-control);
+}
+
+/* The sheet: one surface for a tab bar, its actions and the content. No
+ * overflow clipping, so the "All N" menu can open over the content. */
+.cb-sheet {
+    min-width: 0;
+    background: var(--cb-surface);
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius-surface);
+}
+
+/* The head row of a sheet: tabs on the left, actions on the right. */
+.cb-sheet-bar {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 var(--cb-space-2);
+    padding: 0 var(--cb-space-2) 0 var(--cb-space-1);
+    border-bottom: 1px solid var(--cb-border);
+}
+
+.cb-sheet-bar .cb-itemtabs {
+    flex: 1 1 12rem;
+    min-width: 0;
+    border-bottom: 0;
+}
+
+/* Bar actions at the end of a sheet's head row. */
+.cb-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--cb-space-1);
+    margin-left: auto;
+    padding: var(--cb-space-1) 0;
+}
+
+.cb-bar-actions button,
+.cb-sheet-bar .cb-itemtabs button {
+    border-width: 0;
+}
+
+/* An editing surface: one frame, one focus ring for whatever has focus inside. */
+.cb-editor-frame {
+    min-width: 0;
+    background: var(--cb-surface);
+    border: 1px solid var(--cb-border-strong);
+    border-radius: var(--cb-radius-surface);
+}
+
+.cb-editor-frame:focus-within {
+    border-color: var(--cb-accent);
+    box-shadow: 0 0 0 1px var(--cb-focus-ring);
+}
+
+/* The panel that shows a link in full (sealed page). */
+.cb-link-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cb-space-3);
+    padding: var(--cb-space-4);
+    background: var(--cb-surface);
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius-surface);
+}
+
+/* "All N" menu: one row per item in fixed order - kind badge, name, and a
+ * trailing slot for the size (view) or a remove control (create). */
+.cb-menu .cb-menu-row {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: var(--cb-space-2);
+    max-width: none;
+    min-width: 0;
+    padding: var(--cb-space-2) var(--cb-space-3);
+    font-weight: 400;
+    box-shadow: none;
+}
+
+.cb-menu .cb-menu-row:hover,
+.cb-menu .cb-menu-row:focus-visible {
+    background: var(--cb-surface-sunken);
+}
+
+.cb-menu .cb-menu-row[aria-checked="true"] {
+    font-weight: 600;
+    background: var(--cb-tint-accent);
+}
+
+.cb-menu-row .cb-itemtab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cb-menu-size {
+    font-size: 0.75rem;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    color: var(--cb-text-muted);
+}
+
+/* A row with a control of its own next to it (create: remove). A button cannot
+ * hold another button, so the row and the control are siblings. */
+.cb-menu-line {
+    display: flex;
+    align-items: center;
+    gap: var(--cb-space-1);
+}
+
+.cb-menu-line > .cb-menu-row {
+    flex: 1 1 auto;
+}
+
+.cb-menu .cb-menu-remove {
+    flex: 0 0 auto;
+    justify-content: center;
+    min-width: 2rem;
+    padding: var(--cb-space-1);
+    color: var(--cb-text-muted);
+}
+
+.cb-menu .cb-menu-remove:hover,
+.cb-menu .cb-menu-remove:focus-visible {
+    color: var(--cb-danger);
+    background: var(--cb-tint-danger);
+}
+
+/* Buttons and tabs change colour quickly rather than abruptly. */
+.cb-btn,
+.cb-btn-ghost,
+.cb-btn-secondary,
+.cb-btn-inline,
+.cb-quiet,
+.cb-itemtab,
+.cb-itemtab-close,
+.cb-menu button {
+    transition:
+        background-color var(--cb-duration-quick) ease,
+        color var(--cb-duration-quick) ease;
+}
+
+/* ----- state hexagon (pages/hexagon.ts) ---------------------------------
+ *
+ * CapsuleBin's symbol carries every state page. The outline is a path with
+ * pathLength 60, so the animations are plain stroke-dashoffset keyframes:
+ *   running - a dash runs around the outline (static outline with reduced motion)
+ *   sealed  - the outline closes once, then stays
+ *   locked  - static, with the lock
+ *   warning - static, warning colour, with an exclamation mark
+ *   empty   - dashed, muted, nothing inside
+ */
+
+.cb-hex {
+    display: block;
+    flex: 0 0 auto;
+    width: 3rem;
+    height: 3.35rem;
+    color: var(--cb-accent);
+}
+
+.cb-hex path {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.cb-hex .cb-hex-fill {
+    fill: var(--cb-tint-accent);
+    stroke: none;
+}
+
+.cb-hex .cb-hex-ring {
+    stroke-width: 1.4;
+}
+
+.cb-hex .cb-hex-glyph {
+    stroke-width: 1.3;
+}
+
+@keyframes cb-hex-run {
+    to {
+        stroke-dashoffset: -60;
+    }
+}
+
+@keyframes cb-hex-close {
+    from {
+        stroke-dashoffset: 60;
+    }
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
+.cb-hex[data-hexagon="running"] .cb-hex-ring {
+    stroke-dasharray: 14 46;
+    animation: cb-hex-run 1.1s linear infinite;
+}
+
+.cb-hex[data-hexagon="sealed"] .cb-hex-ring {
+    stroke-dasharray: 60;
+    animation: cb-hex-close 0.7s ease-out 1 both;
+}
+
+.cb-hex[data-hexagon="warning"] {
+    color: var(--cb-warning);
+}
+
+.cb-hex[data-hexagon="warning"] .cb-hex-fill {
+    fill: var(--cb-tint-warning);
+}
+
+.cb-hex[data-hexagon="warning"] .cb-hex-glyph {
+    stroke-width: 1.5;
+}
+
+.cb-hex[data-hexagon="empty"] {
+    color: var(--cb-text-muted);
+}
+
+.cb-hex[data-hexagon="empty"] .cb-hex-fill {
+    fill: var(--cb-surface-sunken);
+}
+
+.cb-hex[data-hexagon="empty"] .cb-hex-ring {
+    stroke-dasharray: 3 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cb-hex[data-hexagon] .cb-hex-ring {
+        animation: none;
+    }
+
+    .cb-hex[data-hexagon="running"] .cb-hex-ring,
+    .cb-hex[data-hexagon="sealed"] .cb-hex-ring {
+        stroke-dasharray: none;
+    }
 }
