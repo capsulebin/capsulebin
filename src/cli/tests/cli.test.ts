@@ -505,6 +505,63 @@ describe('put without --delete-link-file, after a failed create', () => {
     });
 });
 
+describe('put after a malformed create success', () => {
+    const MESSAGE = 'the server sent a success without the expected answer; check the server URL';
+
+    for (const variant of ['no_content', 'null'] as const) {
+        it(`ends with exit 7, no retry and the delete link kept (${variant})`, async () => {
+            server.malformedCreate = variant;
+
+            const text = testIo({ stdin: 'x' });
+            expect(await run(['put', '-s', SERVER, '--retries', '2'], text)).toBe(7);
+            expect(server.requests).toHaveLength(1);
+            expect(text.out()).toBe('');
+            const lines = text.err().trimEnd().split('\n');
+            expect(lines).toHaveLength(2);
+            expect(lines[0]).toBe(`capsulebin-cli: ${MESSAGE}`);
+            expect(lines[1]).toContain('the capsule may exist');
+            const link = new RegExp(`${MANAGE_LINK.source}$`).exec(lines[1]!);
+            expect(link, text.err()).not.toBeNull();
+            expect(text.err()).not.toContain('retrying');
+
+            const json = testIo({ stdin: 'x' });
+            expect(await run(['put', '-s', SERVER, '--json', '--retries', '2'], json)).toBe(7);
+            expect(server.requests).toHaveLength(2);
+            const { error } = JSON.parse(json.out());
+            expect(Object.keys(error)).toEqual(['reason', 'message', 'delete_url']);
+            expect(error).toMatchObject({ reason: 'invalid_response', message: MESSAGE });
+            expect(error.delete_url).toMatch(new RegExp(`^${MANAGE_LINK.source}$`));
+
+            const file = testIo({ stdin: 'x' });
+            expect(
+                await run(
+                    ['put', '-s', SERVER, '--json', '--retries', '2', '--delete-link-file', 'link'],
+                    file,
+                ),
+            ).toBe(7);
+            expect(server.requests).toHaveLength(3);
+            expect(JSON.parse(file.out())).toEqual({
+                error: {
+                    reason: 'invalid_response',
+                    message: MESSAGE,
+                    delete_link_file: join(cwd, 'link'),
+                },
+            });
+            for (const output of [file.out(), file.err()]) expect(output).not.toContain('#v1.');
+            const stored = (await readFile(join(cwd, 'link'), 'utf8')).trim();
+            expect(stored).toMatch(new RegExp(`^${MANAGE_LINK.source}$`));
+
+            // The kept link deletes the capsule the server stored.
+            server.malformedCreate = null;
+            expect(server.pastes.size).toBe(3);
+            for (const deleteUrl of [link![0], error.delete_url, stored]) {
+                expect(await run(['delete', deleteUrl], testIo())).toBe(0);
+            }
+            expect(server.pastes.size).toBe(0);
+        });
+    }
+});
+
 describe('put options', () => {
     it('omits expires_in unless --expires is given, so the server default applies', async () => {
         await putText('x');

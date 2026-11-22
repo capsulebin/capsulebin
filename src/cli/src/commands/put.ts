@@ -14,6 +14,7 @@ import { basename, resolve } from 'node:path';
 import {
     ApiError,
     type CreateResponse,
+    INVALID_RESPONSE,
     MAX_CAPSULE_BYTES,
     MAX_ITEMS,
     Paste,
@@ -205,13 +206,14 @@ function fileError(source: string, err: unknown): CliError {
 /**
  * Statuses worth a retry: no response (a timeout included), rate limited, or
  * a server-side fault. Never a refused redirect, whatever its status, nor an
- * oversized response: the next attempt would get the same answer.
+ * oversized or malformed response: the next attempt would get the same answer.
  */
 function isTransient(err: unknown): err is ApiError {
     return (
         err instanceof ApiError &&
         err.code !== REDIRECT_REFUSED &&
         err.code !== RESPONSE_TOO_LARGE &&
+        err.code !== INVALID_RESPONSE &&
         (err.status === 0 || err.status === 429 || err.status >= 500)
     );
 }

@@ -136,19 +136,24 @@ pub enum ReportError {
     ContactTooLong,
     #[error("text contains control characters")]
     ControlCharacters,
-    /// A report must never carry the decryption key. A share link's fragment
-    /// (`#v1.…`) in the description is refused rather than stored.
-    #[error("text contains a link fragment with a key")]
+    /// A report must never carry a link's secret: a share or management
+    /// link's key fragment (`#v1.…`) or an invitation link's creation token
+    /// (`#token=…`) in the description or contact is refused rather than
+    /// stored.
+    #[error("text contains a link fragment with a key or token")]
     ContainsKey,
 }
 
 /// Rejects text that would be awkward or harmful to show an operator in a
-/// terminal (control characters other than line breaks and tabs).
+/// terminal (control characters other than line breaks and tabs), and text
+/// carrying a link's key (`#v1.`) or an invitation's creation token
+/// (`#token=`), both case-sensitive. The same rule as `containsKeyFragment`
+/// in `@capsulebin/core`, so the clients refuse exactly what is refused here.
 fn check_text(text: &str) -> Result<(), ReportError> {
     if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')) {
         return Err(ReportError::ControlCharacters);
     }
-    if text.contains("#v1.") {
+    if text.contains("#v1.") || text.contains("#token=") {
         return Err(ReportError::ContainsKey);
     }
     Ok(())
@@ -286,6 +291,45 @@ mod tests {
     fn refuses_a_decryption_key() {
         let text = "see https://paste.example/p/AAAAAAAAAAAAAAAAAAAAAA#v1.c2VjcmV0";
         assert_eq!(validate("other", text, None).err(), Some(ReportError::ContainsKey));
+    }
+
+    /// Report texts shared with `@capsulebin/core`.
+    const SECRETS_FIXTURE: &str = include_str!("../../../core/tests/fixtures/report-secrets.json");
+
+    /// The server and the clients refuse report texts by one rule; the examples
+    /// are shared with `@capsulebin/core` (`containsKeyFragment`).
+    #[test]
+    fn refuses_keys_and_tokens_by_the_examples_shared_with_the_clients() {
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            refused: Vec<Example>,
+            accepted: Vec<Example>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Example {
+            name: String,
+            text: String,
+        }
+
+        let fixture: Fixture = serde_json::from_str(SECRETS_FIXTURE).expect("fixture parses");
+        assert!(!fixture.refused.is_empty() && !fixture.accepted.is_empty());
+
+        let cases = fixture
+            .refused
+            .iter()
+            .map(|e| (e, true))
+            .chain(fixture.accepted.iter().map(|e| (e, false)));
+        for (Example { name, text }, refused) in cases {
+            let expected = |result: Result<NewReport, ReportError>| match refused {
+                true => assert_eq!(result.err(), Some(ReportError::ContainsKey), "{name}"),
+                false => assert!(result.is_ok(), "{name}: {:?}", result.err()),
+            };
+            expected(validate("other", text, None));
+            // The contact is one line: a line break there is refused as a
+            // control character before the key check, so test it as one line.
+            let contact = text.replace(['\r', '\n'], " ");
+            expected(validate("other", "see contact", Some(&contact)));
+        }
     }
 
     #[test]

@@ -153,6 +153,34 @@ async fn a_report_containing_a_key_is_refused() {
 }
 
 #[tokio::test]
+async fn a_report_containing_an_invitation_is_refused() {
+    let h = harness("report-invitation").await;
+    h.post_with_token("/api/v1/pastes", create_body(&id(1)), Some(TOKEN)).await;
+    // One stored report, so "unchanged" is not the same as "none at all".
+    let stored = h.post("/api/v1/reports", report_body(&id(1).encode())).await;
+    assert_eq!(stored.status, StatusCode::ACCEPTED, "{}", stored.text());
+    let before = stored_reports(&h).await;
+    assert_eq!(before.len(), 1);
+
+    let invitation = format!("https://paste.example/#token={TOKEN}");
+    for field in ["description", "contact"] {
+        let mut body = report_body(&id(1).encode());
+        body[field] = serde_json::json!(invitation);
+        let answer = h.post("/api/v1/reports", body).await;
+
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{field}");
+        assert_eq!(answer.code(), "malformed_request", "{field}");
+        let detail = answer.json()["detail"].as_str().unwrap().to_owned();
+        assert!(
+            detail.contains("decryption key") && detail.contains("creation token"),
+            "{field}: {detail}"
+        );
+        assert!(!answer.text().contains(TOKEN), "{field}: the token is echoed");
+        assert_eq!(stored_reports(&h).await, before, "{field}");
+    }
+}
+
+#[tokio::test]
 async fn malformed_reports_are_rejected() {
     let h = harness("report-malformed").await;
 

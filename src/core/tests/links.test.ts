@@ -10,6 +10,7 @@ import {
     trailingLanguage,
 } from '../src/links';
 import fixture from './fixtures/base-language.json' with { type: 'json' };
+import reportSecrets from './fixtures/report-secrets.json' with { type: 'json' };
 
 const ID = 'AbCdEfGhIjKlMnOpQrStUv';
 const SECRET = 'A'.repeat(43); // 32 zero-ish bytes in base64url
@@ -120,28 +121,17 @@ describe('hasQueryOrFragment', () => {
 });
 
 describe('containsKeyFragment', () => {
-    it.each([
-        ['a share link', `https://paste.example/p/${ID}#v1.${SECRET}`],
-        ['a management link', `https://paste.example/manage/${ID}#v1.${SECRET}`],
-        ['a link with a language segment', `https://paste.example/de/p/${ID}#v1.${SECRET}`],
-        ['a bare fragment', `#v1.${SECRET}`],
-        ['the prefix alone', '#v1.'],
-        ['a link inside other text', `see https://paste.example/p/${ID}#v1.${SECRET} please`],
-        ['the fragment in the middle of text', `before #v1.${SECRET}\nafter`],
-    ])('finds the key in %s', (_, text) => {
-        expect(containsKeyFragment(text)).toBe(true);
-    });
+    it.each(reportSecrets.refused.map((e) => [e.name, e.text]))(
+        'finds a key or token in %s',
+        (_, text) => {
+            expect(containsKeyFragment(text)).toBe(true);
+        },
+    );
 
     it.each([
         ['empty text', ''],
-        ['plain text', 'this capsule is spam'],
-        ['a link without a fragment', `https://paste.example/p/${ID}`],
-        ['a link with an empty fragment', `https://paste.example/p/${ID}#`],
-        ['a key without #', `v1.${SECRET}`],
-        ['an upper-case prefix', `https://paste.example/p/${ID}#V1.${SECRET}`],
-        ['another version', `https://paste.example/p/${ID}#v2.${SECRET}`],
-        ['# and v1. apart', `# v1.${SECRET}`],
-    ])('finds no key in %s', (_, text) => {
+        ...reportSecrets.accepted.map((e): [string, string] => [e.name, e.text]),
+    ])('finds no key or token in %s', (_, text) => {
         expect(containsKeyFragment(text)).toBe(false);
     });
 });

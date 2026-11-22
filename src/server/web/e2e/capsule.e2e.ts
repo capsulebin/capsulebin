@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { create, sealedLinks } from './create';
-import { expect, test } from './guard';
+import { create, fill, sealedLinks } from './create';
+import { expect, installGuard, test } from './guard';
 
 /**
  * The user-facing flows end to end: create in the browser, open, delete, burn and
@@ -141,6 +141,86 @@ test('the management link deletes a capsule', async ({ page, context }) => {
     await expect(view.locator('h1')).toHaveText('Not available', { timeout: 30_000 });
 });
 
+/**
+ * What a create whose answer the browser drops leaves in the console: the
+ * engine's note about the failed load and the create page logging the error it
+ * handles (Firefox prints that one as just `Error`). Accepted only in the test
+ * that drops the answer on purpose.
+ */
+const DROPPED_CONSOLE =
+    /^console error: (Failed to load resource: net::ERR_FAILED$|ApiError: network error\n|Error$)/;
+
+test('"Try again" after a dropped answer creates the capsule once, with the delete link shown before', async ({
+    browser,
+}) => {
+    // A context of its own, so its guard can accept the dropped answer's console lines.
+    const context = await browser.newContext();
+    const guard = await installGuard(context);
+    const page = await context.newPage();
+
+    const createBodies: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().endsWith('/api/v1/pastes') && request.method() === 'POST') {
+            createBodies.push(request.postData() ?? '');
+        }
+    });
+    // The first create reaches the server, which stores the capsule; its answer never
+    // reaches the page.
+    let dropped = false;
+    await page.route('**/api/v1/pastes', async (route) => {
+        if (dropped || route.request().method() !== 'POST') return route.continue();
+        dropped = true;
+        await route.fetch();
+        await route.abort();
+    });
+
+    await fill(page, { items: [{ type: 'plain', text: 'sent twice, stored once' }] });
+    await page.click('[data-create-submit]');
+
+    await expect(page.locator('[data-error-message]')).toHaveText(
+        'The server could not be reached. Check your connection and try again.',
+        { timeout: 30_000 },
+    );
+    await expect(page.locator('[data-retry-btn]')).toBeVisible();
+    const tryAgain = page.locator('[data-try-again]');
+    await expect(tryAgain).toHaveText('Try again');
+    await expect(page.locator('[data-unclear]')).toContainText(
+        'The capsule may have been created.',
+    );
+    const shown = (await page.locator('[data-unclear-delete-link]').textContent()) ?? '';
+    const id = new URL(shown).pathname.split('/').pop()!;
+    expect(shown).toMatch(new RegExp(`/manage/${id}#v1\\.`));
+
+    await tryAgain.click();
+    const { share, manage } = await sealedLinks(page);
+    // The same request both times: no new encryption, the stored capsule answered as a replay.
+    expect(createBodies).toHaveLength(2);
+    expect(createBodies[1]).toBe(createBodies[0]);
+    expect(manage).toBe(shown);
+    expect(new URL(share).pathname).toBe(`/p/${id}`);
+
+    const view = await context.newPage();
+    await view.goto(share);
+    await expect(view.locator('.cb-item-panel')).toContainText('sent twice, stored once', {
+        timeout: 30_000,
+    });
+
+    const managePage = await context.newPage();
+    managePage.on('dialog', (dialog) => void dialog.accept());
+    await managePage.goto(shown);
+    await managePage.click('[data-delete-btn]');
+    await expect.poll(() => new URL(managePage.url()).hash, { timeout: 30_000 }).toBe('');
+    const gone = await context.newPage();
+    await gone.goto(share);
+    await expect(gone.locator('h1')).toHaveText('Not available', { timeout: 30_000 });
+
+    await context.close();
+    expect(
+        guard.problems.filter((problem) => !DROPPED_CONSOLE.test(problem)),
+        'the browser reported problems',
+    ).toEqual([]);
+});
+
 test('a burn capsule opens exactly once', async ({ page, context }) => {
     const { share } = await create(page, {
         items: [{ type: 'plain', text: 'burn me' }],
@@ -205,6 +285,11 @@ test('the report form sends the id without the key', async ({ page }) => {
     expect(JSON.stringify(sent)).not.toContain('#');
 });
 
+const KEY_REFUSAL =
+    'The description or contact contains a link with its key or an invitation token ' +
+    '(the part after #). Remove that part and send again — the id in the first field is ' +
+    'enough.';
+
 test('the report form refuses a link with its key in the description or contact', async ({
     page,
 }) => {
@@ -217,24 +302,59 @@ test('the report form refuses a link with its key in the description or contact'
             reportPosts.push(request.postData() ?? '');
         }
     });
-    const message =
-        'The description or contact contains a link with its key (the part after #). ' +
-        'Remove the key and send again — the id in the first field is enough.';
 
     await page.goto('/report');
     await page.fill('[data-report-paste]', share);
     await page.fill('[data-report-description]', `Please look at ${share}`);
     await page.click('[data-report-submit]');
-    await expect(page.locator('[data-report-error]')).toHaveText(message);
+    await expect(page.locator('[data-report-error]')).toHaveText(KEY_REFUSAL);
     await expect(page.locator('[data-report-description]')).toBeFocused();
     await expect(page.locator('[data-report-description]')).toHaveValue(`Please look at ${share}`);
 
     await page.fill('[data-report-description]', 'Browser check of the key refusal.');
     await page.fill('[data-report-contact]', manage);
     await page.click('[data-report-submit]');
-    await expect(page.locator('[data-report-error]')).toHaveText(message);
+    await expect(page.locator('[data-report-error]')).toHaveText(KEY_REFUSAL);
     await expect(page.locator('[data-report-contact]')).toBeFocused();
     await expect(page.locator('[data-report-contact]')).toHaveValue(manage);
+
+    // A request would have been sent right after the click; give it time to show.
+    await page.waitForTimeout(500);
+    expect(reportPosts).toEqual([]);
+});
+
+test('the report form refuses an invitation link in the description or contact', async ({
+    page,
+}) => {
+    const { share } = await create(page, {
+        items: [{ type: 'plain', text: 'report me too' }],
+    });
+    const reportPosts: string[] = [];
+    page.on('request', (request) => {
+        if (request.url().endsWith('/api/v1/reports') && request.method() === 'POST') {
+            reportPosts.push(request.postData() ?? '');
+        }
+    });
+    const origin = new URL(share).origin;
+    const invitation = `${origin}/#token=e2e-invitation-token`;
+    const invitationDe = `${origin}/de/#token=e2e-invitation-token`;
+
+    await page.goto('/report');
+    await page.fill('[data-report-paste]', share);
+    await page.fill('[data-report-description]', `Invited with\n${invitation}`);
+    await page.click('[data-report-submit]');
+    await expect(page.locator('[data-report-error]')).toHaveText(KEY_REFUSAL);
+    await expect(page.locator('[data-report-description]')).toBeFocused();
+    await expect(page.locator('[data-report-description]')).toHaveValue(
+        `Invited with\n${invitation}`,
+    );
+
+    await page.fill('[data-report-description]', 'Browser check of the token refusal.');
+    await page.fill('[data-report-contact]', invitationDe);
+    await page.click('[data-report-submit]');
+    await expect(page.locator('[data-report-error]')).toHaveText(KEY_REFUSAL);
+    await expect(page.locator('[data-report-contact]')).toBeFocused();
+    await expect(page.locator('[data-report-contact]')).toHaveValue(invitationDe);
 
     // A request would have been sent right after the click; give it time to show.
     await page.waitForTimeout(500);

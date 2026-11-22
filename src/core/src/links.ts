@@ -130,17 +130,21 @@ export function hasQueryOrFragment(base: string): boolean {
     return /[?#]/.test(base);
 }
 
+/** The fragment of an invitation link, `<public_url>/#token=<creation token>` (ADR-018). */
+const INVITATION_FRAGMENT = '#token=';
+
 /**
- * True if `text` contains a link key fragment: `#` followed by the fragment
- * prefix (`#v1.`), case-sensitive. Free text a client sends to the server (an
- * abuse report's description and contact) must not carry one, or the key of a
- * pasted share or management link crosses the network. The rule is exactly
- * the server's (`check_text` in `domain/abuse.rs`), so a client that refuses
- * what this finds never sends a text the server would refuse for a key. A bare
- * key without `#` is not detected.
+ * True if `text` contains a link fragment carrying a secret, case-sensitive:
+ * a share or management link's key (`#` followed by the fragment prefix,
+ * `#v1.`) or an invitation link's creation token (`#token=`). Free text a
+ * client sends to the server (an abuse report's description and contact) must
+ * not carry one, or the key or token of a pasted link crosses the network. The
+ * rule is exactly the server's (`check_text` in `domain/abuse.rs`), so a client
+ * that refuses what this finds never sends a text the server would refuse for
+ * a key or token. A bare key or token without its `#…` prefix is not detected.
  */
 export function containsKeyFragment(text: string): boolean {
-    return text.includes(`#${FRAGMENT_PREFIX}`);
+    return text.includes(`#${FRAGMENT_PREFIX}`) || text.includes(INVITATION_FRAGMENT);
 }
 
 function parseHttpUrl(text: string, notHttp: string): URL {

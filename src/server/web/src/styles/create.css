@@ -346,6 +346,17 @@
     margin: 0;
 }
 
+/* The delete link after an unclear create spans the column like on the sealed page. */
+.cb-create-state .cb-sealed-delete {
+    align-self: stretch;
+}
+
+.cb-create-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--cb-space-2);
+}
+
 /* ----- sealed page ---------------------------------------------------------- */
 
 /* As wide as .cb-main's content, like the form before it. */

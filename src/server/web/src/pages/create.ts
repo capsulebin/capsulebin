@@ -8,7 +8,7 @@
 import { MAX_ITEM_BYTES, MAX_ITEMS, Paste, PasteApi, generateUlid } from '@capsulebin/core';
 import { byAttr, byId, initShell, languageFromNextPage, showTemplate, setText } from './shell';
 import { CopyFeedback, createLiveRegion } from './copy-state';
-import { apiErrorText, isTokenRefused } from './errors';
+import { apiErrorText, isTokenRefused, isUnclearOutcome } from './errors';
 import { type HexagonState, hexagon } from './hexagon';
 import { icon } from './icons';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
@@ -1012,15 +1012,23 @@ function showDone(shareUrl: string, deleteUrl: string, draft: Draft): void {
     showShareLink(shareUrl);
     setText('delete-link', deleteUrl);
 
+    const links: Record<string, string> = { 'share-link': shareUrl, 'delete-link': deleteUrl };
+    mountCopyButtons(
+        [...document.querySelectorAll<HTMLButtonElement>('[data-copy]')].map((button) => [
+            button,
+            links[button.dataset.copy!]!,
+        ]),
+    );
+}
+
+/** Gives each button a copy icon and copies its text on click, announced in one live region. */
+function mountCopyButtons(buttons: [HTMLButtonElement, string][]): void {
     const region = createLiveRegion();
     byAttr('create-root').append(region);
     const feedback = new CopyFeedback(region);
-    const links: Record<string, string> = { 'share-link': shareUrl, 'delete-link': deleteUrl };
-    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+    for (const [button, text] of buttons) {
         button.prepend(icon('copy'));
-        button.addEventListener('click', () => {
-            void feedback.copy(button, links[button.dataset.copy!]!);
-        });
+        button.addEventListener('click', () => void feedback.copy(button, text));
     }
 }
 
@@ -1039,6 +1047,27 @@ function showError(message: string, draft: Draft): void {
 function showTokenRefused(paste: Paste, draft: Draft): void {
     showError(t('create.token.refused'), draft);
     mountTokenForm('create.token.create', () => void publish(paste, draft));
+}
+
+/**
+ * A create that may have stored `paste` all the same (no usable answer, a
+ * server error, a `429`). "Try again" sends the same sealed `paste`: a stored
+ * capsule is answered as a replay (ADR-011), so no second one is created. The
+ * delete link is the sealed page's, for the creator who gives up instead.
+ */
+function showUnclearOutcome(message: string, paste: Paste, draft: Draft): void {
+    showError(message, draft);
+    const deleteUrl = paste.deleteUrl(window.location.origin);
+    byAttr('unclear').hidden = false;
+    setText('unclear-delete-link', deleteUrl);
+
+    mountCopyButtons([[byAttr<HTMLButtonElement>('unclear-copy'), deleteUrl]]);
+
+    const tryAgain = byAttr<HTMLButtonElement>('try-again');
+    tryAgain.hidden = false;
+    tryAgain.addEventListener('click', () => void publish(paste, draft));
+    // "Try again" is the one filled action.
+    byAttr('retry-btn').classList.add('cb-btn-ghost');
 }
 
 // --- crypto flow -------------------------------------------------------------
@@ -1061,6 +1090,8 @@ async function publish(paste: Paste, draft: Draft): Promise<void> {
         if (mode === 'token' && isTokenRefused(err)) {
             token.forget();
             showTokenRefused(paste, draft);
+        } else if (isUnclearOutcome(err)) {
+            showUnclearOutcome(apiErrorText(err), paste, draft);
         } else {
             showError(apiErrorText(err), draft);
         }
