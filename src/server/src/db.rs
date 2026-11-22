@@ -83,10 +83,12 @@ pub enum DbError {
     /// server that looks healthy.
     #[error(
         "the database {} is missing, but an interrupted restore left {} behind; no new database \
-         was created. Run the restore again, or move the old database back to {}",
+         was created. First move the old database (with its -wal and -shm) back to {} and remove a \
+         leftover {}* directory; only then start the server or run the restore again",
         path.display(),
         list_paths(leftovers),
-        path.display()
+        path.display(),
+        restore_stage_prefix(path).display()
     )]
     RestoreLeftovers { path: PathBuf, leftovers: Vec<PathBuf> },
     /// The binary expects a newer schema than the file provides. Serving anyway
@@ -161,16 +163,7 @@ fn prepare_file(path: &Path, directory: &Path) -> Result<(), DbError> {
         }
     }
 
-    let leftovers = restore_leftovers(path, directory).map_err(|source| DbError::Inspect {
-        directory: directory.to_owned(),
-        source,
-    })?;
-    if !leftovers.is_empty() {
-        return Err(DbError::RestoreLeftovers {
-            path: path.to_owned(),
-            leftovers,
-        });
-    }
+    refuse_restore_leftovers(path, directory)?;
 
     match create_private_file(path) {
         Ok(_) => Ok(()),
@@ -181,6 +174,24 @@ fn prepare_file(path: &Path, directory: &Path) -> Result<(), DbError> {
             source,
         }),
     }
+}
+
+/// Refuses with [`DbError::RestoreLeftovers`] if `directory` holds an entry an
+/// interrupted restore of the database `path` left behind. Callers check this
+/// only while `path` itself is missing: next to an existing database the
+/// leftovers do not matter.
+pub fn refuse_restore_leftovers(path: &Path, directory: &Path) -> Result<(), DbError> {
+    let leftovers = restore_leftovers(path, directory).map_err(|source| DbError::Inspect {
+        directory: directory.to_owned(),
+        source,
+    })?;
+    if leftovers.is_empty() {
+        return Ok(());
+    }
+    Err(DbError::RestoreLeftovers {
+        path: path.to_owned(),
+        leftovers,
+    })
 }
 
 /// Creates a new file that only its owner can read and write (`0600` on Unix,
@@ -499,6 +510,8 @@ mod tests {
             let error = connect(config).await.expect_err("must refuse");
             assert!(matches!(error, DbError::RestoreLeftovers { .. }), "{error}");
             assert!(error.to_string().contains(leftover), "{error}");
+            assert!(error.to_string().contains("move the old database"), "{error}");
+            assert!(!error.to_string().contains("Run the restore again, or"), "{error}");
             assert!(!config.path.exists(), "database created next to {leftover}");
         }
 

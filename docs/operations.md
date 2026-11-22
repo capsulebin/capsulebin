@@ -552,10 +552,19 @@ capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-202
 systemctl start capsulebin
 ```
 
-The server must be stopped. `restore` never opens the input file with SQLite and never touches it:
+The server must be stopped, and no other `capsulebin` command may run against the database from
+the start of `restore` until the server is started again: not `token create`, `token revoke`,
+`moderation`, `reports`, `prune` or `backup`, and no scheduled job running one of them (systemd
+timers, cron). These commands write to the database without a running server. A change written to
+the replaced database while the restore runs is not in the installed one: a token revoked or a
+capsule disabled in that window can be active again after the restore. Pause such timers and
+cron jobs before you stop the server and resume them once it runs again.
 
-1. It refuses if a name it would write is taken: without `--force` an existing database, with
-   `--force` `<file>.pre-restore-<timestamp>` or its `-wal`/`-shm`.
+`restore` never opens the input file with SQLite and never touches it:
+
+1. It refuses if the database file is missing next to restore leftovers (see "Interrupted
+   restore" below), and if a name it would write is taken: without `--force` an existing database,
+   with `--force` `<file>.pre-restore-<timestamp>` or its `-wal`/`-shm`.
 2. It copies only the backup's main file (never a `-wal` or `-shm` next to it) into a new private
    directory `.<file>.restore-<random hex>` (`0700`, copy `0600`) next to the database, so the
    database directory needs room for one more copy.
@@ -567,6 +576,9 @@ The server must be stopped. `restore` never opens the input file with SQLite and
    retired id, that the backup does not hold as a capsule; then it checkpoints the copy again.
    Paste ids are never used twice: a capsule created after the backup still has its links in
    circulation, and freeing its id would let a link holder put different content behind them.
+   A capsule of the backup whose id the current database has retired (burned or deleted and then
+   purged after the backup, so only its id is left) is removed from the copy, whatever its state in
+   the backup, and its id stays retired: a restore never brings back a purged capsule.
    A capsule both databases hold keeps the later of the two states: one the current database holds
    burned (consumed), deleted (by its owner or by moderation) or disabled while the backup holds it
    in an earlier state takes the current database's state, moderation reason and time, and loses its
@@ -584,20 +596,22 @@ The server must be stopped. `restore` never opens the input file with SQLite and
    `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
 
 `restore` prints how many ids of the previous database it retired, how many capsules kept the
-previous database's burned, deleted or disabled state, and how many creation tokens, revocations
-and last-use days it carried over. If the current database cannot be read (it is corrupt, it has a
-non-empty `-wal` without its `-shm`, which reading would create, or it lacks the table
-`retired_ids` or `creation_tokens`, so CapsuleBin did not write it), the restore still installs
-the backup and prints
+previous database's burned, deleted or disabled state, how many capsules of the backup it removed
+because the previous database had purged them
+(`N capsule(s) of the backup purged from the previous database were removed.`), and how many
+creation tokens, revocations and last-use days it carried over. If the current database cannot be
+read (it is corrupt, it has a non-empty `-wal` without its `-shm`, which reading would create, or
+it lacks the table `retired_ids` or `creation_tokens`, so CapsuleBin did not write it), the restore
+still installs the backup and prints
 `warning: the ids, capsule states and creation tokens of the replaced database could not be carried
 over (…)` on stderr, with exit code 0: nothing of it is carried, so those ids can then be used
-again, capsules it burned, deleted or disabled after the backup are available again (delete or
-disable them again with `moderation` if you know their ids), its tokens the backup lacks are lost,
-and tokens it revoked are active again if the backup holds them unrevoked — check `token list` and
-revoke them again. Only a failure to attach the current database or to read it in a first
-read-only probe gives this warning. A failure while writing the ids, states or tokens into the copy
-(the disk full, for example), or a read failure that shows up only then, stops the restore before
-the cutover like any other step.
+again, capsules it burned, deleted or disabled after the backup are available again, and so are
+capsules of the backup it purged after the backup (delete or disable them again with `moderation`
+if you know their ids), its tokens the backup lacks are lost, and tokens it revoked are active
+again if the backup holds them unrevoked — check `token list` and revoke them again. Only a failure
+to attach the current database or to read it in a first read-only probe gives this warning. A
+failure while writing the ids, states or tokens into the copy (the disk full, for example), or a
+read failure that shows up only then, stops the restore before the cutover like any other step.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored
@@ -606,10 +620,11 @@ Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed 
 
 `--dry-run` runs steps 1 to 4 on a private copy, prints the backup's contents, the schema version
 the migration reached, how many ids would be retired, how many capsules would keep their burned,
-deleted or disabled state, and how many creation tokens, revocations and last-use days would be
-carried over (with the same warning if the current database cannot be read), then removes the
-copy; nothing else is created or changed. Without `--force` it also says when the restore would
-need `--force`.
+deleted or disabled state, how many capsules of the backup would be removed
+(`N capsule(s) of the backup purged from the current database would be removed.`), and how many
+creation tokens, revocations and last-use days would be carried over (with the same warning if the
+current database cannot be read), then removes the copy; nothing else is created or changed.
+Without `--force` it also says when the restore would need `--force`.
 
 Restore only backups you made yourself: SQLite treats a database as trusted input. Verifying and
 migrating only a private copy of the main file keeps a `-wal` next to the backup from reaching
@@ -618,12 +633,19 @@ SQLite, but does not make an untrusted main file safe.
 **Interrupted restore.** If the restore process is killed or the machine loses power during the
 cutover, the database file may be missing while `<file>.pre-restore-*` or a
 `.<file>.restore-*` directory remains. Then `serve`, `check` and every other command that opens the
-database refuse to start and name those entries instead of creating an empty database. Run the
-restore again (it works next to an older `<file>.pre-restore-*` and leaves it alone), or move the
-old database (and its `-wal`/`-shm`) back to the configured path. Without a database file and
-without such entries, the first start creates a new database as usual; next to an existing
-database these entries block nothing. A `.<file>.restore-*` or `.<name>.backup-*` directory left by
-a killed run is not removed automatically; delete it once no restore or backup is running.
+database refuse to start and name those entries instead of creating an empty database. `restore`
+(also with `--dry-run`) refuses in the same way and changes nothing: with no database at the
+configured path it would have nothing to carry, so the ids, capsule states, token revocations and
+tokens the old database holds would be lost. First move `<file>.pre-restore-<timestamp>` and its
+`-wal`/`-shm` back to the configured path (`<file>`, `<file>-wal`, `<file>-shm`) and remove a
+leftover `.<file>.restore-*` directory. If there are several `<file>.pre-restore-*` entries, move
+back the newest one (the interrupted restore's); an older one left by an earlier restore blocks too
+until it is removed or archived elsewhere. Then start the server, or run the restore again: it
+carries the moved-back database's ids, states and tokens into the restored one. Without a database
+file and without such entries, the first start creates a new database as usual; next to an
+existing database these entries block nothing. A `.<file>.restore-*` or `.<name>.backup-*`
+directory left by a killed run is not removed automatically; delete it once no restore or backup
+is running.
 
 ### Upgrades
 

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::rc::Rc;
@@ -574,25 +574,118 @@ async fn restore_refuses_an_existing_aside_name() {
     }
 }
 
+/// Every entry of `dir` with its contents, `None` for a directory (whose
+/// entries are compared by the caller as needed).
+fn snapshot(dir: &Path) -> BTreeMap<OsString, Option<Vec<u8>>> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let content = (!entry.file_type().unwrap().is_dir()).then(|| std::fs::read(entry.path()).unwrap());
+            (entry.file_name(), content)
+        })
+        .collect()
+}
+
+/// Runs `restore` (`dry_run = false`) or `restore_dry_run` and returns its
+/// error and the steps it reached.
+async fn failed_restore(backup: &Path, target: &DatabaseConfig, replace: bool, dry_run: bool) -> (BackupError, Vec<Step>) {
+    let steps = Rc::new(RefCell::new(Vec::new()));
+    let error = {
+        let steps = steps.clone();
+        let _hook = on_step(move |step, _| {
+            steps.borrow_mut().push(step);
+            Ok(())
+        });
+        if dry_run {
+            restore_dry_run(backup, target, replace, 5_000).await.unwrap_err()
+        } else {
+            restore(backup, target, replace, 5_000).await.unwrap_err()
+        }
+    };
+    let steps = steps.borrow().clone();
+    (error, steps)
+}
+
+/// SEC-025: with the target's main file missing, a restore leftover next to it
+/// means an interrupted restore whose old database lies aside. `restore` (with
+/// and without `replace`) and the dry run refuse like `serve`, naming every
+/// leftover, before any step runs and without touching the directory.
 #[tokio::test]
-async fn restore_recovers_next_to_an_old_aside() {
-    let dir = dir("restore-recover");
+async fn restore_refuses_a_missing_database_next_to_restore_leftovers() {
+    let dir = dir("restore-leftovers");
+    let source = database_with_pastes(dir.join("source.db")).await;
+    let backup = dir.join("backup.db");
+    create(&source, &backup).await.unwrap();
+
+    type Plant<'a> = &'a dyn Fn(&Path) -> Vec<&'static str>;
+    let cases: [(&str, Plant); 4] = [
+        ("aside", &|data| {
+            std::fs::write(data.join("live.db.pre-restore-1000"), b"old database").unwrap();
+            vec!["live.db.pre-restore-1000"]
+        }),
+        ("aside-wal", &|data| {
+            std::fs::write(data.join("live.db.pre-restore-1000-wal"), b"old wal").unwrap();
+            vec!["live.db.pre-restore-1000-wal"]
+        }),
+        ("stage", &|data| {
+            std::fs::create_dir(data.join(".live.db.restore-0123456789abcdef")).unwrap();
+            vec![".live.db.restore-0123456789abcdef"]
+        }),
+        ("aside-and-sidecars", &|data| {
+            std::fs::write(data.join("live.db.pre-restore-1000"), b"old database").unwrap();
+            for sidecar in sidecars(&data.join("live.db")) {
+                std::fs::write(sidecar, b"sidecar").unwrap();
+            }
+            vec!["live.db.pre-restore-1000"]
+        }),
+    ];
+    for (name, plant) in cases {
+        let data = dir.join(name);
+        std::fs::create_dir(&data).unwrap();
+        let target = config(data.join("live.db"));
+        let expected: Vec<PathBuf> = plant(&data).into_iter().map(|leftover| data.join(leftover)).collect();
+        let before = snapshot(&data);
+
+        for (replace, dry_run) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (error, steps) = failed_restore(&backup, &target, replace, dry_run).await;
+            let case = format!("{name}, replace {replace}, dry run {dry_run}");
+            assert!(
+                matches!(&error, BackupError::Db(db::DbError::RestoreLeftovers { path, leftovers })
+                    if path == &target.path && leftovers == &expected),
+                "{case}: {error}"
+            );
+            for leftover in &expected {
+                assert!(error.to_string().contains(&leftover.display().to_string()), "{case}: {error}");
+            }
+            assert!(steps.is_empty(), "{case}: went on to {steps:?}");
+            assert_eq!(snapshot(&data), before, "{case}: the directory changed");
+        }
+        if name == "stage" {
+            assert!(entries(&data.join(".live.db.restore-0123456789abcdef")).is_empty());
+        }
+    }
+}
+
+/// Next to an existing database a leftover of an earlier restore does not
+/// matter: the restore replaces the database and leaves the leftover as it is.
+#[tokio::test]
+async fn restore_over_an_existing_database_ignores_an_old_aside() {
+    let dir = dir("restore-old-aside");
     let source = database_with_pastes(dir.join("source.db")).await;
     let backup = dir.join("backup.db");
     create(&source, &backup).await.unwrap();
     let data = dir.join("data");
     std::fs::create_dir(&data).unwrap();
     let target = config(data.join("live.db"));
+    database_at(&target.path, &[]).await;
     let old_aside = data.join("live.db.pre-restore-1000");
     std::fs::write(&old_aside, b"interrupted earlier").unwrap();
-    assert!(db::connect(&target).await.is_err(), "the guard should refuse first");
 
-    let outcome = restore(&backup, &target, false, 5_000).await.unwrap();
-    assert_eq!(outcome.previous, None);
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.previous, Some(data.join("live.db.pre-restore-5000")));
     assert_eq!(std::fs::read(&old_aside).unwrap(), b"interrupted earlier");
-    let pool = db::connect(&target).await.unwrap();
-    assert_eq!(db::verify(&pool).await.unwrap(), db::expected_version());
-    pool.close().await;
+    assert_eq!(verify_file(&target.path).await.unwrap().pastes, 2);
 }
 
 #[tokio::test]
@@ -1145,18 +1238,19 @@ async fn run_statements(path: &Path, statements: &[&str]) {
 /// AC5: a replaced database without `creation_tokens`, or without
 /// `retired_ids`, is not one this binary wrote, and is handled like an
 /// unreadable one: the restore and the dry run warn once and carry no ids,
-/// states or tokens, also those the tables it has would give; the restore
-/// installs the backup's rows, the dry run changes nothing.
+/// states, purges or tokens, also those the tables it has would give; the
+/// restore installs the backup's rows, the dry run changes nothing.
 #[tokio::test]
 async fn restore_over_a_database_missing_a_table_carries_nothing() {
     let dir = dir("restore-missing-table");
     let backup = dir.join("backup.db");
-    database_at(&backup, &["shared"]).await;
+    database_at(&backup, &["shared", "purged"]).await;
     let rows: [TokenRow; 1] = [("backup-token", 1, "kept", 10, None, None)];
     add_tokens(&backup, &rows).await;
 
     // Each is written by the migrations, filled so that it would carry an id, a
-    // capsule state, a retired id and a token were it readable, and then loses
+    // capsule state, a retired id, a purge of the backup's `purged` and a token
+    // were it readable, and then loses
     // one table (`retired_ids` after the trigger that writes into it).
     for (missing, drop) in [
         ("creation_tokens", &["DROP TABLE creation_tokens"][..]),
@@ -1175,6 +1269,7 @@ async fn restore_over_a_database_missing_a_table_carries_nothing() {
             &[
                 "UPDATE pastes SET availability_status = 'deleted' WHERE id = 'shared'",
                 "INSERT INTO retired_ids (id) VALUES ('lost-retired-id')",
+                "INSERT INTO retired_ids (id) VALUES ('purged')",
             ],
         )
         .await;
@@ -1189,11 +1284,12 @@ async fn restore_over_a_database_missing_a_table_carries_nothing() {
             (
                 dry_run.carried_ids,
                 dry_run.carried_states,
+                dry_run.carried_purges,
                 dry_run.carried_tokens,
                 dry_run.carried_revocations,
                 dry_run.carried_last_uses
             ),
-            (0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0),
             "{missing}"
         );
         assert_eq!(dry_run.warnings.len(), 1, "{missing}: {:?}", dry_run.warnings);
@@ -1207,22 +1303,28 @@ async fn restore_over_a_database_missing_a_table_carries_nothing() {
             (
                 outcome.carried_ids,
                 outcome.carried_states,
+                outcome.carried_purges,
                 outcome.carried_tokens,
                 outcome.carried_revocations,
                 outcome.carried_last_uses
             ),
-            (0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0),
             "{missing}"
         );
         assert_eq!(outcome.warnings, dry_run.warnings);
         assert!(
             outcome.warnings[0].contains("ids, capsule states and creation tokens")
-                && outcome.warnings[0].contains("could not be carried over"),
+                && outcome.warnings[0].contains("could not be carried over")
+                && outcome.warnings[0].contains("purged"),
             "{missing}: {:?}",
             outcome.warnings
         );
         assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
-        assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from(["shared".to_owned()]));
+        assert_eq!(
+            ids_in(&target.path, "pastes").await,
+            BTreeSet::from(["shared".to_owned(), "purged".to_owned()]),
+            "{missing}: a purged capsule was removed"
+        );
         assert!(ids_in(&target.path, "retired_ids").await.is_empty(), "{missing}");
         assert_eq!(tokens_in(&target.path).await, owned(&rows), "{missing}");
         let pool = db::connect(&target).await.unwrap();
@@ -1483,4 +1585,210 @@ async fn restore_keeps_burns_deletions_and_moderation_after_the_backup() {
             String::from_utf8_lossy(marker)
         );
     }
+}
+
+/// SEC-024: a capsule the backup holds whose row the replaced database burned
+/// or deleted and then purged after the backup (only its id is left in
+/// `retired_ids`) is removed from the restored database, ciphertext included,
+/// and its id stays retired; an untouched capsule stays as it is. The dry run
+/// counts the same and changes nothing; a purged id is not also counted as a
+/// carried id.
+#[tokio::test]
+async fn restore_removes_backup_capsules_purged_since() {
+    let dir = dir("restore-purged");
+    let source = dir.join("source.db");
+    let pool = db::connect(&config(source.clone())).await.unwrap();
+    let repo = SqlitePasteRepository::new(pool.clone());
+    let id = |byte: u8| PasteId::from_bytes([byte; 16]);
+    repo.create(&NewPaste {
+        burn_after_retrieval: true,
+        ..paste(1, b"PURGED-BURN-MARKER")
+    })
+    .await
+    .unwrap();
+    repo.create(&paste(2, b"PURGED-DELETE-MARKER")).await.unwrap();
+    // Created later, so the never-retrieved rule below spares it.
+    repo.create(&NewPaste {
+        created_at: 2_500,
+        ..paste(3, b"untouched")
+    })
+    .await
+    .unwrap();
+    let backup = dir.join("backup.db");
+    create(&pool, &backup).await.unwrap();
+
+    assert!(repo.retrieve_and_burn(&id(1), 2_000).await.unwrap().is_some());
+    assert!(repo.delete(&id(2)).await.unwrap());
+    // Inactive since 2 000 (A) and never retrieved since 1 000 (B); C, created
+    // at 2 500 and never retrieved, stays.
+    let policy = crate::domain::PurgePolicy {
+        never_retrieved_after: 1_000,
+        inactive_after: 500,
+    };
+    let purged = repo.purge(3_000, &policy, 100).await.unwrap();
+    assert_eq!((purged.inactive, purged.never_retrieved, purged.expired), (1, 1, 0));
+    assert_eq!(
+        ids_in(&source, "retired_ids").await,
+        BTreeSet::from([id(1).encode(), id(2).encode()])
+    );
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    copy_open_database(&source, &target.path);
+    pool.close().await;
+    let files = with_sidecars(&target.path);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((dry_run.carried_purges, dry_run.carried_ids), (2, 0));
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((outcome.carried_purges, outcome.carried_ids), (2, 0));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+
+    assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from([id(3).encode()]));
+    assert_eq!(
+        ids_in(&target.path, "retired_ids").await,
+        BTreeSet::from([id(1).encode(), id(2).encode()])
+    );
+    let repo = SqlitePasteRepository::new(db::connect(&target).await.unwrap());
+    for byte in [1, 2] {
+        assert!(repo.find(&id(byte)).await.unwrap().is_none(), "{byte}");
+        assert_eq!(repo.load_ciphertext(&id(byte), 5_000).await.unwrap(), None, "{byte}");
+    }
+    assert!(matches!(
+        repo.create(&paste(1, b"again")).await,
+        Err(crate::repository::RepositoryError::IdConflict)
+    ));
+    assert_eq!(state_of(&target.path, 3).await, ("active".to_owned(), None, None, true));
+    assert_eq!(
+        repo.load_ciphertext(&id(3), 5_000).await.unwrap().as_deref(),
+        Some(&b"untouched"[..])
+    );
+    drop(repo);
+
+    let installed: Vec<u8> = with_sidecars(&target.path)
+        .iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .flatten()
+        .collect();
+    for marker in [&b"PURGED-BURN-MARKER"[..], b"PURGED-DELETE-MARKER"] {
+        assert!(
+            !installed.windows(marker.len()).any(|window| window == marker),
+            "{} left in the installed database",
+            String::from_utf8_lossy(marker)
+        );
+    }
+}
+
+/// SEC-025: after a cutover interrupted between moving the old database aside
+/// and installing the copy, a new restore refuses; once the operator has moved
+/// the old database back, the restore carries its revocation and burn.
+#[tokio::test]
+async fn restore_after_an_interrupted_cutover_keeps_revocations_and_burns() {
+    let dir = dir("restore-interrupted");
+    let source = dir.join("source.db");
+    let pool = db::connect(&config(source.clone())).await.unwrap();
+    let repo = SqlitePasteRepository::new(pool.clone());
+    let burn = PasteId::from_bytes([1; 16]);
+    repo.create(&NewPaste {
+        burn_after_retrieval: true,
+        ..paste(1, b"burned after the backup")
+    })
+    .await
+    .unwrap();
+    add_tokens(&source, &[("token", 1, "", 10, None, None)]).await;
+    let backup = dir.join("backup.db");
+    create(&pool, &backup).await.unwrap();
+
+    sqlx::query("UPDATE creation_tokens SET revoked_at = 4000 WHERE id = 'token'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(repo.retrieve_and_burn(&burn, 2_000).await.unwrap().is_some());
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    copy_open_database(&source, &target.path);
+    pool.close().await;
+
+    // The cutover moved the database and its sidecars aside, then stopped.
+    let aside = data.join("live.db.pre-restore-1000");
+    for (from, to) in with_sidecars(&target.path).iter().zip(with_sidecars(&aside)) {
+        std::fs::rename(from, to).unwrap();
+    }
+    let mut expected = with_sidecars(&aside);
+    expected.sort();
+    let before = snapshot(&data);
+    let (error, steps) = failed_restore(&backup, &target, true, false).await;
+    assert!(
+        matches!(&error, BackupError::Db(db::DbError::RestoreLeftovers { leftovers, .. }) if leftovers == &expected),
+        "{error}"
+    );
+    assert!(steps.is_empty(), "went on to {steps:?}");
+    assert_eq!(snapshot(&data), before);
+
+    for (from, to) in with_sidecars(&aside).iter().zip(with_sidecars(&target.path)) {
+        std::fs::rename(from, to).unwrap();
+    }
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((outcome.carried_revocations, outcome.carried_states), (1, 1));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(tokens_in(&target.path).await, owned(&[("token", 1, "", 10, None, Some(4_000))]));
+    assert_eq!(state_of(&target.path, 1).await, ("active".to_owned(), Some(2_000), None, false));
+}
+
+/// Package 20261122-restore-protection, AC1 edge: "purged" is the latest state
+/// a capsule reaches, so a backup capsule the replaced database purged is
+/// removed whatever state the backup holds it in (consumed, deleted, disabled,
+/// active), counted once as a purge and neither as a carried id nor as a kept
+/// state; a backup capsule the replaced database still holds is not touched.
+#[tokio::test]
+async fn restore_removes_purged_backup_capsules_in_every_state() {
+    let dir = dir("restore-purged-states");
+    let backup = dir.join("backup.db");
+    database_at(&backup, &["consumed", "deleted", "disabled", "active", "kept"]).await;
+    run_statements(
+        &backup,
+        &[
+            "UPDATE pastes SET consumed_at = 1500, ciphertext = NULL WHERE id = 'consumed'",
+            "UPDATE pastes SET availability_status = 'deleted', ciphertext = NULL WHERE id = 'deleted'",
+            "UPDATE pastes SET availability_status = 'disabled', moderation_reason = 'spam', moderated_at = 1500 WHERE id = 'disabled'",
+        ],
+    )
+    .await;
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    std::fs::copy(&backup, &target.path).unwrap();
+    // The replaced database purged four of them after the backup; the trigger
+    // retires their ids.
+    run_statements(
+        &target.path,
+        &["DELETE FROM pastes WHERE id IN ('consumed', 'deleted', 'disabled', 'active')"],
+    )
+    .await;
+    let purged: BTreeSet<String> = ["consumed", "deleted", "disabled", "active"].map(str::to_owned).into();
+    assert_eq!(ids_in(&target.path, "retired_ids").await, purged);
+    let files = with_sidecars(&target.path);
+    let before = contents(&files);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((dry_run.carried_purges, dry_run.carried_ids, dry_run.carried_states), (4, 0, 0));
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((outcome.carried_purges, outcome.carried_ids, outcome.carried_states), (4, 0, 0));
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from(["kept".to_owned()]));
+    assert_eq!(ids_in(&target.path, "retired_ids").await, purged);
 }

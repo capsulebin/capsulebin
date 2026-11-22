@@ -109,8 +109,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   every move on a failure, and keeps the old database with its `-wal`/`-shm`; `restore --dry-run`
   test-migrates that copy and changes nothing. A capsule the replaced database burned, deleted or
   disabled after the backup keeps that state (and loses its ciphertext), so a restore never makes it
-  readable again. A database missing after an interrupted restore stops
-  the server instead of being replaced by an empty one.
+  readable again, and a capsule of the backup that the replaced database purged after the backup
+  is removed, its id staying retired. A database missing after an interrupted restore stops
+  the server, and `restore` too, instead of being replaced by an empty one or by a backup that
+  carries nothing over; the message says to move the old database back first.
 - A container image: distroless without OpenSSL, non-root, configured by environment variables or a
   mounted configuration file, with the database on a `/data` volume and a health check that needs
   no shell or `curl` and nothing but the address it probes. Every change and a weekly run scan it
