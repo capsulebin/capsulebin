@@ -23,3 +23,4 @@ change is recognised as a change rather than happening by accident.
 | [015](ADR-015-legal-pages-rendered-by-the-server.md) | Legal pages: operator text rendered by the server | Accepted |
 | [016](ADR-016-language-paths.md) | Interface languages in the path, the default language without a prefix | Accepted |
 | [017](ADR-017-operator-branding.md) | Operator branding through configuration | Accepted |
+| [018](ADR-018-creation-token-in-the-browser.md) | The creation token in the browser | Accepted |

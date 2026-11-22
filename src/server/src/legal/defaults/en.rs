@@ -111,10 +111,14 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
 
     text.push_str(
         "\n\n## Cookies and third parties\n\n\
-         This service sets no cookies. The only things stored in your browser are the colour theme \
-         and the language you choose, in its local storage (`capsulebin.theme`, \
-         `capsulebin.language`); they are not sent to us, but the language is part of the \
-         address of each page you open. Pages load nothing from third parties: \
+         This service sets no cookies. The only things stored in your browser, in its local storage, \
+         are the colour theme and the language you choose (`capsulebin.theme`, \
+         `capsulebin.language`) and, once you open an invitation link or enter a creation token \
+         and let the browser remember it, \
+         that token (`capsulebin.creation_token`). The theme and the language are not sent to us, \
+         but the language is part of the address of each page you open. The token is sent to us \
+         only when you create a capsule; \"Forget\" on the create page removes it. Pages load \
+         nothing from third parties: \
          no analytics, no external fonts, no tracking. Images in capsules are shown as links and only \
          loaded if you follow them.",
     );

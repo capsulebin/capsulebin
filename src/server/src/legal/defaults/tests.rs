@@ -123,6 +123,7 @@ fn german_texts_contain_no_english_and_no_formal_address() {
         "Art. 6 Abs. 1 lit. b DSGVO",
         "`capsulebin.theme`",
         "`capsulebin.language`",
+        "`capsulebin.creation_token`",
     ] {
         assert!(privacy_text.contains(expected), "{expected:?} missing: {privacy_text}");
     }

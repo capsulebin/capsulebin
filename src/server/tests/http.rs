@@ -9,6 +9,7 @@
 mod support;
 
 use axum::http::StatusCode;
+use capsulebin_server::config::CreationMode;
 use support::*;
 
 #[tokio::test]
@@ -542,4 +543,121 @@ async fn unknown_path_is_generic() {
     assert_eq!(answer.status, StatusCode::NOT_FOUND);
     // No hint about existing files or the directory structure.
     assert_eq!(answer.text(), "Not Found");
+}
+
+/// Every `creation.mode` with what the create page's meta says for it.
+const MODES: [(CreationMode, &str); 3] = [
+    (CreationMode::Token, "token"),
+    (CreationMode::Public, "public"),
+    (CreationMode::Disabled, "disabled"),
+];
+
+/// The meta the web build writes into the head of the create shell.
+const CREATION_META: &str = r#"<meta name="capsulebin-creation" content="%%capsulebin:creation%%">"#;
+
+/// The bodies of the pages other than the create page under `prefix`, two
+/// view and manage ids included, in a fixed order.
+async fn other_pages(h: &Harness, prefix: &str) -> Vec<(String, Vec<u8>)> {
+    let mut paths: Vec<String> = pages(prefix).into_iter().skip(1).map(|(path, _)| path).collect();
+    paths.push(format!("{prefix}/p/AAAAAAAAAAAAAAAAAAAAAA"));
+    paths.push(format!("{prefix}/privacy"));
+    let mut bodies = Vec::new();
+    for path in paths {
+        let answer = h.get(&path).await;
+        assert_eq!(answer.status, StatusCode::OK, "{path}");
+        bodies.push((path, answer.body));
+    }
+    bodies
+}
+
+/// The create page names the configured mode once, in every language and
+/// whichever language is the default; no other page names it, and the other
+/// pages do not change with the mode.
+#[tokio::test]
+async fn the_create_page_names_the_creation_mode() {
+    for (default, languages) in LAYOUTS {
+        let mut others = Vec::new();
+        for (mode, value) in MODES {
+            let h = harness_with(&format!("shell-creation-{default}-{value}"), |config| {
+                legal_configuration(config);
+                config.i18n.default_language = default.to_owned();
+                config.creation.mode = mode;
+            })
+            .await;
+            for (language, _) in languages {
+                let file = h.dir.join(language).join("index.html");
+                let shell = std::fs::read_to_string(&file).unwrap();
+                std::fs::write(&file, shell.replace("<title>", &format!("{CREATION_META}<title>"))).unwrap();
+            }
+
+            let mut bodies = Vec::new();
+            for (_, prefix) in languages {
+                let text = h.get(&format!("{prefix}/")).await.text();
+                assert_eq!(text.matches("capsulebin-creation").count(), 1, "{prefix}/ ({value}): {text}");
+                assert!(
+                    text.contains(&format!(
+                        r#"<meta name="capsulebin-creation" content="{value}"><title>create</title>"#
+                    )),
+                    "{prefix}/ ({value}): {text}"
+                );
+                let pages = other_pages(&h, prefix).await;
+                assert_eq!(pages[0].1, pages[pages.len() - 2].1, "{prefix}/p/{{id}} differs by id");
+                for (path, body) in &pages {
+                    assert!(!String::from_utf8_lossy(body).contains("capsulebin-creation"), "{path} ({value})");
+                }
+                bodies.push(pages);
+            }
+            others.push(bodies);
+        }
+        assert!(
+            others.windows(2).all(|pair| pair[0] == pair[1]),
+            "a page other than create depends on the mode"
+        );
+    }
+}
+
+/// The same with the shells of the web build embedded into the binary, if it
+/// has run: they are filled once at startup.
+#[tokio::test]
+async fn the_embedded_create_page_names_the_creation_mode() {
+    for (default, languages) in LAYOUTS {
+        let mut others = Vec::new();
+        for (mode, value) in MODES {
+            let h = harness_with_embedded_assets_and(&format!("shell-creation-embedded-{default}-{value}"), |config| {
+                legal_configuration(config);
+                config.i18n.default_language = default.to_owned();
+                config.creation.mode = mode;
+            })
+            .await;
+            if h.get("/health/ready").await.json()["assets"] != "ok" {
+                for (_, prefix) in languages {
+                    let answer = h.get(&format!("{prefix}/")).await;
+                    assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR, "{prefix}/ ({value})");
+                    assert_eq!(answer.text(), MISSING_FRONTEND, "{prefix}/ ({value})");
+                }
+                continue;
+            }
+
+            let mut bodies = Vec::new();
+            for (_, prefix) in languages {
+                let text = h.get(&format!("{prefix}/")).await.text();
+                assert_eq!(text.matches("capsulebin-creation").count(), 1, "{prefix}/ ({value})");
+                assert!(
+                    text.contains(&format!(r#"<meta name="capsulebin-creation" content="{value}" />"#)),
+                    "{prefix}/ ({value}): {text}"
+                );
+                let pages = other_pages(&h, prefix).await;
+                assert_eq!(pages[0].1, pages[pages.len() - 2].1, "{prefix}/p/{{id}} differs by id");
+                for (path, body) in &pages {
+                    assert!(!String::from_utf8_lossy(body).contains("capsulebin-creation"), "{path} ({value})");
+                }
+                bodies.push(pages);
+            }
+            others.push(bodies);
+        }
+        assert!(
+            others.windows(2).all(|pair| pair[0] == pair[1]),
+            "a page other than create depends on the mode"
+        );
+    }
 }

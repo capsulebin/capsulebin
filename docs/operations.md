@@ -26,7 +26,9 @@ tool for users and automation.
    ```
 
    Hand the token to the people or systems that may create capsules. Several hashes may be
-   configured; remove one to revoke that token.
+   configured; remove one to revoke that token. With `server.public_url` set (by `--config` or
+   `CAPSULEBIN__SERVER__PUBLIC_URL`), the output ends with an invitation link — see
+   [Creating capsules in the browser](#creating-capsules-in-the-browser).
 
 2. Write the configuration. The minimum for production:
 
@@ -57,10 +59,52 @@ tool for users and automation.
    capsulebin --config /etc/capsulebin.toml serve
    ```
 
-> **Known limitation:** the web client's create page does not send a creation token yet. In
-> `token` mode, capsules can only be created with the CLI (`CAPSULEBIN_TOKEN` or `--token-file`);
-> the web client can still open and manage them. `public` mode makes the web create page work but
-> lets anyone upload — only sensible behind another access control (VPN, SSO proxy).
+### Creating capsules in the browser
+
+The create page follows `creation.mode`, which the server puts into the page
+([ADR-018](adr/ADR-018-creation-token-in-the-browser.md)):
+
+- **`token`** (default): without a token the page shows no editor, only a notice that a creation
+  token is needed, a token field and "Remember in this browser" (checked by default). Once a token
+  is entered, the editor appears with "Forget" above it. The token is sent only as the bearer of
+  the create request. A token the server refuses is removed from the browser at once; the person
+  can enter another one and the same encrypted capsule is sent again, so nothing is lost.
+- **`public`**: the page works without a token, but anyone can upload — only sensible behind
+  another access control (VPN, SSO proxy).
+- **`disabled`**: the page shows only a notice that the instance accepts no new capsules; existing
+  links keep working.
+
+The CLI takes the token from `CAPSULEBIN_TOKEN` or `--token-file`.
+
+**Invitation link.** Instead of the 43-character token, hand out a link
+`<public_url>/#token=<token>`. Opening it stores the token in that browser (`localStorage`,
+`capsulebin.creation_token`) and shows "This browser can now create capsules"; the page removes
+the fragment from the address bar first. The token stays in the fragment, which browsers never
+send, so it reaches neither CapsuleBin nor the reverse proxy's log. The link works under every
+language prefix (`/de/#token=…`); on a `public` or `disabled` instance it is removed and nothing
+is stored. `capsulebin token` prints it when `server.public_url` is known:
+
+```text
+token (store this in your client, it is not recoverable):
+  <token>
+
+configuration entry:
+  [creation]
+  mode = "token"
+  token_hashes = ["sha256:<hash>"]
+
+invitation link (opens the create page and stores the token in the browser):
+  https://paste.example.org/#token=<token>
+```
+
+The first lines are unchanged, so scripts that read the token from line 2 and the `sha256:` line
+keep working. `token` validates only `server.public_url`, by the rules `serve` applies; a value
+that breaks one gives a `note:` on stderr naming the reason (never the value) and no link, still
+with exit `0`. A `--config` that cannot be loaded is an error and prints no token. Without
+`--config` and `CAPSULEBIN__SERVER__PUBLIC_URL` the output ends after the hash.
+
+Treat an invitation link like the token itself: whoever has it, or the browser profile that stored
+it, can create capsules until its hash is removed.
 
 ### systemd
 
@@ -119,6 +163,7 @@ environment variables or a mounted configuration file and keeps the database on 
 docker pull ghcr.io/capsulebin/capsulebin:1.0.0   # or: docker build -t capsulebin .
 docker tag ghcr.io/capsulebin/capsulebin:1.0.0 capsulebin
 docker run --rm capsulebin token                  # creation token + hash
+# with -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org also the invitation link
 docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data \
   -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
   -e CAPSULEBIN__SERVER__TRUSTED_PROXIES='["172.16.0.0/12"]' \
@@ -515,7 +560,9 @@ or already purged)". The table grows by about 40 bytes per purged capsule.
 ### Rotating creation tokens
 
 Generate a new token with `capsulebin token`, add its hash, hand it out, then remove the old hash
-and restart. Existing capsules are unaffected — the token only authorizes creation.
+and restart. Existing capsules are unaffected — the token only authorizes creation. A browser
+that stored the old token gets `401` on its next create; the page forgets the token and asks for
+the new one (or open a new invitation link there).
 
 ## Abuse handling runbook
 
@@ -564,7 +611,7 @@ capsulebin reports close <report-id> --resolution action_taken|no_action|duplica
 
 | Situation | Action |
 | --- | --- |
-| A creation token leaked | Remove its hash, restart. Consider `creation.mode = "disabled"` while investigating — existing capsules stay readable. |
+| A creation token or invitation link leaked | Remove its hash, restart. Consider `creation.mode = "disabled"` while investigating — existing capsules stay readable. |
 | Flood of uploads | Enable or tighten `rate_limits.create` (rate, `bytes_per_day`, `max_concurrent`); `creation.mode = "disabled"` stops all creation. |
 | Flood of reports | The ceilings keep the queue bounded; `reports list` shows how full it is. Enable `rate_limits.report` (e.g. 5/hour burst 2), close junk as `invalid`; `abuse.enabled = false` stops reports while moderation keeps working. |
 | Database or backup stolen | Content stays protected without the links. Reports in it contain contact data — treat it as a personal-data breach. Rotate creation tokens. |

@@ -134,10 +134,13 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
 
     text.push_str(
         "\n\n## Cookies und Dritte\n\n\
-         Dieser Dienst setzt keine Cookies. In deinem Browser gespeichert werden nur das Farbschema \
-         und die Sprache, die du wählst, und zwar in seinem lokalen Speicher (`capsulebin.theme`, \
-         `capsulebin.language`); sie werden nicht an uns gesendet, die Sprache ist aber Teil der \
-         Adresse jeder Seite, die du öffnest. Die Seiten laden nichts von Dritten: keine Webanalyse, \
+         Dieser Dienst setzt keine Cookies. Im lokalen Speicher deines Browsers liegen nur das \
+         Farbschema und die Sprache, die du wählst (`capsulebin.theme`, `capsulebin.language`), \
+         und, sobald du einen Einladungslink öffnest oder ein Erstellungstoken eingibst und speichern \
+         lässt, dieses Token (`capsulebin.creation_token`). Farbschema und Sprache \
+         werden nicht an uns gesendet, die Sprache ist aber Teil der Adresse jeder Seite, die du \
+         öffnest. Das Token wird nur an uns gesendet, wenn du eine Kapsel erstellst; „Vergessen“ auf \
+         der Erstellungsseite entfernt es. Die Seiten laden nichts von Dritten: keine Webanalyse, \
          keine externen Schriftarten, kein Tracking. Bilder in Kapseln werden als Links angezeigt und \
          nur geladen, wenn du ihnen folgst.",
     );

@@ -17,6 +17,15 @@ export function linkErrorText(fragment: string): string {
     return fragment.replace(/^#/, '') === '' ? t('link.noKey') : t('link.unreadable');
 }
 
+/**
+ * Whether a create was refused for its creation token (missing or wrong). In
+ * `token` mode the create page asks for a token instead of showing
+ * {@link apiErrorText}'s text.
+ */
+export function isTokenRefused(err: unknown): boolean {
+    return err instanceof ApiError && err.code === 'unauthorized';
+}
+
 /** What to tell the user about a failed API call; a general text for anything unexpected. */
 export function apiErrorText(err: unknown): string {
     if (!(err instanceof ApiError)) return t('error.generic');

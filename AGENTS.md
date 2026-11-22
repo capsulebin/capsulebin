@@ -14,7 +14,9 @@ Version 1.0.0, not yet released (protocol v1 fixed by ADR-003, see `CHANGELOG.md
 encrypted capsule works end-to-end: create, describe, retrieve, delete, burn-after-retrieval,
 password protection, Markdown/code rendering, file items, retention/pruning, rate limiting,
 idempotent create, the CLI (`put`/`get`/`delete`), abuse reports and the operator moderation
-commands are all implemented. The web interface is in English and German: the default language
+commands are all implemented. In `creation.mode = "token"` the web create page takes a creation
+token from a field or an invitation link (`<public_url>/#token=<token>`) and keeps it in the
+browser (ADR-018). The web interface is in English and German: the default language
 without a path prefix, the other under its prefix (`/de/`). Operators can set the instance's name,
 tagline, logo, favicon and theme colours (`[branding]`); every page says "Powered by CapsuleBin",
 with "CapsuleBin" linked to the source code.
@@ -33,7 +35,7 @@ capsulebin/
 │                         (no DOM, no build step; shared by web client and CLI)
 ├── migrations/         SQLite migrations (0001–0004), embedded into server binary
 ├── docs/
-│   ├── adr/            17 Architecture Decision Records (see below)
+│   ├── adr/            18 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
 │   ├── crypto-profile.md        Binding crypto specification (primitives, derivation, verifiers)
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
@@ -190,7 +192,12 @@ Critical rules:
   `config/model.rs`, `trailingLanguage` in core `links.ts`). Both rules are kept equal on both
   sides by the shared vectors `src/core/tests/fixtures/base-language.json`.
 - **`creation.mode` defaults to `token`** — an instance reachable before configuration
-  must not be an open write target.
+  must not be an open write target. The mode reaches the web client as the shell token
+  `%%capsulebin:creation%%` (`public`/`token`/`disabled`, a fixed literal, not escaped) in
+  `<meta name="capsulebin-creation">` of the create shell only (`index.html`), filled in the same
+  single pass as the other tokens; no other shell carries it, so `/p/{id}` is unchanged. The dev
+  server fills `public`. A missing or unknown meta is `public` on the page (the server still
+  decides). See [Creation token in the browser](#creation-token-in-the-browser).
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
   startup without raw HTML or images and with links limited to http(s), mailto, tel and local
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
@@ -231,6 +238,41 @@ Critical rules:
   thresholds (`web/tests/fixtures/contrast-pairs.json`) is a warning: logged by `serve`, printed to
   stderr by `check`; never an error. The Rust palette and pairs in `branding/colors.rs` are kept
   equal to `tokens.css` and the fixture by tests.
+
+### Creation token in the browser
+
+ADR-018. Only the create page handles a token (`src/server/web/src/creation-token.ts`,
+`pages/create.ts`):
+- **Per mode:** `disabled` → `tmpl-disabled` (no form); `token` without a token → `tmpl-token`
+  (notice, token field, "Remember in this browser" checked by default, no editor); `token` with a
+  token → the editor with the line "Token stored in this browser" / "Token for this page only" and
+  "Forget"; `public` → unchanged, no token UI, no bearer sent.
+- **Valid token:** after trimming, 1–1024 characters (`MAX_TOKEN_CHARS`), all U+0021–U+007E
+  (`validToken`); anything else is refused inline and never used.
+- **Storage:** `localStorage['capsulebin.creation_token']` (`CREATION_TOKEN_KEY`), every access in
+  try/catch; storage that throws → held for the page only, the line says so. Unchecked "Remember"
+  never writes it. "Forget" removes it from storage and the page. The built-in privacy notice
+  (EN and DE) names the key — change both with any change to when it is stored or sent.
+- **Invitation link** `#token=<token>` on `/` and `/{lang}/`: read once at boot without
+  percent-decoding (`parseInvitation`), removed with `history.replaceState` before anything renders
+  (`takeInvitation`), in every mode; used (always remembered, confirmation shown) only in `token`
+  mode; an invalid value there shows `create.token.invitationInvalid`, elsewhere it is removed
+  silently. Any other fragment is left alone.
+- **Sent only on create**, as `PasteApi`'s `creationToken` (bearer), only in `token` mode.
+- **`401 unauthorized` in `token` mode** (`isTokenRefused` in `errors.ts`): the token is forgotten
+  at once; the error view offers the token field and "Create", which calls `publish` with the same
+  sealed `Paste` (no new encryption, same id, idempotent per ADR-011). `assemblePaste` builds the
+  capsule, `publish(paste, draft)` sends it — keep them apart.
+- **"Back to editing"** after any failed create restores the submitted `Draft` (items, active item,
+  title, expiry, burn, password); after a `401` it opens the editor and the next submit asks again.
+- **`capsulebin token`** prints, after the unchanged lines (token on line 2, the `sha256:` line —
+  `smoke.sh` and operator scripts parse them), a blank line, `invitation link (opens the create page
+  and stores the token in the browser):` and `  <public_url>/#token=<token>`, when
+  `server.public_url` comes from `--config` or the environment and passes
+  `ServerConfig::check_public_url` (the same rules as `validate`, one function). Nothing else of the
+  configuration is validated. A `--config` that cannot be loaded is an error (no token); without
+  `--config` an unloadable environment, and a refused `public_url`, are a `note:` on stderr without
+  the value, the token and hash still printed, exit `0`.
 
 ### Retention (purge)
 
@@ -367,7 +409,7 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 | `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`). Dispatched before `Config::validate`: reads only `server.bind` (nothing with `--address`), writes nothing |
 | `migrate`| Apply pending migrations and exit |
 | `prune`  | Apply retention policy once and exit |
-| `token`  | Generate a creation token + the hash to configure (domain-separated) |
+| `token`  | Generate a creation token + the hash to configure (domain-separated); with a valid `server.public_url` (`--config` or env) also the invitation link `<public_url>/#token=<token>`. Dispatched before `Config::validate`; checks only `public_url` |
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
 | `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
@@ -426,8 +468,11 @@ npm run e2e -w @capsulebin/web
 | `src/server/web/tests/contrast.test.ts` | WCAG contrast ratio of every design token pair in `tests/fixtures/contrast-pairs.json` (shared with the server's colour warnings) on all four palette blocks. |
 | `src/server/web/tests/xss.test.ts`, `trusted-html-usage.test.ts` | XSS vectors through the marked + DOMPurify pipeline; no bare `innerHTML` assignment in the sources (jsdom does not enforce Trusted Types). |
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
-| `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; the tagline markers wrap the create page's slogan only. |
+| `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; only the create shell carries `<meta name="capsulebin-creation" content="%%capsulebin:creation%%">` (exactly once, in the head), which `fillServerTokens()` fills with `public`; the tagline markers wrap the create page's slogan only. |
 | `src/server/tests/branding.rs` | `/branding/` files served byte-identical with MIME type, immutable caching and security headers, every other `/branding/` path the generic `404`; name, tagline (per language, empty, escaped), logo, `hide_name`, dark logo, favicon and attribution on every page in `en`/`de` (own test shells), operator values escaped and never read as tokens or markers. |
+| `src/server/tests/token_acceptance.rs` | Against the real binary: `token` without configuration prints only token and hash; with `public_url` from the environment or `--config` the same lines and then the invitation link with the line-2 token; a `public_url` breaking a rule gives a `note:` naming `server.public_url` but not the value, no link, exit `0`; an unloadable `--config` prints no token. |
+| `src/server/tests/http.rs` (creation meta) | `the_create_page_names_the_creation_mode` (from disk) and `the_embedded_create_page_names_the_creation_mode`: every mode, every language, also with `de` as default; exactly one meta on the create page, none on the other pages, which stay byte-identical across modes. |
+| `src/server/web/tests/creation-token.test.ts`, `create-page.test.ts` | Mode from the meta, token validation, invitation parser and `replaceState`, storage that throws, remember/forget; the create page per mode, the refused-token prompt resending the same `Paste`, the draft restored after every failed create. |
 | `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
 | `src/server/tests/branding_acceptance.rs` | Against the real binary: every unknown key or refused `[branding]` value and unusable or unreadable file stops `check` and `serve` (key named, no file content); every key set from the environment reaches the started binary; contrast warnings on `check`'s stderr (still `ok:`, exit 0) and in `serve`'s log. |
 | `src/server/web/tests/catalogue-modules.test.ts` | Only `register-<lang>.ts` imports a catalogue file; every built page loads its own catalogue module and no other; the switch notice in `language-next-page.ts` equals the catalogues and is the only text held in every language. |
@@ -435,7 +480,7 @@ npm run e2e -w @capsulebin/web
 | `src/cli/tests/cli.test.ts` | CLI exit codes, secret handling (never argv), burn confirmation, retry-with-replay, HTTP policy, refused redirects, response limits and timeouts (exit `7`, retry counts), `put`'s input limit (before reading, endless stdin, `/dev/zero`), `CAPSULEBIN_PASSWORD` bound to `--server`, `CAPSULEBIN_TOKEN` withheld from a `--server` other than `CAPSULEBIN_SERVER`, empty path options refused before any request (no fallback), the 16 384-byte first line of link/token/password sources (stdin left open, `\r\n`, `/dev/zero`), link channels (stdin, `--link-file`, `--delete-link-file`), the delete link kept after a failed `put` (file kept, else printed; `delete_url`/`delete_link_file` in the JSON error), file output (`0600`/`0700` under umask `000`, existing entries and symlinks never opened or followed but a free name taken, no `--force`/`--raw`, no leftover on a failed write, the `capsule-<date>-<id>` directory also for a single item, `--here`/`-o`, nothing on stdout), terminal output (escaped diagnostics, DEL/C1 in JSON). Fake origin `https://capsule.test`. |
 | `src/cli/tests/escape.test.ts` | The escaping functions of `terminal.ts` over every code point and byte in U+0000–U+00FF plus seeded random input: no control character emitted, text without one unchanged. |
 | `src/cli/tests/terminal.test.ts` | The bundled CLI on a real pseudo-terminal (python3 `pty`): hidden password prompt, burn confirmation, Ctrl-C/EOF → exit `8` with no guarded request, `stty` restored after every run. Fails (no skip) without `python3`, with a message naming it (`pty-requirement.test.ts`); skipped on Windows. |
-| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
+| `src/server/web/e2e/*.e2e.ts` | Playwright against the release binary in Chromium, Firefox and WebKit: every user flow, the legal pages, hostile Markdown and a capsule at the size limit, a German flow without English text, the legal pages in German (headings, built-in texts, `lang` on fallback text), the language switch and the head script's language choice (`i18n.e2e.ts`), the built-in identity and a branded instance incl. taglines and theme colours in every system-preference/toggle state, the dark logo following the theme toggle and the attribution opening a new tab (`branding.e2e.ts`, extra instances via `e2e/instance.ts`), the create page on `token` and `disabled` instances: token field, bearer on create only, invitation links on `/`, `/de/`, `/en/`, remember off, forget, a refused token with the draft kept, a German flow (`creation-token.e2e.ts`, real token from `creationToken()` in `e2e/instance.ts`; only its refused-token tests accept the expected `401` console lines), failing on any CSP/Trusted Types violation, page or console error, or executed XSS canary (`e2e/guard.ts`, which `guard.e2e.ts` checks itself). |
 
 ## Architecture Decision Records (docs/adr)
 
@@ -458,6 +503,7 @@ npm run e2e -w @capsulebin/web
 | 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts (English, German) filled in from the configuration; per language `[legal.<lang>.*]` with fallback to `[legal.*]`; restricted Markdown rendered at startup; code still only from the binary |
 | 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
 | 017 | Operator branding | `[branding]` keys instead of operator CSS; name, raster logo/dark logo/favicon (no SVG) read at startup, served at content-hashed `/branding/` URLs; one name for all languages, a tagline per language; theme colours as token values in a generated stylesheet, contrast failures only a warning; "Powered by CapsuleBin" on every page ("CapsuleBin" linked to the source, new tab), not switchable |
+| 018 | Creation token in the browser | Create page takes the token from a field or an invitation link `#token=` (fragment removed at once), remembered in `localStorage` by default with "Forget", sent only as the create bearer; mode in the create shell's meta; a refused token resends the same sealed capsule; no cookie/session, policy endpoint or admin UI |
 
 ## Source code map
 
@@ -468,7 +514,7 @@ npm run e2e -w @capsulebin/web
 | `src/main.rs` | Binary entry point, CLI argument parsing (clap) |
 | `src/lib.rs` | `AppState`, `router()` — layer order is security-critical (see comments) |
 | `src/config.rs` | Config loading: TOML + env override, validation, `Resolved` |
-| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()`; `BrandingConfig` (named field `colors`), `BrandingTexts` (`[branding.<lang>]`) and their validation |
+| `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()`; `ServerConfig::check_public_url` (the `public_url` rules, shared by `validate` and `token`); `BrandingConfig` (named field `colors`), `BrandingTexts` (`[branding.<lang>]`) and their validation; `CreationMode` (`as_str()`: the literal of the create shell's creation meta) |
 | `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs; the colour stylesheet as a `BrandingFile` (`branding/colors.rs`: `Colors` parsing, built-in palette `TOKENS`, `CONTRAST_PAIRS`, `stylesheet()`, `contrast_warnings()`) |
 | `src/config/env.rs` | Environment variable mapping (`CAPSULEBIN__...`) |
 | `src/config/units.rs` | Duration and byte-size parsing |
@@ -489,7 +535,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
-| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); first links the colour stylesheet before `</head>` (if configured), then fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`/`%%capsulebin:name%%`/`%%capsulebin:favicon%%`/`%%capsulebin:source%%` and the server-internal `%%capsulebin:tagline%%` in one pass after replacing the header regions `<!--capsulebin:logo-->`/`<!--capsulebin:wordmark-->`/`<!--capsulebin:tagline-->` from `[branding]` (tagline per page language), turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` titled with the label of their own footer marker |
+| `src/api/assets.rs` | Page routes per language (default without a prefix), redirect away from the default language's prefix, asset serving (embedded: pages prepared once at startup; from disk: read per request); first links the colour stylesheet before `</head>` (if configured), then fills the shell tokens `%%capsulebin:prefix%%`/`%%capsulebin:default%%`/`%%capsulebin:name%%`/`%%capsulebin:favicon%%`/`%%capsulebin:source%%`/`%%capsulebin:creation%%` (the `creation.mode` as `CreationMode::as_str()`, `CREATION_TOKEN`) and the server-internal `%%capsulebin:tagline%%` in one pass after replacing the header regions `<!--capsulebin:logo-->`/`<!--capsulebin:wordmark-->`/`<!--capsulebin:tagline-->` from `[branding]` (tagline per page language), turns the footer markers `<!--capsulebin:legal-link:<page>:<label>-->` into links (label from the shell, target from `[legal]`) or drops them, puts legal pages into `legal.html` titled with the label of their own footer marker |
 | `src/legal.rs` | `[legal]` resolution per interface language: imprint, privacy notice, terms; each section from `[legal.<lang>.*]` or else `[legal.*]`, `lang` on blocks not in the page language; footer link targets with the language's prefix (`legal/markdown.rs`: restricted Markdown, `legal/defaults.rs` + `defaults/{en,de}.rs`: built-in texts per language) |
 | `src/api/branding.rs` | One route per configured branding file and the colour stylesheet, served from memory with its MIME type and immutable caching |
 | `src/api/problem.rs` | `application/problem+json` error responses |
@@ -499,7 +545,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/reports.rs` | Report endpoint and policy; 32 KiB body limit, `enabled` checked before the body, ceiling warning throttled by `CeilingWarning` (one per `AppState`) |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
-| `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token, backup/restore, reports/moderation in `abuse.rs`) |
+| `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token — reads only `server.public_url` for the invitation link —, backup/restore, reports/moderation in `abuse.rs`) |
 | `build.rs` | Creates `web/dist` if missing and makes Cargo recompile when it changes; `rust-embed` (with `debug-embed`: every profile) embeds it at compile time |
 
 ### TypeScript core (`src/core/`)
@@ -523,14 +569,15 @@ npm run e2e -w @capsulebin/web
 
 | File | Purpose |
 |------|---------|
-| `src/pages/create.ts` | Creation form: item tabs, "+ Add item" menu, per-item editor, drag & drop |
+| `src/pages/create.ts` | Creation form: item tabs, "+ Add item" menu, per-item editor, drag & drop; phases per creation mode (`showCreate`: disabled notice, token panel, editor with the token line), invitation handling at boot, `assemblePaste` + `publish(paste, draft)` (bearer in `token` mode, refused token → `showTokenRefused` resending the same `Paste`), `Draft` restored by "Back to editing" after every error |
+| `src/creation-token.ts` | Creation token (ADR-018): `creationMode()` from the create shell's meta (missing/unknown → `public`), `validToken` (trimmed, 1–1024 chars U+0021–U+007E), `parseInvitation`/`takeInvitation` (`#token=`, no percent-decoding, removed by `history.replaceState`), class `CreationToken` (remembered in `localStorage['capsulebin.creation_token']` or page-only, `use`, `forget`; storage access never throws) |
 | `src/pages/view.ts` | Capsule view: decrypt, sticky item tabs, copy/download/source per item |
 | `src/pages/manage.ts` | Management page (delete, burn status) |
 | `src/pages/open-capsule.ts` | Password prompt + decrypt flow |
 | `src/pages/render-items.ts` | Item rendering dispatch |
 | `src/pages/item-tabs.ts` | Shared item tab behaviour (keyboard, reveal) for create and view |
 | `src/pages/shell.ts` | Page shell (theme, layout, language switch; `languageFromNextPage`/`isLeavingPage` keep the switch and a retrieval, deletion or draft from interfering) |
-| `src/pages/errors.ts` | Catalogue error texts by HTTP status and problem `code` |
+| `src/pages/errors.ts` | Catalogue error texts by HTTP status and problem `code`; `isTokenRefused` (`unauthorized`) |
 | `src/pages/report.ts` | Abuse report form (strips the fragment, only the id is sent) |
 | `src/pages/legal.ts` | Legal pages: shell only, the server renders the text (ADR-015) |
 | `src/render-markdown.ts` | Markdown rendering (marked + DOMPurify) |
@@ -542,7 +589,7 @@ npm run e2e -w @capsulebin/web
 | `src/i18n/register-<lang>.ts` | Catalogue module of one language; its shells load it before the page script |
 | `src/i18n/language-next-page.ts` | The switch's "applies from the next page" notice in every language (shown in the chosen language) |
 | `src/default-language.ts` | Built-in default `en`: fallback without a usable meta, default language of the Vite dev server |
-| `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix, default language, name, favicon and source link (after escaping, `{name}` in a catalogue text becomes the name token, `{project}` the `CapsuleBin` link to the source token, opened in a new tab); `fillServerTokens()` fills them with the defaults for the dev server |
+| `scripts/shells.ts` | Generates one shell per template and language (`.shells/`, built into `dist/<lang>/`), including the languages `<meta>` and the tokens for prefix, default language, name, favicon, source link and (`{{creation}}`, create shell only) creation mode (after escaping, `{name}` in a catalogue text becomes the name token, `{project}` the `CapsuleBin` link to the source token, opened in a new tab); `fillServerTokens()` fills them with the defaults for the dev server (creation mode `DEV_CREATION_MODE` = `public`) |
 | `vite.config.ts` | One build over all generated shells; dev server serves the page routes with the default `en`, fills the tokens and answers `404` for every raw template path |
 | `public/theme-init.js` | Head script: applies the stored theme and sets the `color-scheme` meta before the paint |
 | `public/language-init.js` | Head script (after `theme-init.js`, which sets the `color-scheme` meta): moves the page to the stored, browser or default language before the paint |
@@ -552,7 +599,7 @@ npm run e2e -w @capsulebin/web
 | `src/styles/code.css` | Code block styles |
 | `src/styles/prose.css` | Prose/typography styles |
 | `public/favicon.svg` | Built-in favicon (the symbol), linked unless `branding.favicon` is set |
-| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{prefix}}`/`{{default}}`/`{{name}}`/`{{favicon}}`/`{{<key>}}` placeholders and the logo/wordmark marker regions in the header (`index.html` also the tagline region around its slogan); no literal `CapsuleBin`: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
+| `*.html` | Shell templates with `{{lang}}`/`{{languages}}`/`{{prefix}}`/`{{default}}`/`{{name}}`/`{{favicon}}`/`{{<key>}}` placeholders and the logo/wordmark marker regions in the header (`index.html` also the tagline region around its slogan, `<meta name="capsulebin-creation" content="{{creation}}">` and the templates `tmpl-token`, `tmpl-token-form`, `tmpl-disabled`); no literal `CapsuleBin`: `index.html` (create), `p.html` (view), `manage.html`, `report.html`, `legal.html` (imprint, privacy, terms) |
 
 ### CLI (`src/cli/`)
 
@@ -637,6 +684,9 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
 - **Page routes and the redirect from the default language's prefix never inspect the path id** —
   same bytes for every id under `/p/{id}` and `/{lang}/p/{id}`, same redirect, no retrieval
   (ADR-004, ADR-016).
+- **The creation token is the bearer of the create request only** — never on describe,
+  retrieve or delete, never in a URL, body or log; the invitation fragment is removed with
+  `history.replaceState` before anything renders (ADR-018).
 - **Catalogue values are plain text** — the shell generator escapes them, pages insert them as
   text; never as HTML.
 - **`[branding]` values are escaped and filled in one pass** — a name, tagline or URL that looks like a

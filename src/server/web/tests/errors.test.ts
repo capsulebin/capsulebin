@@ -10,7 +10,7 @@ import { ApiError, RESPONSE_TOO_LARGE, TIMEOUT } from '@capsulebin/core';
 
 import de from '../src/i18n/de.json';
 import en from '../src/i18n/en.json';
-import { apiErrorText, linkErrorText } from '../src/pages/errors';
+import { apiErrorText, isTokenRefused, linkErrorText } from '../src/pages/errors';
 import { setPageLanguage } from './page-language';
 
 describe('link errors', () => {
@@ -52,6 +52,14 @@ describe('API errors', () => {
         expect(apiErrorText(problem(409, 'id_conflict'))).toBe(de['error.generic']);
         expect(apiErrorText(problem(418, null))).toBe(de['error.generic']);
         expect(apiErrorText(new Error('English message'))).toBe(de['error.generic']);
+    });
+
+    // `unauthorized` is the token prompt in `token` mode; `creation_disabled` keeps its text.
+    it('tell a refused creation token from a closed instance', () => {
+        expect(isTokenRefused(problem(401, 'unauthorized'))).toBe(true);
+        expect(isTokenRefused(problem(403, 'creation_disabled'))).toBe(false);
+        expect(isTokenRefused(problem(401, null))).toBe(false);
+        expect(isTokenRefused(new Error('unauthorized'))).toBe(false);
     });
 
     it('limits and timeouts read as network errors', async () => {

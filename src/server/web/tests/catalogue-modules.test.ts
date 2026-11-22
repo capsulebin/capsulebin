@@ -22,6 +22,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { KNOWN_LANGUAGES } from '@capsulebin/core';
 
 import {
+    CREATION_TOKEN,
     FAVICON_TOKEN,
     NAME_TOKEN,
     PROJECT_LINK,
@@ -322,7 +323,8 @@ describe('catalogue modules in the build output', () => {
                     .replaceAll('data-default="%%capsulebin:default%%"', '')
                     .replaceAll(NAME_TOKEN, '')
                     .replaceAll(`href="${FAVICON_TOKEN}"`, '')
-                    .replaceAll(`href="${SOURCE_TOKEN}"`, '');
+                    .replaceAll(`href="${SOURCE_TOKEN}"`, '')
+                    .replaceAll(`content="${CREATION_TOKEN}"`, '');
                 expect(rest).not.toContain('%%');
             });
         },

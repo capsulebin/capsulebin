@@ -63,9 +63,9 @@ the CSP is unchanged. Once the stylesheet applies, `color-scheme` in `tokens.css
   system setting does not match the situation.
 - **`[data-theme]` only, without the media query.** The first visit would have no theme and would
   always start light.
-- **Using `localStorage` for anything beyond the theme and the language choice.** Persistence is a
-  side channel. Only `light|dark` (theme) and a language code (ADR-016) are stored; for `auto` the
-  entry is removed. A test asserts that after using the toggle exactly one key exists in
+- **Using `localStorage` for anything beyond the theme, the language choice and the creation
+  token.** Persistence is a side channel. Only `light|dark` (theme), a language code (ADR-016) and,
+  on the create page, a creation token (ADR-018) are stored; for `auto` the theme entry is removed. A test asserts that after using the toggle exactly one key exists in
   `localStorage`.
 
 ## Consequences

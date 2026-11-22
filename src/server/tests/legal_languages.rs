@@ -208,6 +208,38 @@ async fn ac10_built_in_links_carry_the_prefix_of_the_page() {
     }
 }
 
+/// Package 20261121-web-creation-token, AC13: the built-in privacy notice in
+/// both languages names the stored creation token next to the theme and the
+/// language: stored after an invitation link or an entered token, sent only on
+/// create, removed with "Forget".
+#[tokio::test]
+async fn the_built_in_privacy_notice_names_the_stored_creation_token() {
+    let h = harness_with("legal-lang-creation-token", |config| {
+        config.legal.operator = legal_text("Example GmbH");
+    })
+    .await;
+
+    for (path, expected) in [
+        (
+            "/privacy",
+            ["invitation link", "sent to us only when you create a capsule", "Forget"],
+        ),
+        (
+            "/de/privacy",
+            ["Einladungslink", "nur an uns gesendet, wenn du eine Kapsel erstellst", "Vergessen"],
+        ),
+    ] {
+        let page = h.get(path).await.text();
+        let privacy = article(&page);
+        for key in ["capsulebin.theme", "capsulebin.language", "capsulebin.creation_token"] {
+            assert!(privacy.contains(&format!("<code>{key}</code>")), "{path}: {key} missing: {privacy}");
+        }
+        for text in expected {
+            assert!(privacy.contains(text), "{path}: {text:?} missing: {privacy}");
+        }
+    }
+}
+
 /// AC11: `<title>`, header and `<h1>` are the footer label of the page in the
 /// page's language, the `<h1>` outside the article that may carry another
 /// `lang`.

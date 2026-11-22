@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -39,6 +39,18 @@ async function ready(origin: string, server: ChildProcess): Promise<void> {
         await new Promise((wait) => setTimeout(wait, 100));
     }
     throw new Error(`${origin} did not become ready`);
+}
+
+/**
+ * A new creation token and the `creation.token_hashes` entry for it, from
+ * `capsulebin token` as an operator gets them.
+ */
+export function creationToken(): { token: string; hash: string } {
+    const output = execFileSync(BINARY, ['token'], { encoding: 'utf8' });
+    const token = output.split('\n')[1]?.trim() ?? '';
+    const hash = /sha256:[A-Za-z0-9_-]+/.exec(output)?.[0] ?? '';
+    if (!token || !hash) throw new Error('could not read the output of capsulebin token');
+    return { token, hash };
 }
 
 /** Runs `use` with the origin of a fresh instance, and stops the instance afterwards. */

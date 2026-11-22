@@ -183,9 +183,9 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     // Generating a token needs no configuration - it is what you run *before*
-    // writing one.
+    // writing one. A configuration is read only for `server.public_url`.
     if matches!(cli.command, Command::Token) {
-        return commands::token();
+        return commands::token(cli.config.as_deref());
     }
 
     // The health check needs only the address it probes. It must keep working
