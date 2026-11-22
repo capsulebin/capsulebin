@@ -118,18 +118,18 @@ fn old_database(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// A database at `path` migrated only up to `version`, with a paste row for
-/// each of `ids`, closed without sidecars.
-async fn database_at(path: &Path, version: i64, ids: &[&str]) {
+/// A database at `path` on the current schema, with a paste row for each of
+/// `ids`, closed without sidecars.
+async fn database_at(path: &Path, ids: &[&str]) {
     let pool = SqlitePoolOptions::new()
         .connect_with(SqliteConnectOptions::new().filename(path).create_if_missing(true))
         .await
         .unwrap();
-    db::MIGRATOR.run_to(version, &pool).await.unwrap();
+    db::MIGRATOR.run(&pool).await.unwrap();
     for id in ids {
         sqlx::query(
-            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-             VALUES (?1, 1, x'00', x'00', x'00', 1, 1)",
+            "INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+             VALUES (?1, 1, x'00', x'00', x'00', x'00', 1, 1)",
         )
         .bind(id)
         .execute(&pool)
@@ -140,9 +140,9 @@ async fn database_at(path: &Path, version: i64, ids: &[&str]) {
     assert!(!sidecars(path)[0].exists());
 }
 
-/// A backup at `path` that has only the first migration and one paste row.
-async fn first_migration_backup(path: &Path) {
-    database_at(path, 1, &["first-migration-paste"]).await;
+/// A backup at `path` that holds one paste row.
+async fn one_paste_backup(path: &Path) {
+    database_at(path, &["backup-paste"]).await;
 }
 
 /// Copies the files of the open database `from` (main file, `-wal`, `-shm`) to
@@ -409,7 +409,7 @@ async fn restores_into_an_empty_place() {
 async fn restore_migrates_a_private_copy_before_the_cutover() {
     let dir = dir("restore-migrate");
     let backup = dir.join("backup.db");
-    first_migration_backup(&backup).await;
+    one_paste_backup(&backup).await;
     let input = std::fs::read(&backup).unwrap();
     let data = dir.join("data");
     std::fs::create_dir(&data).unwrap();
@@ -440,7 +440,7 @@ async fn restore_migrates_a_private_copy_before_the_cutover() {
     assert_eq!(seen.borrow().iter().filter(|(step, _)| *step == Step::Migrate).count(), 1);
     assert_eq!(std::fs::read(&backup).unwrap(), input, "the input was changed");
 
-    assert_eq!(outcome.info.schema_version, 1);
+    assert_eq!(outcome.info.schema_version, db::expected_version());
     assert_eq!(outcome.schema_version, db::expected_version());
     assert_eq!(mode(&target.path), 0o600);
     let wal = &sidecars(&target.path)[0];
@@ -465,7 +465,7 @@ async fn restore_migrates_a_private_copy_before_the_cutover() {
 async fn restore_failure_at_every_step_keeps_the_old_database() {
     let dir = dir("restore-fail");
     let backup = dir.join("backup.db");
-    first_migration_backup(&backup).await;
+    one_paste_backup(&backup).await;
 
     // Garbage, and a real database left by a crash (rows in its WAL) whose
     // ids are carried over.
@@ -653,7 +653,7 @@ async fn restore_follows_no_planted_scratch_entry() {
 async fn dry_run_migrates_a_private_copy_and_changes_nothing() {
     let dir = dir("restore-dry-run");
     let backup = dir.join("backup.db");
-    first_migration_backup(&backup).await;
+    one_paste_backup(&backup).await;
     let input = std::fs::read(&backup).unwrap();
     let data = dir.join("data");
     std::fs::create_dir(&data).unwrap();
@@ -663,7 +663,7 @@ async fn dry_run_migrates_a_private_copy_and_changes_nothing() {
     let listed = entries(&data);
 
     let outcome = restore_dry_run(&backup, &target, false, 5_000).await.unwrap();
-    assert_eq!(outcome.info.schema_version, 1);
+    assert_eq!(outcome.info.schema_version, db::expected_version());
     assert_eq!(outcome.info.pastes, 1);
     assert_eq!(outcome.schema_version, db::expected_version());
     assert!(outcome.needs_replace);
@@ -733,7 +733,7 @@ async fn backup_publishes_the_staged_snapshot_itself() {
 
 /// AC7: ids of the replaced database that the backup does not hold as a row
 /// are retired by the restore, read from its rows, its `retired_ids` and its
-/// WAL, also from a database at schema version 3 (no `retired_ids`).
+/// WAL.
 #[tokio::test]
 async fn restore_retires_ids_missing_from_the_backup() {
     let dir = dir("restore-carry");
@@ -794,21 +794,6 @@ async fn restore_retires_ids_missing_from_the_backup() {
         let error = repo.create(&paste(byte, b"again")).await.unwrap_err();
         assert!(matches!(error, crate::repository::RepositoryError::IdConflict), "{byte}: {error}");
     }
-
-    // A replaced database at schema version 3 has no `retired_ids`: its rows
-    // are carried over.
-    let data = dir.join("version-3");
-    std::fs::create_dir(&data).unwrap();
-    let target = config(data.join("live.db"));
-    database_at(&target.path, 3, &[&a.encode(), "only-in-version-3"]).await;
-    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
-    assert_eq!(outcome.carried_ids, 1);
-    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
-    assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from([a.encode()]));
-    assert_eq!(
-        ids_in(&target.path, "retired_ids").await,
-        BTreeSet::from(["only-in-version-3".to_owned()])
-    );
 }
 
 /// AC8: a replaced database that cannot be read does not stop the restore; the
@@ -840,7 +825,7 @@ async fn restore_with_an_unreadable_old_database_warns() {
     // succeed, reading the ids fails.
     let corrupt = dir.join("corrupt");
     std::fs::create_dir(&corrupt).unwrap();
-    database_at(&corrupt.join("live.db"), 4, &["lost-1", "lost-2"]).await;
+    database_at(&corrupt.join("live.db"), &["lost-1", "lost-2"]).await;
     let mut bytes = std::fs::read(corrupt.join("live.db")).unwrap();
     let page_size = usize::from(u16::from_be_bytes([bytes[16], bytes[17]]));
     assert!(bytes.len() > page_size, "the tables live behind the schema page");
@@ -898,8 +883,8 @@ async fn restore_carries_many_ids_over() {
     let mut transaction = pool.begin().await.unwrap();
     sqlx::query(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60000)
-         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-         SELECT 'row-' || i, 1, x'00', x'00', x'00', 1, 1 FROM n",
+         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+         SELECT 'row-' || i, 1, x'00', x'00', x'00', x'00', 1, 1 FROM n",
     )
     .execute(&mut *transaction)
     .await
@@ -956,8 +941,8 @@ async fn restore_stops_when_the_copy_cannot_take_the_carried_ids() {
     let pool = db::connect(&target).await.unwrap();
     sqlx::query(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
-         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
-         SELECT 'row-' || i, 1, x'00', x'00', x'00', 1, 1 FROM n",
+         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, describe_verifier, created_at, payload_size)
+         SELECT 'row-' || i, 1, x'00', x'00', x'00', x'00', 1, 1 FROM n",
     )
     .execute(&pool)
     .await
@@ -1073,9 +1058,8 @@ const DAY: i64 = 86_400;
 #[tokio::test]
 async fn restore_carries_creation_tokens_matched_by_verifier() {
     let dir = dir("restore-tokens");
-    let version = db::expected_version();
     let backup = dir.join("backup.db");
-    database_at(&backup, version, &[]).await;
+    database_at(&backup, &[]).await;
     add_tokens(
         &backup,
         &[
@@ -1092,7 +1076,7 @@ async fn restore_carries_creation_tokens_matched_by_verifier() {
     let data = dir.join("data");
     std::fs::create_dir(&data).unwrap();
     let target = config(data.join("live.db"));
-    database_at(&target.path, version, &[]).await;
+    database_at(&target.path, &[]).await;
     add_tokens(
         &target.path,
         &[
@@ -1144,41 +1128,111 @@ async fn restore_carries_creation_tokens_matched_by_verifier() {
     );
 }
 
-/// AC16: a replaced database at schema version 4 has no `creation_tokens`:
-/// no token is carried, no warning, its ids still are, and the backup's tokens
-/// stay as they are.
+/// Runs `statements` on the existing database at `path`, closed without
+/// sidecars.
+async fn run_statements(path: &Path, statements: &[&str]) {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path))
+        .await
+        .unwrap();
+    for statement in statements {
+        sqlx::query(AssertSqlSafe(*statement)).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+    assert!(!sidecars(path)[0].exists());
+}
+
+/// AC5: a replaced database without `creation_tokens`, or without
+/// `retired_ids`, is not one this binary wrote, and is handled like an
+/// unreadable one: the restore and the dry run warn once and carry no ids,
+/// states or tokens, also those the tables it has would give; the restore
+/// installs the backup's rows, the dry run changes nothing.
 #[tokio::test]
-async fn restore_over_a_database_without_creation_tokens_carries_none() {
-    let dir = dir("restore-tokens-v4");
+async fn restore_over_a_database_missing_a_table_carries_nothing() {
+    let dir = dir("restore-missing-table");
     let backup = dir.join("backup.db");
-    database_at(&backup, db::expected_version(), &[]).await;
+    database_at(&backup, &["shared"]).await;
     let rows: [TokenRow; 1] = [("backup-token", 1, "kept", 10, None, None)];
     add_tokens(&backup, &rows).await;
 
-    let data = dir.join("data");
-    std::fs::create_dir(&data).unwrap();
-    let target = config(data.join("live.db"));
-    database_at(&target.path, 4, &["only-in-version-4"]).await;
-
-    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
-    assert_eq!(
-        (dry_run.carried_ids, dry_run.carried_tokens, dry_run.carried_revocations),
-        (1, 0, 0)
-    );
-    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
-
-    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
-    assert_eq!(
+    // Each is written by the migrations, filled so that it would carry an id, a
+    // capsule state, a retired id and a token were it readable, and then loses
+    // one table (`retired_ids` after the trigger that writes into it).
+    for (missing, drop) in [
+        ("creation_tokens", &["DROP TABLE creation_tokens"][..]),
         (
-            outcome.carried_ids,
-            outcome.carried_tokens,
-            outcome.carried_revocations,
-            outcome.carried_last_uses
+            "retired_ids",
+            &["DROP TRIGGER retire_deleted_paste_id", "DROP TABLE retired_ids"][..],
         ),
-        (1, 0, 0, 0)
-    );
-    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
-    assert_eq!(tokens_in(&target.path).await, owned(&rows));
+    ] {
+        let data = dir.join(missing);
+        std::fs::create_dir(&data).unwrap();
+        let target = config(data.join("live.db"));
+        database_at(&target.path, &["shared", "lost-id"]).await;
+        add_tokens(&target.path, &[("lost-token", 2, "", 20, None, None)]).await;
+        run_statements(
+            &target.path,
+            &[
+                "UPDATE pastes SET availability_status = 'deleted' WHERE id = 'shared'",
+                "INSERT INTO retired_ids (id) VALUES ('lost-retired-id')",
+            ],
+        )
+        .await;
+        run_statements(&target.path, drop).await;
+        let files = with_sidecars(&target.path);
+        let before = contents(&files);
+        let listed = entries(&data);
+        let input = std::fs::read(&backup).unwrap();
+
+        let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+        assert_eq!(
+            (
+                dry_run.carried_ids,
+                dry_run.carried_states,
+                dry_run.carried_tokens,
+                dry_run.carried_revocations,
+                dry_run.carried_last_uses
+            ),
+            (0, 0, 0, 0, 0),
+            "{missing}"
+        );
+        assert_eq!(dry_run.warnings.len(), 1, "{missing}: {:?}", dry_run.warnings);
+        assert!(dry_run.warnings[0].contains(missing), "{missing}: {:?}", dry_run.warnings);
+        assert_eq!(contents(&files), before, "{missing}: the dry run changed the old database");
+        assert_eq!(entries(&data), listed, "{missing}: the dry run left an entry");
+        assert_eq!(std::fs::read(&backup).unwrap(), input, "{missing}: the dry run changed the backup");
+
+        let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+        assert_eq!(
+            (
+                outcome.carried_ids,
+                outcome.carried_states,
+                outcome.carried_tokens,
+                outcome.carried_revocations,
+                outcome.carried_last_uses
+            ),
+            (0, 0, 0, 0, 0),
+            "{missing}"
+        );
+        assert_eq!(outcome.warnings, dry_run.warnings);
+        assert!(
+            outcome.warnings[0].contains("ids, capsule states and creation tokens")
+                && outcome.warnings[0].contains("could not be carried over"),
+            "{missing}: {:?}",
+            outcome.warnings
+        );
+        assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+        assert_eq!(ids_in(&target.path, "pastes").await, BTreeSet::from(["shared".to_owned()]));
+        assert!(ids_in(&target.path, "retired_ids").await.is_empty(), "{missing}");
+        assert_eq!(tokens_in(&target.path).await, owned(&rows), "{missing}");
+        let pool = db::connect(&target).await.unwrap();
+        let status: String = sqlx::query_scalar("SELECT availability_status FROM pastes WHERE id = 'shared'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert_eq!(status, "active", "{missing}: a capsule state was carried");
+    }
 }
 
 /// AC16: when the replaced database's `creation_tokens` cannot be read (its
@@ -1187,16 +1241,15 @@ async fn restore_over_a_database_without_creation_tokens_carries_none() {
 #[tokio::test]
 async fn restore_with_unreadable_creation_tokens_carries_neither_ids_nor_tokens() {
     let dir = dir("restore-tokens-unreadable");
-    let version = db::expected_version();
     let backup = dir.join("backup.db");
-    database_at(&backup, version, &[]).await;
+    database_at(&backup, &[]).await;
     let rows: [TokenRow; 1] = [("backup-token", 1, "kept", 10, None, None)];
     add_tokens(&backup, &rows).await;
 
     let data = dir.join("data");
     std::fs::create_dir(&data).unwrap();
     let target = config(data.join("live.db"));
-    database_at(&target.path, version, &["lost-id"]).await;
+    database_at(&target.path, &["lost-id"]).await;
     add_tokens(&target.path, &[("lost-token", 2, "", 20, None, None)]).await;
     let root: i64 = {
         let pool = SqlitePoolOptions::new()
@@ -1251,9 +1304,8 @@ async fn restore_with_unreadable_creation_tokens_carries_neither_ids_nor_tokens(
 #[tokio::test]
 async fn restore_stops_when_the_copy_cannot_take_the_carried_tokens() {
     let dir = dir("restore-tokens-full");
-    let version = db::expected_version();
     let backup = dir.join("backup.db");
-    database_at(&backup, version, &[]).await;
+    database_at(&backup, &[]).await;
 
     // 2 000 tokens, none in the backup, and no ids to carry: the scratch
     // table stays empty, so only the token insert needs new pages.
@@ -1290,7 +1342,7 @@ async fn restore_stops_when_the_copy_cannot_take_the_carried_tokens() {
 
     // The same id for another verifier in the backup fails on the primary key.
     let clash = dir.join("clash.db");
-    database_at(&clash, version, &[]).await;
+    database_at(&clash, &[]).await;
     add_tokens(&clash, &[("token-1", 0xEE, "", 1, None, None)]).await;
     let error = restore(&clash, &target, true, 5_000).await.unwrap_err();
     assert!(

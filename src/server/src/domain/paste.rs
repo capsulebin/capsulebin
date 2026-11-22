@@ -71,9 +71,7 @@ pub struct Paste {
     pub ciphertext: Option<Vec<u8>>,
     pub reveal_verifier: Verifier,
     pub delete_verifier: Verifier,
-    /// `None` for rows written before the describe capability existed: they
-    /// have no descriptor anybody can read.
-    pub describe_verifier: Option<Verifier>,
+    pub describe_verifier: Verifier,
     pub created_at: i64,
     /// Most recent authorized ciphertext handout, or `None` if there has not been
     /// one. Coarse by design and never exposed: the purge policy is its only
@@ -121,16 +119,9 @@ impl Paste {
 
     /// Whether `presented` is this paste's describe capability, compared in
     /// constant time.
-    ///
-    /// A row without a describe verifier (written before
-    /// `migrations/0002_describe_verifier.sql`) has no describe capability:
-    /// the comparison still runs, against a dummy, so it costs the same work as
-    /// for any other row, but it never matches - also not for a caller who
-    /// presents the dummy's preimage.
     #[must_use]
     pub fn describe_matches(&self, presented: &Verifier) -> bool {
-        let stored = self.describe_verifier.unwrap_or_else(|| Verifier::for_describe_token(b"absent"));
-        presented.matches(&stored) & self.describe_verifier.is_some()
+        presented.matches(&self.describe_verifier)
     }
 
     /// Whether `request` can still be a re-submission of the create request
@@ -198,7 +189,7 @@ mod tests {
             ciphertext: Some(vec![4, 5, 6]),
             reveal_verifier: Verifier::for_reveal_token(b"reveal"),
             delete_verifier: Verifier::for_delete_secret(b"delete"),
-            describe_verifier: Some(Verifier::for_describe_token(b"describe")),
+            describe_verifier: Verifier::for_describe_token(b"describe"),
             created_at: 1_000,
             last_retrieved_at: None,
             expires_at: Some(2_000),
@@ -217,7 +208,7 @@ mod tests {
             ciphertext: paste.ciphertext.clone().unwrap_or_default(),
             reveal_verifier: paste.reveal_verifier,
             delete_verifier: paste.delete_verifier,
-            describe_verifier: paste.describe_verifier.unwrap_or_else(|| Verifier::for_describe_token(b"x")),
+            describe_verifier: paste.describe_verifier,
             created_at: now,
             expires_at: paste.expires_at.map(|at| at - paste.created_at + now),
             burn_after_retrieval: paste.burn_after_retrieval,

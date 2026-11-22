@@ -40,9 +40,9 @@ matches does it load the stored ciphertext (`load_ciphertext`) and compare it in
 ciphertext left and is a conflict.
 
 An id is never freed. Delete, burn and moderation keep a tombstone row; a row the retention rules
-delete leaves its id in the table `retired_ids` (migration `0004`, filled by an `AFTER DELETE`
-trigger on `pastes`, never emptied), and `restore` retires the ids of the replaced database that the
-backup lacks. Create inserts only if the id is not in `retired_ids`, in the same statement as the
+delete leaves its id in the table `retired_ids` (created by `0001_init.sql`, filled by an
+`AFTER DELETE` trigger on `pastes`, never emptied), and `restore` retires the ids of the replaced
+database that the backup lacks. Create inserts only if the id is not in `retired_ids`, in the same statement as the
 insert; a retired id is the same `409 id_conflict` as an occupied one, byte for byte. A replay of a
 retired id cannot succeed: its row, and with it the original request, is gone.
 

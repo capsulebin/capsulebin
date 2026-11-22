@@ -19,6 +19,12 @@ impl SqliteCreationTokenRepository {
     }
 }
 
+/// The statement behind [`CreationTokenRepository::active`], run on every
+/// create in `token` mode. The partial index `idx_creation_tokens_active`
+/// holds exactly these rows in exactly this order, so revoked rows cost
+/// nothing.
+const ACTIVE: &str = "SELECT id, verifier, last_used_on FROM creation_tokens WHERE revoked_at IS NULL ORDER BY created_at, id";
+
 fn db(error: sqlx::Error) -> RepositoryError {
     RepositoryError::Database(error)
 }
@@ -94,10 +100,7 @@ impl CreationTokenRepository for SqliteCreationTokenRepository {
     }
 
     async fn active(&self) -> Result<Vec<ActiveCreationToken>, RepositoryError> {
-        let rows = sqlx::query("SELECT id, verifier, last_used_on FROM creation_tokens WHERE revoked_at IS NULL ORDER BY created_at, id")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db)?;
+        let rows = sqlx::query(ACTIVE).fetch_all(&self.pool).await.map_err(db)?;
         rows.iter()
             .map(|row| {
                 Ok(ActiveCreationToken {
@@ -249,6 +252,62 @@ mod tests {
         let index = matching_index(&Verifier::for_creation_token(b"c"), &verifiers).unwrap();
         assert_eq!(active[index].id, created[2].id);
         assert_eq!(matching_index(&Verifier::for_creation_token(b"a"), &verifiers), None);
+    }
+
+    /// A long revocation history must not make every create scan it: the
+    /// active tokens come from the partial index, already in order.
+    #[tokio::test]
+    async fn active_tokens_are_read_through_the_partial_index() {
+        let (tokens, pool) = repository("partial-index").await;
+        for n in 0..1_000_u32 {
+            let token = tokens
+                .create(
+                    &Verifier::for_creation_token(format!("revoked-{n}").as_bytes()),
+                    &Label::default(),
+                    NOW,
+                )
+                .await
+                .unwrap();
+            tokens.revoke(&token.id, NOW).await.unwrap();
+        }
+        // Created out of order: two in the same second, so the id breaks the tie.
+        let late = tokens
+            .create(&Verifier::for_creation_token(b"late"), &Label::default(), NOW + 2)
+            .await
+            .unwrap();
+        let mut same_second = Vec::new();
+        for name in ["x", "y"] {
+            same_second.push(
+                tokens
+                    .create(&Verifier::for_creation_token(name.as_bytes()), &Label::default(), NOW + 1)
+                    .await
+                    .unwrap(),
+            );
+        }
+        same_second.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let plan = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {ACTIVE}")))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.try_get::<String, _>("detail").unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plan.contains("idx_creation_tokens_active"), "{plan}");
+        assert!(
+            plan.lines()
+                .all(|line| !line.contains("SCAN creation_tokens") || line.contains("idx_creation_tokens_active")),
+            "{plan}"
+        );
+        assert!(!plan.contains("USE TEMP B-TREE"), "{plan}");
+
+        let ids = |active: Vec<ActiveCreationToken>| active.into_iter().map(|token| token.id).collect::<Vec<_>>();
+        let expected = [same_second[0].id.clone(), same_second[1].id.clone(), late.id.clone()];
+        assert_eq!(ids(tokens.active().await.unwrap()), expected);
+
+        tokens.revoke(&same_second[1].id, NOW + 3).await.unwrap();
+        assert_eq!(ids(tokens.active().await.unwrap()), [expected[0].clone(), expected[2].clone()]);
     }
 
     #[tokio::test]

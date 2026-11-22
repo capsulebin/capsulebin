@@ -570,7 +570,7 @@ async fn retired_ids(repo: &SqlitePasteRepository) -> Vec<String> {
         .expect("read retired_ids")
 }
 
-/// The trigger of `migrations/0004_retired_ids.sql` retires every deleted id,
+/// The trigger `retire_deleted_paste_id` retires every deleted id,
 /// whichever statement deletes the row; a tombstone still holds its id as a
 /// row and is not retired.
 #[tokio::test]
