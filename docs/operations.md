@@ -611,12 +611,9 @@ carried over (with the same warning if the current
 database cannot be read), then removes the copy; nothing else is created or changed. Without
 `--force` it also says when the restore would need `--force`.
 
-Restore only backups you made yourself: the bundled SQLite treats a database as trusted input, and
-a crafted file can trigger
-[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459) (exception in `deny.toml`).
-Verifying and migrating only a private copy of the main file keeps a `-wal` next to the backup from
-reaching SQLite, but does not make an untrusted main file safe. The exception goes once SQLx allows
-a fixed SQLite.
+Restore only backups you made yourself: SQLite treats a database as trusted input. Verifying and
+migrating only a private copy of the main file keeps a `-wal` next to the backup from reaching
+SQLite, but does not make an untrusted main file safe.
 
 **Interrupted restore.** If the restore process is killed or the machine loses power during the
 cutover, the database file may be missing while `<file>.pre-restore-*` or a

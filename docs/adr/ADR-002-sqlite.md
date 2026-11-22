@@ -63,8 +63,8 @@ Operational parameters set at startup:
   database, verifies and migrates that copy, and only then moves an existing database (with its
   `-wal`/`-shm`) aside rather than deleting it and renames the copy into place; a failure undoes
   every move. So exactly the bytes that are installed are checked, a `-wal` next to the backup never
-  reaches SQLite (the bundled SQLite treats database files as trusted input, RUSTSEC-2026-0459), and
-  disk-full or migration errors happen before a live file moves. A missing database next to restore
+  reaches SQLite (SQLite treats database files as trusted input), and disk-full or migration errors
+  happen before a live file moves. A missing database next to restore
   leftovers is a startup error, not a new empty database.
 - Paste ids are never freed. Delete, burn and moderation keep a tombstone row without ciphertext;
   the retention rules delete the row, and an `AFTER DELETE` trigger on `pastes` puts its id into

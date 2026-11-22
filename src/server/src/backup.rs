@@ -21,9 +21,8 @@
 //! Backups hold ciphertext, verifiers and abuse reports with contact details.
 //! They are written into a private stage directory with owner-only permissions
 //! and must be stored like the database itself (ADR-002). Restore only files you
-//! created: the bundled SQLite treats the database as trusted input
-//! (RUSTSEC-2026-0459, see `deny.toml`); verification on a private standalone
-//! copy is the interim measure.
+//! created: SQLite treats the database as trusted input, so verification runs
+//! on a private standalone copy of the main file, never on the input.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -141,7 +140,7 @@ pub async fn create(pool: &SqlitePool, output: &Path) -> Result<BackupInfo, Back
 /// Opens `path` read-only without migrating it and checks that it is an intact
 /// CapsuleBin database this build can use (same or older schema).
 ///
-/// SQLite treats the file as trusted input (RUSTSEC-2026-0459): call it only on
+/// SQLite treats the file as trusted input: call it only on
 /// a file this process wrote, such as a staged copy.
 pub async fn verify_file(path: &Path) -> Result<BackupInfo, BackupError> {
     let metadata = std::fs::metadata(path).map_err(|error| match error.kind() {
