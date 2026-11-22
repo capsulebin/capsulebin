@@ -438,6 +438,31 @@ describe('create page password', () => {
         );
     }
 
+    // Password managers pair a password field with the text field before it in
+    // the same form as a login: the item name was offered as a username.
+    it('keeps the password field in a form of its own, without a text field', () => {
+        const password = input<HTMLInputElement>('create-password');
+        const createForm = el<HTMLFormElement>('create-form');
+        const passwordForm = el<HTMLFormElement>('password-form');
+        expect(password.form).toBe(passwordForm);
+        expect([...passwordForm.elements]).toEqual([password]);
+        expect(
+            [...createForm.elements].some((c) => (c as HTMLInputElement).type === 'password'),
+        ).toBe(false);
+        // Still inside the create form's layout, where its events bubble.
+        expect(createForm.contains(password)).toBe(true);
+    });
+
+    it('creates the capsule once on Enter in the password field', async () => {
+        type('enter key');
+        input<HTMLInputElement>('create-password').value = 'correct horse';
+        // What a browser's implicit submission does for a form with one field.
+        el<HTMLFormElement>('password-form').requestSubmit();
+        const share = await sealedShareLink();
+        expect(creates()).toBe(1);
+        expect(await opensWith(share, 'correct horse')).toBe(true);
+    }, 30_000);
+
     it('shows no password message before a submit', () => {
         expect(el('password-error').hidden).toBe(true);
         expect(input('create-password').hasAttribute('aria-invalid')).toBe(false);

@@ -158,7 +158,9 @@ function isChanged(control: Element): boolean {
 function hasDraft(): boolean {
     if (items.some((item) => !isItemEmpty(item) || item.nameEdited)) return true;
     const form = document.querySelector<HTMLFormElement>('[data-create-form]');
-    return [...(form?.elements ?? [])].some(
+    // The password field belongs to its own form (index.html), not to `elements`.
+    const password = document.getElementById('create-password');
+    return [...(form?.elements ?? []), ...(password ? [password] : [])].some(
         (control) => !control.matches(ITEM_CONTROLS) && isChanged(control),
     );
 }
@@ -529,6 +531,14 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
         event.preventDefault();
         form.classList.remove('cb-dragover');
         addFiles(event.dataTransfer.files);
+    });
+
+    // The password field sits inside the create form but belongs to its own
+    // form, so that password managers do not take the item name for a
+    // username (index.html). Enter in it submits that form: create instead.
+    byAttr<HTMLFormElement>('password-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        form.requestSubmit();
     });
 
     form.addEventListener('submit', async (event) => {
