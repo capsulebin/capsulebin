@@ -1103,13 +1103,40 @@ const mode = creationMode();
 const token = new CreationToken();
 const shell = initShell();
 
-/** An invitation link is used in `token` mode only; elsewhere it is just removed. */
-function acceptInvitation(): string | null {
-    if (mode !== 'token' || invitation.kind === 'none') return null;
-    if (invitation.kind === 'invalid') return t('create.token.invitationInvalid');
-    token.use(invitation.token, true);
-    // Storage that throws holds it for this page only; the token line says so.
-    return token.remembered ? t('create.token.accepted') : null;
+/**
+ * The first view, with the invitation link's outcome. An invitation is used in
+ * `token` mode only; elsewhere it is just removed. A link carrying another token
+ * than the one this browser holds asks first: any link - also one inside a
+ * capsule - could otherwise replace the stored token unnoticed.
+ */
+function start(): void {
+    if (mode !== 'token' || invitation.kind === 'none') return showCreate(null);
+    if (invitation.kind === 'invalid') {
+        return showCreate(null, t('create.token.invitationInvalid'));
+    }
+    if (token.value !== null && token.value !== invitation.token) {
+        return showTokenChoice(invitation.token);
+    }
+    acceptInvited(invitation.token);
 }
 
-showCreate(null, acceptInvitation());
+/** Uses and remembers an invited token, then shows the editor with the outcome. */
+function acceptInvited(invited: string): void {
+    token.use(invited, true);
+    // Storage that throws holds it for this page only; the token line says so.
+    showCreate(null, token.remembered ? t('create.token.accepted') : null);
+}
+
+/** The stored token or the invited one: nothing changes until one is chosen. */
+function showTokenChoice(invited: string): void {
+    endEditSession();
+    showTemplate('tmpl-token-choice', 'data-create-root');
+    byAttr<HTMLButtonElement>('token-keep').addEventListener('click', () =>
+        showCreate(null, t('create.token.kept')),
+    );
+    byAttr<HTMLButtonElement>('token-use-invited').addEventListener('click', () =>
+        acceptInvited(invited),
+    );
+}
+
+start();

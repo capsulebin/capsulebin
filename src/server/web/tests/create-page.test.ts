@@ -743,6 +743,68 @@ describe('create page creation modes', () => {
             },
         );
 
+        describe('with another token stored', () => {
+            const STORED = 'stored-token_456';
+
+            beforeEach(() => {
+                localStorage.setItem(CREATION_TOKEN_KEY, STORED);
+            });
+
+            it.each(['en', 'de'] as const)('asks first and replaces nothing (%s)', async (lang) => {
+                const path = lang === 'en' ? '/' : '/de/';
+                history.replaceState(null, '', `${path}#token=${TOKEN}`);
+                await loadPage(lang, 'token');
+                expect(location.hash).toBe('');
+                expect(stored()).toBe(STORED);
+                expect(query('create-form')).toBeNull();
+                expect(document.querySelector('[data-create-root] p')!.textContent).toBe(
+                    { en, de }[lang]['create.token.otherInvited'],
+                );
+                expect(el('token-keep').textContent!.trim()).toBe(
+                    { en, de }[lang]['create.token.keep'],
+                );
+                expect(el('token-use-invited').textContent!.trim()).toBe(
+                    { en, de }[lang]['create.token.useInvited'],
+                );
+            });
+
+            it('keeps the stored token and creates with it', async () => {
+                server.creationToken = STORED;
+                history.replaceState(null, '', `/#token=${TOKEN}`);
+                await loadPage('en', 'token');
+                el('token-keep').click();
+                expect(stored()).toBe(STORED);
+                expect(el('token-notice').textContent).toBe(en['create.token.kept']);
+                expect(el('token-line-text').textContent).toBe(en['create.token.stored']);
+                type('hello');
+                submit();
+                await done();
+                expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${STORED}`);
+            });
+
+            it('uses and remembers the invited token when chosen', async () => {
+                history.replaceState(null, '', `/#token=${TOKEN}`);
+                await loadPage('en', 'token');
+                el('token-use-invited').click();
+                expect(stored()).toBe(TOKEN);
+                expect(el('token-notice').textContent).toBe(en['create.token.accepted']);
+                type('hello');
+                submit();
+                await done();
+                expect(creates()[0]!.headers.get('Authorization')).toBe(`Bearer ${TOKEN}`);
+            });
+
+            it('does not ask when the link carries the stored token', async () => {
+                localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+                history.replaceState(null, '', `/#token=${TOKEN}`);
+                await loadPage('en', 'token');
+                expect(query('token-keep')).toBeNull();
+                expect(stored()).toBe(TOKEN);
+                expect(el('token-notice').textContent).toBe(en['create.token.accepted']);
+                expect(query('create-form')).not.toBeNull();
+            });
+        });
+
         it('stores nothing for an unusable value and says so', async () => {
             history.replaceState(null, '', `/#token=${'x'.repeat(1025)}`);
             await loadPage('en', 'token');

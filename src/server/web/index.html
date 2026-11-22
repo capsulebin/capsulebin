@@ -335,6 +335,17 @@
             <div data-token-slot></div>
         </template>
 
+        <template id="tmpl-token-choice">
+            <h1 class="cb-h1">{{create.heading}}</h1>
+            <p class="cb-lede">{{create.token.otherInvited}}</p>
+            <div class="cb-token-choice">
+                <button type="button" class="cb-btn" data-token-keep>{{create.token.keep}}</button>
+                <button type="button" class="cb-btn cb-btn-ghost" data-token-use-invited>
+                    {{create.token.useInvited}}
+                </button>
+            </div>
+        </template>
+
         <template id="tmpl-token-form">
             <form class="cb-form" data-token-form novalidate>
                 <label class="cb-label" for="creation-token">{{create.token.label}}</label>

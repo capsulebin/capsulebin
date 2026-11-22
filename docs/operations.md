@@ -80,7 +80,9 @@ The CLI takes the token from `CAPSULEBIN_TOKEN` or `--token-file`.
 **Invitation link.** Instead of the 43-character token, hand out a link
 `<public_url>/#token=<token>`. Opening it stores the token in that browser (`localStorage`,
 `capsulebin.creation_token`) and shows "This browser can now create capsules"; the page removes
-the fragment from the address bar first. The token stays in the fragment, which browsers never
+the fragment from the address bar first. If that browser already stores a different token, the
+page asks whether to keep it or use the new one, and changes nothing until the user chooses. The
+token stays in the fragment, which browsers never
 send, so it reaches neither CapsuleBin nor the reverse proxy's log. The link works under every
 language prefix (`/de/#token=…`); on a `public` or `disabled` instance it is removed and nothing
 is stored. `capsulebin token create` always prints it (see [Creation tokens](#creation-tokens)),
