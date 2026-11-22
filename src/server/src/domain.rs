@@ -6,12 +6,14 @@
 pub mod abuse;
 pub mod capability;
 pub mod clock;
+pub mod creation_token;
 pub mod id;
 pub mod paste;
 pub mod purge;
 
 pub use capability::{VERIFIER_BYTES, Verifier};
 pub use clock::{Clock, SystemClock};
+pub use creation_token::{ActiveCreationToken, CreationToken, Label, LabelError, utc_day_start};
 pub use id::{ID_BYTES, ID_CHARS, PasteId};
 pub use paste::{Availability, NewPaste, Paste};
 pub use purge::{PurgeOutcome, PurgePolicy};

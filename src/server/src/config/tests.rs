@@ -509,15 +509,16 @@ fn rejects_a_purge_interval() {
     );
 }
 
-/// Token mode with no tokens would reject every creation attempt. That looks
-/// like an outage, so it has to fail at startup instead.
+/// Token mode without configured hashes is valid: the tokens may be issued
+/// into the database later. `serve` and `check` warn instead.
 #[test]
-fn rejects_token_mode_without_tokens() {
+fn accepts_token_mode_without_configured_hashes() {
     let dir = tempdir("no-tokens");
     let mut config = valid(&dir);
     config.creation.token_hashes.clear();
 
-    assert!(error(&config).contains("token_hashes is empty"));
+    let resolved = config.validate().expect("token mode without hashes is valid");
+    assert!(resolved.creation_tokens.is_empty());
 }
 
 /// The reverse is also a mistake worth catching: tokens configured in public mode

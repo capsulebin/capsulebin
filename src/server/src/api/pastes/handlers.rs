@@ -1,6 +1,7 @@
 //! The four paste handlers: create, descriptor, retrieve, remove.
 
-use crate::domain::{PasteId, Verifier};
+use crate::domain::capability::matching_index;
+use crate::domain::{ActiveCreationToken, PasteId, Verifier, utc_day_start};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest as _, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -15,15 +16,20 @@ use crate::api::rate_limit::with_retry_after;
 use crate::api::request_id::RequestId;
 use crate::config::CreationMode;
 use crate::domain::{NewPaste, Paste};
-use crate::repository::{PasteRepository as _, RepositoryError};
+use crate::repository::{CreationTokenRepository as _, PasteRepository as _, RepositoryError};
 
 /// Checks the creation capability.
 ///
-/// In `token` mode the bearer is hashed and compared against the configured
-/// hashes in constant time. The comparison happens even when the header is
+/// In `token` mode the bearer is hashed and compared in constant time against
+/// one candidate set: the configured hashes followed by every active database
+/// token, read anew on each create so that a token issued or revoked by another
+/// process applies at once. The comparison happens even when the header is
 /// missing, so that a present-but-wrong token and an absent one take the same
 /// path.
-fn authorize_creation(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+///
+/// A failed read of the database tokens is `500`, never `401`: a `401` makes
+/// the web client forget a token that may be valid (ADR-018).
+async fn authorize_creation(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     match state.creation_mode {
         CreationMode::Disabled => Err(ApiError::CreationDisabled),
         CreationMode::Public => Ok(()),
@@ -34,13 +40,34 @@ fn authorize_creation(state: &AppState, headers: &HeaderMap) -> Result<(), ApiEr
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .unwrap_or("");
 
+            let stored = state.creation_tokens_repo.active().await?;
+            let candidates: Vec<Verifier> = state
+                .creation_tokens
+                .iter()
+                .copied()
+                .chain(stored.iter().map(|token| token.verifier))
+                .collect();
+
             let candidate = Verifier::for_creation_token(presented.as_bytes());
-            if crate::domain::capability::any_matches(&candidate, &state.creation_tokens) {
-                Ok(())
-            } else {
-                Err(ApiError::Unauthorized)
+            let index = matching_index(&candidate, &candidates).ok_or(ApiError::Unauthorized)?;
+            if let Some(token) = index.checked_sub(state.creation_tokens.len()).and_then(|i| stored.get(i)) {
+                record_use(state, token).await;
             }
+            Ok(())
         }
+    }
+}
+
+/// Records the day a database token was last used, at most once per UTC day.
+/// A failure is logged and does not fail the create: the token was valid. The
+/// warning names neither the token nor its id or label.
+async fn record_use(state: &AppState, token: &ActiveCreationToken) {
+    let today = utc_day_start(state.clock.now());
+    if token.last_used_on.is_some_and(|day| day >= today) {
+        return;
+    }
+    if let Err(error) = state.creation_tokens_repo.touch_last_use(&token.id, today).await {
+        tracing::warn!(%error, "could not record the last use of a creation token");
     }
 }
 
@@ -81,7 +108,7 @@ pub(super) async fn create(State(state): State<AppState>, id_extension: Option<E
     let request_id = request_id(id_extension);
 
     let outcome = async {
-        authorize_creation(&state, incoming.headers())?;
+        authorize_creation(&state, incoming.headers()).await?;
 
         let Json(request) = Json::<CreateRequest>::from_request(incoming, &state)
             .await

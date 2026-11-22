@@ -18,6 +18,9 @@ pub(crate) async fn check(resolved: Resolved) -> anyhow::Result<()> {
     }
 
     let version = db::verify(&state.pool).await.context("database is not ready")?;
+    if let Some(warning) = state.creation_token_warning().await.context("could not read the creation tokens")? {
+        eprintln!("warning: {warning}");
+    }
 
     anyhow::ensure!(
         state.assets_ready(),

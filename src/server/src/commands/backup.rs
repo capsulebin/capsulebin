@@ -55,6 +55,10 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
             "    {} id(s) of the current database not in the backup would be retired.",
             outcome.carried_ids
         );
+        println!(
+            "    {} of the current database not in the backup would be carried over.",
+            tokens(outcome.carried_tokens, outcome.carried_revocations, outcome.carried_last_uses)
+        );
         print_warnings(&outcome.warnings);
         return Ok(());
     }
@@ -88,6 +92,10 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
             "    {} id(s) of the previous database not in the backup were retired.",
             outcome.carried_ids
         );
+        println!(
+            "    {} of the previous database not in the backup were carried over.",
+            tokens(outcome.carried_tokens, outcome.carried_revocations, outcome.carried_last_uses)
+        );
     }
     if outcome.schema_version != outcome.info.schema_version {
         println!(
@@ -97,6 +105,11 @@ pub(crate) async fn restore(resolved: Resolved, input: PathBuf, force: bool, dry
     }
     print_warnings(&outcome.warnings);
     Ok(())
+}
+
+/// The creation token counts of a restore, as the subject of a sentence.
+fn tokens(inserted: i64, revoked: i64, last_used: i64) -> String {
+    format!("{inserted} creation token(s), {revoked} revocation(s) and {last_used} last-use date(s)")
 }
 
 /// Warnings, not failures: on stderr, like `check`'s, and the exit code stays 0.

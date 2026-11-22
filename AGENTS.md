@@ -16,7 +16,9 @@ password protection, Markdown/code rendering, file items, retention/pruning, rat
 idempotent create, the CLI (`put`/`get`/`delete`), abuse reports and the operator moderation
 commands are all implemented. In `creation.mode = "token"` the web create page takes a creation
 token from a field or an invitation link (`<public_url>/#token=<token>`) and keeps it in the
-browser (ADR-018). The web interface is in English and German: the default language
+browser (ADR-018). Operators issue, list and revoke creation tokens kept in the database with
+`capsulebin token create|list|revoke` while `serve` runs; configured `creation.token_hashes` keep
+working alongside them (ADR-019). The web interface is in English and German: the default language
 without a path prefix, the other under its prefix (`/de/`). Operators can set the instance's name,
 tagline, logo, favicon and theme colours (`[branding]`); every page says "Powered by CapsuleBin",
 with "CapsuleBin" linked to the source code.
@@ -33,9 +35,9 @@ capsulebin/
 │   ├── cli/            @capsulebin/cli — standalone command-line client (esbuild, Node.js)
 │   └── core/           @capsulebin/core — platform-neutral capsule format, crypto, API client
 │                         (no DOM, no build step; shared by web client and CLI)
-├── migrations/         SQLite migrations (0001–0004), embedded into server binary
+├── migrations/         SQLite migrations (0001–0005), embedded into server binary
 ├── docs/
-│   ├── adr/            18 Architecture Decision Records (see below)
+│   ├── adr/            19 Architecture Decision Records (see below)
 │   ├── capsule-file-format.md   Language-neutral binary container specification
 │   ├── crypto-profile.md        Binding crypto specification (primitives, derivation, verifiers)
 │   ├── threat-model.md          Assets, adversaries, controls + the tests that back them
@@ -197,7 +199,10 @@ Critical rules:
   `<meta name="capsulebin-creation">` of the create shell only (`index.html`), filled in the same
   single pass as the other tokens; no other shell carries it, so `/p/{id}` is unchanged. The dev
   server fills `public`. A missing or unknown meta is `public` on the page (the server still
-  decides). See [Creation token in the browser](#creation-token-in-the-browser).
+  decides). See [Creation token in the browser](#creation-token-in-the-browser). `token` mode with
+  empty `token_hashes` is valid (the tokens may be in the database); `token_hashes` with another
+  mode stays a startup error. See
+  [Creation tokens in the database](#creation-tokens-in-the-database).
 - **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
   startup without raw HTML or images and with links limited to http(s), mailto, tel and local
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
@@ -274,6 +279,52 @@ ADR-018. Only the create page handles a token (`src/server/web/src/creation-toke
   `--config` an unloadable environment, and a refused `public_url`, are a `note:` on stderr without
   the value, the token and hash still printed, exit `0`.
 
+### Creation tokens in the database
+
+ADR-019. `migrations/0005_creation_tokens.sql` (schema 5): table `creation_tokens` with `id` (ULID
+text, primary key), `verifier` (BLOB, the 32 bytes of `Verifier::for_creation_token`, `UNIQUE`),
+`label` (`''` = none), `created_at`, `last_used_on` (Unix seconds of 00:00 UTC, or `NULL`),
+`revoked_at` (or `NULL`). Never store the token; never delete a row (revoked rows are kept forever,
+no retention: restore needs them); no un-revoke; never link a capsule to a token.
+- **Authorization** (`authorize_creation` in `api/pastes/handlers.rs`, async): in `token` mode it
+  reads `CreationTokenRepository::active()` on every create (no cache, so another process's
+  `token create`/`revoke` applies from the next request) and compares the bearer against one
+  candidate set — configured verifiers first, then the database ones — with
+  `capability::matching_index` (every entry visited with `subtle`, first match wins, no early
+  return). Never add a lookup by verifier to the repository (`WHERE verifier = ?` is an index
+  comparison, invariant 3). Missing, unknown and revoked tokens are the same `401 unauthorized`,
+  still decided before the body is read. A failed read is `500 internal_error`, never `401` (the
+  web client would forget a valid token), with no fallback to the configured hashes.
+- **`last_used_on`**: only for a database token (index ≥ number of configured verifiers), after
+  authorization, before the body: `utc_day_start(state.clock.now())`, skipped if the read value is
+  already that day, else `touch_last_use` (one conditional `UPDATE … AND (last_used_on IS NULL OR
+  last_used_on < ?)`, so at most one write per token per UTC day). A failed write is a
+  `tracing::warn!` without token, id or label, and the create continues.
+- **Startup warnings**: `creation_token_warning(mode, configured, active_in_database)` in `lib.rs`
+  (via `AppState::creation_token_warning()`), used by `serve` (log) and `check` (`warning:` on
+  stderr, still `ok:`, exit 0): `token` mode with no configured hash and no active database token;
+  active database tokens with mode `public`/`disabled`. Only counts go in — no token, hash or
+  label. A failed read of the tokens fails `serve`/`check`.
+- **Labels** (`Label::parse` in `domain/creation_token.rs`): at most 64 characters
+  (`MAX_LABEL_CHARS`, counted as `char`s), no `char::is_control`, not trimmed; `Debug` prints
+  `Label(redacted)`. Never logged, never on the web; a stored label that fails the rule is read as
+  corruption (error names the rule, not the text).
+- **Commands** (`commands/token.rs`): plain `token` unchanged (before `Config::validate`, stores
+  nothing). `token create [--label]`, `token list [--json]`, `token revoke <id>` run after
+  `Config::validate` like `reports` (need `server.public_url`, open and migrate the database).
+  `create` checks the label before opening the database (error `--label: <rule>`, never the text)
+  and prints, without blank lines: the header, `  <token>` (line 2, shared `print_token` with plain
+  `token`), `id: <ULID>`, `label: …` (if any), the invitation link header and `  <link>`; no
+  `sha256:`, no configuration entry; outside `token` mode a `note:` on stderr, token still created.
+  `list`: `active tokens: N (configured hashes: M)`, then per token, oldest first,
+  `<id>  created <YYYY-MM-DD HH:MM UTC>  last used <YYYY-MM-DD|never>  <active|revoked … UTC>  <label>`
+  (an active token's line never says `revoked`; `format_utc`/`format_utc_date` shared from
+  `commands/abuse.rs`); `--json` a plain array of
+  `{id, label, created_at, last_used_on, revoked_at}`. `revoke`: ULID syntax checked in the CLI
+  (any case, canonical upper case stored), `ok: token <id> revoked`, `ok: token <id> was already
+  revoked` (exit 0, `revoked_at` unchanged), `no token <id>` (exit 1).
+- **Restore** carries tokens with the ids (see [Retention (purge)](#retention-purge)).
+
 ### Retention (purge)
 
 Three independent rules, each deletes the whole row (metadata + payload):
@@ -299,6 +350,17 @@ copy (not `TEMP`: in memory, or a temporary file outside the stage), created and
 same transaction. Only a failure of `ATTACH` or of the probe is a warning
 (`RestoreOutcome::warnings`) and leaves the copy unchanged; every later failure, also a read of
 `old` that fails only in the insert, is an error that stops the restore before the cutover.
+Creation tokens travel in the same `ATTACH`, probe and transaction (`carry_tokens` in `backup.rs`):
+the probe also checks whether `old` has `creation_tokens` and, if so, reads every column of it (a
+plain `count(*)` could be answered from the verifier index and miss a damaged table); a probe or
+`ATTACH` failure carries neither ids nor tokens and gives one warning naming both. Without the table
+(schema < 5) nothing is carried, without a warning. Matched by `verifier`, never by id, in this
+order: counts, revocations (`old` revoked, copy active → `old`'s `revoked_at`), the later
+`last_used_on`, then `INSERT` of the rows whose verifier the copy lacks (id, label, dates,
+revocation). Tokens only in the copy stay. An inserted id the copy already uses for another verifier
+fails on the primary key and stops the restore (no special handling). `RestoreOutcome` and
+`DryRunOutcome` carry `carried_tokens`, `carried_revocations`, `carried_last_uses`, printed on one
+line after the ids line.
 
 ### Abuse report ceilings
 
@@ -409,11 +471,12 @@ node src/cli/dist/cli.js put notes.md --server http://127.0.0.1:8081
 | `healthcheck` | Probe the running server's `/health/ready` (`--live`, `--address`); exit 0 if healthy (container `HEALTHCHECK`). Dispatched before `Config::validate`: reads only `server.bind` (nothing with `--address`), writes nothing |
 | `migrate`| Apply pending migrations and exit |
 | `prune`  | Apply retention policy once and exit |
-| `token`  | Generate a creation token + the hash to configure (domain-separated); with a valid `server.public_url` (`--config` or env) also the invitation link `<public_url>/#token=<token>`. Dispatched before `Config::validate`; checks only `public_url` |
+| `token`  | Generate a creation token + the hash to configure (domain-separated); with a valid `server.public_url` (`--config` or env) also the invitation link `<public_url>/#token=<token>`. Dispatched before `Config::validate`; checks only `public_url`; stores nothing |
+| `token create\|list\|revoke` | Creation tokens in the database (ADR-019), after `Config::validate` like `reports`, while `serve` runs: `create [--label]` stores the hash and prints token, id and invitation link; `list [--json]` all tokens, active and revoked; `revoke <id>` final |
 | `reports`| Abuse report queue: `list`, `show`, `review`, `close` |
 | `moderation` | `disable` (reversible), `delete` (final), `restore`, `status` by paste id |
 | `backup` | `VACUUM INTO` snapshot of the live DB into a private `0700` stage next to the output (compacted, 0600, verified), published by `rename` after a re-check that the output name is free (never follows an entry) |
-| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, retire the replaced DB's ids the backup lacks in the copy (read-only `ATTACH`; unreadable → warning), then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy and counts the ids only) |
+| `restore`| Copy the backup's main file into a private stage next to the DB, verify + migrate + checkpoint it, retire the replaced DB's ids the backup lacks and carry its creation tokens and revocations into the copy (read-only `ATTACH`; unreadable → warning), then cut over with rollback (server stopped; `--force` moves the old DB + `-wal`/`-shm` aside, `--dry-run` migrates the staged copy and counts the ids and tokens only) |
 
 ### Test commands (CI gates)
 ```sh
@@ -443,25 +506,26 @@ npm run e2e -w @capsulebin/web
 
 | Test | What it verifies |
 |------|-----------------|
-| `src/server/tests/db_no_plaintext.rs` | Plaintext never appears in any DB column (text, hex, or base64). **Mandatory CI gate.** |
+| `src/server/tests/db_no_plaintext.rs` | Plaintext never appears in any DB column (text, hex, or base64); a database creation token (issued with a label and used for a create) appears in no column, its stored `verifier` equals `Verifier::for_creation_token`. **Mandatory CI gate.** |
 | `src/server/tests/secure_delete.rs` | Burned and deleted ciphertext is gone from the raw database file and WAL after a `wal_checkpoint(TRUNCATE)` (`secure_delete`); an ordinary checkpoint truncates nothing, so this is not a claim about WAL frames in normal operation. |
 | `src/server/tests/retired_ids.rs` | An id freed by each retention rule cannot be created again (`409` byte-identical to a live collision, also for a replay of the original request; old link stays unknown); a report on a purged paste shows `gone`, moderation answers `NotFound`, a new report is not stored. |
 | `src/server/tests/retired_ids_acceptance.rs` | Against the real binary: after its `prune` removed a reported capsule, `reports list` (text and `--json`) and `reports show` print the paste as `gone`, `moderation disable`/`delete` answer "no paste" and record nothing, re-creating the id is `409 id_conflict`, a new report is answered `202` and not stored. |
-| `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text; the access log's `path` is a route template (also on `429`/`413`/`401`), a served asset or `{unmatched}`, also for seeded random paths. **Mandatory CI gate.** |
+| `src/server/tests/logging.rs` | Log output never contains payload, capability secrets, tokens, full paste IDs, or report text; the access log's `path` is a route template (also on `429`/`413`/`401`), a served asset or `{unmatched}`, also for seeded random paths; correct, wrong and revoked database creation tokens leave no token, verifier encoding, id or label in the log, nor does a failed `last_used_on` write (a test trigger) that still answers `201`. **Mandatory CI gate.** |
 | `src/server/tests/rate_limits.rs` | Limits apply before lookup (no burn), invalid-capability throttling, byte quota, X-Forwarded-For spoofing. |
 | Handler tests inside the crate (`src/server/src/test_support.rs`: helpers only, no tests) | Requests through `router()` over an `AppState` the test may change (e.g. a small limiter ceiling), next to the code they cover. `api/rate_limit.rs`: `a_saturated_retrieve_answers_correct_and_wrong_passwords_alike` (a full paste table's overflow budget answers correct and wrong passwords with the same status, `Retry-After` and body; a burn paste is not consumed by a `429`), `correct_retrieves_with_room_spend_neither_slots_nor_overflow`. `api/pastes/handlers.rs`: `a_conflict_is_decided_before_the_payload_is_read`, `replays_of_unretrievable_pastes_read_no_payload`, `a_foreign_request_on_a_taken_id_reads_no_payload` (conflicting creates read no ciphertext, a possible replay at most once; counted by the `#[cfg(test)]` `payload_reads` counter of `SqlitePasteRepository`). |
 | `src/core/tests/properties.test.ts`, `src/server/tests/properties.rs` | Property-based tests (fast-check / proptest) for every parser of untrusted input. |
 | `src/server/tests/concurrency.rs` | Burn race, parallel retrievals, delete vs. retrieve through the HTTP stack. |
 | `src/server/tests/database_files_acceptance.rs` | Against the real binary (Unix): a new database and its `-wal`/`-shm` are `0600` under umask `022`; permissive files and a writable directory are warned about by `check`/`serve` and left unchanged; the write probe follows no planted symlink; a missing database next to restore leftovers is refused, not recreated. |
-| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables), but stops (restore and dry run, old database and directory unchanged) when writing the ids into the copy fails (`SQLITE_FULL` from a test-only `max_page_count`); dry-run counts them and changes nothing. |
+| `src/server/src/backup/tests.rs` | Backup staged privately and never replacing or following an entry; restore verifies and migrates a private copy, keeps the old database byte-identical after a failure at every step (copy, verify, migrate, checkpoint, each move, install), refuses a taken aside name, ignores a sibling `-wal`, follows no planted scratch entry; retires the replaced database's ids missing from the backup (rows and retired ids, also from a schema-3 database, 100 000 ids in SQL, installed schema equal to a fresh one so no scratch table left), warns and still installs over an unreadable one (garbage, `-wal` without `-shm`, readable schema over unreadable tables), but stops (restore and dry run, old database and directory unchanged) when writing the ids into the copy fails (`SQLITE_FULL` from a test-only `max_page_count`); dry-run counts them and changes nothing. Creation tokens: carried by verifier (missing token inserted with its id, label, dates and revocation; revocation of a token active in the backup; the later `last_used_on`; backup-only tokens unchanged), none and no warning from a database without the table, neither ids nor tokens (one warning) when the table cannot be read, a stop before the cutover when the copy cannot take them. |
 | `src/server/tests/healthcheck_acceptance.rs` | `healthcheck` succeeds with only `CAPSULEBIN__SERVER__BIND` (no `public_url`, missing database directory), with `--config` or with `--address` alone, and writes nothing into the database directory. |
-| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`. |
-| `src/server/tests/upgrade.rs` | A database at schema 3 (migrations 0001–0003, `tests/fixtures/capsulebin-1.0.sql`, never regenerated) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; migration 0004 starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired. Fails when an existing migration is edited (sqlx checksum). |
+| `src/server/tests/restore_acceptance.rs` | Against the real binary: `restore --dry-run` with a backup at an older schema prints its contents and the migrated schema version, exits 0 and changes nothing (input, target, sidecars, directory); an unusable backup fails it, again without a change; `restore --force` keeps the old database and both sidecars byte-identical under `<file>.pre-restore-<now>` (nothing touched without `--force`) and installs the backup's rows at the current schema; with a current database holding ids not in the backup (a live row and a retired id), `--dry-run` and `--force` print that 2 ids would be/were retired (no `warning:`), the dry run changes nothing, and afterwards both ids are in `retired_ids`; a creation token issued and a revocation made after the backup survive `restore --force` (counts printed by `--dry-run` and the restore). |
+| `src/server/tests/upgrade.rs` | A database at schema 3 (migrations 0001–0003, `tests/fixtures/capsulebin-1.0.sql`, never regenerated) migrates and stays usable: capabilities, burn tombstones, password headers, reports, moderation; migration 0004 starts with no retired ids, tombstones still refuse re-creation, purged fixture ids are retired; migration 0005 starts with an empty `creation_tokens`, from schema 3 and from a used schema-4 database. Fails when an existing migration is edited (sqlx checksum). |
 | `src/server/tests/abuse.rs` | Reports answer identically for existing/unknown ids and when dropped at a ceiling; moderated pastes look like unknown ones; a disabled endpoint never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue`); the 32 KiB report body limit. |
 | `src/server/tests/http.rs` | Security headers on every response; `/p/{id}` and `/<lang>/p/{id}` answer byte-identically for every id, whichever language is the default. |
 | `src/server/tests/language_paths_acceptance.rs`, `legal_languages.rs` | Edge cases of the language paths; legal pages per language (`[legal.<lang>.*]`, fallback per section, `lang` marking, titles from the shell). |
 | `src/server/tests/report_ceilings_acceptance.rs` | Against the real binary: `reports list` starts with the open reports and both ceilings (also with none open, and says when the global one is reached), `--json` stays a plain array; both ceilings read from the file and the environment; `0` or a negative value stops the binary naming the key. |
-| `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`); 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
+| `src/server/tests/api.rs` (body tests) | An unauthorized create never reads the body (`Expect: 100-continue` over a real socket, `post_expecting_continue` in `tests/support/mod.rs`), also with a revoked database token; 4 KiB limit on describe/retrieve/delete and `max_body_bytes` on create, declared and streamed. |
+| `src/server/tests/api.rs` (creation tokens) | `database_and_configured_tokens_are_accepted_alike` (database token and configured hash `201`; revoked, unknown and missing `401` identical but for the request id), `database_tokens_apply_from_the_next_create` (issued and revoked on a built `AppState`), `an_unreadable_token_table_is_an_internal_error` (`500`, body unread), `the_day_of_last_use_is_written_once_per_day` (`FixedClock`; writes counted by a trigger table; refused tokens and configured hashes never write). Helpers `issue_token`, `revoke_token`, `token_last_used_on` in `tests/support/mod.rs`. |
 | `src/core/tests/limits.test.ts`, `limits.acceptance.test.ts` | Core API client against a fake `fetch`: oversized bodies (every endpoint, error statuses, without/wrong/correct `Content-Length`) cancelled after at most the limit plus one chunk; a capsule at `MAX_CAPSULE_BYTES` still opens; total and idle deadlines with fake timers abort the signal. `limits.acceptance.test.ts`: the edges (an error body of exactly 64 KiB read, one byte more cut off; a create still waiting after 30 s; a describe or error body stalled for 30 s times out). Shared fakes (`endlessBody`, `stallingBody`, `observe`, `sealedPaste`) in `limits-support.ts`. |
 | `src/core/tests/redirect.test.ts` | The API client follows no redirect, against two real HTTP servers. |
 | `src/core/tests/golden-vectors.test.ts` | `@capsulebin/core` against `docs/test-vectors/capsule-v1.json`. **Mandatory CI gate.** |
@@ -470,7 +534,9 @@ npm run e2e -w @capsulebin/web
 | `src/server/tests/languages.rs`, `src/server/web/tests/i18n-catalogues.test.ts` | Server list, core list and catalogue files name the same languages; catalogues have the same keys, every plural form, no empty value. |
 | `src/server/web/tests/shells.test.ts` | Every visible text in a shell template comes from the catalogue (no literal `CapsuleBin`); generated shells keep the server markers, start every link but the attribution with the prefix token, end the footer with the attribution (only the project name linked to the source token) and carry the default token only in the languages meta; only the create shell carries `<meta name="capsulebin-creation" content="%%capsulebin:creation%%">` (exactly once, in the head), which `fillServerTokens()` fills with `public`; the tagline markers wrap the create page's slogan only. |
 | `src/server/tests/branding.rs` | `/branding/` files served byte-identical with MIME type, immutable caching and security headers, every other `/branding/` path the generic `404`; name, tagline (per language, empty, escaped), logo, `hide_name`, dark logo, favicon and attribution on every page in `en`/`de` (own test shells), operator values escaped and never read as tokens or markers. |
-| `src/server/tests/token_acceptance.rs` | Against the real binary: `token` without configuration prints only token and hash; with `public_url` from the environment or `--config` the same lines and then the invitation link with the line-2 token; a `public_url` breaking a rule gives a `note:` naming `server.public_url` but not the value, no link, exit `0`; an unloadable `--config` prints no token. |
+| `src/server/tests/token_acceptance.rs` | Against the real binary: `token` without configuration prints only token and hash; with `public_url` from the environment or `--config` the same lines and then the invitation link with the line-2 token; a `public_url` breaking a rule gives a `note:` naming `server.public_url` but not the value, no link, exit `0`; an unloadable `--config` prints no token; with a configuration `serve` would accept, plain `token` still opens no database and writes nothing. |
+| `src/server/tests/creation_tokens_acceptance.rs` | Against the real binary: `token create` stores one active row and prints token (line 2), id, label and invitation link, no `sha256:`; an invalid label stores nothing and names `--label`; outside `token` mode a `note:`; without a usable configuration it fails like `reports`; `token list` (text and `--json`) shows active and revoked tokens without a secret; `token revoke` is final (again → exit 0, unchanged; unknown or malformed → non-zero); live: a running `serve` with no token accepts a token created by another process and refuses it after `token revoke`, a configured hash works throughout, never restarted, the log holds no token or label. Helpers `creation_config_file`, `configured_hash` in `tests/support/mod.rs` (also used by `creation_mode_acceptance.rs`). |
+| `src/server/tests/creation_mode_acceptance.rs` | Against the real binary: `check` and `serve` warn (still `ok:`/ready) in `token` mode without any token and about active database tokens in `public`/`disabled` mode; no warning with a configured hash or an active database token in `token` mode; no warning contains a token, hash or label. |
 | `src/server/tests/http.rs` (creation meta) | `the_create_page_names_the_creation_mode` (from disk) and `the_embedded_create_page_names_the_creation_mode`: every mode, every language, also with `de` as default; exactly one meta on the create page, none on the other pages, which stay byte-identical across modes. |
 | `src/server/web/tests/creation-token.test.ts`, `create-page.test.ts` | Mode from the meta, token validation, invitation parser and `replaceState`, storage that throws, remember/forget; the create page per mode, the refused-token prompt resending the same `Paste`, the draft restored after every failed create. |
 | `src/server/tests/branding_colors.rs` | The colour stylesheet served from memory (both asset modes), without colours every `/branding/…css` the generic `404`; with colours exactly one link last in the head of every page in `en`/`de`, the page otherwise unchanged. |
@@ -504,6 +570,7 @@ npm run e2e -w @capsulebin/web
 | 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
 | 017 | Operator branding | `[branding]` keys instead of operator CSS; name, raster logo/dark logo/favicon (no SVG) read at startup, served at content-hashed `/branding/` URLs; one name for all languages, a tagline per language; theme colours as token values in a generated stylesheet, contrast failures only a warning; "Powered by CapsuleBin" on every page ("CapsuleBin" linked to the source, new tab), not switchable |
 | 018 | Creation token in the browser | Create page takes the token from a field or an invitation link `#token=` (fragment removed at once), remembered in `localStorage` by default with "Forget", sent only as the create bearer; mode in the create shell's meta; a refused token resends the same sealed capsule; no cookie/session, policy endpoint or admin UI |
+| 019 | Creation tokens in the database | `creation_tokens` (hash, label, created, revoked, day of last use) managed with `capsulebin token create\|list\|revoke` while `serve` runs, effective from the next create; read per create, compared in constant time with the configured hashes; `token` mode without any token only warns; revocation final, rows kept forever; restore carries tokens and revocations by verifier; no capsule linked to a token |
 
 ## Source code map
 
@@ -512,7 +579,7 @@ npm run e2e -w @capsulebin/web
 | File | Purpose |
 |------|---------|
 | `src/main.rs` | Binary entry point, CLI argument parsing (clap) |
-| `src/lib.rs` | `AppState`, `router()` — layer order is security-critical (see comments) |
+| `src/lib.rs` | `AppState` (`creation_tokens` = configured verifiers, `creation_tokens_repo` = database tokens), `router()` — layer order is security-critical (see comments); `creation_token_warning` for `serve`/`check` |
 | `src/config.rs` | Config loading: TOML + env override, validation, `Resolved` |
 | `src/config/model.rs` | Config struct definitions; `KNOWN_LANGUAGES`, `DEFAULT_LANGUAGE`, `I18nConfig`, `language_prefix()`; `ServerConfig::check_public_url` (the `public_url` rules, shared by `validate` and `token`); `BrandingConfig` (named field `colors`), `BrandingTexts` (`[branding.<lang>]`) and their validation; `CreationMode` (`as_str()`: the literal of the create shell's creation meta) |
 | `src/branding.rs` | `[branding]` resolved at startup: `Branding`, `Tagline` (`BuiltIn`/`Hidden`/`Text`, `Branding::tagline(language)`), `BrandingFile`; reads and checks logo/dark logo/favicon (format, signature, 256 KiB), content-hashed URLs; the colour stylesheet as a `BrandingFile` (`branding/colors.rs`: `Colors` parsing, built-in palette `TOKENS`, `CONTRAST_PAIRS`, `stylesheet()`, `contrast_warnings()`) |
@@ -520,18 +587,20 @@ npm run e2e -w @capsulebin/web
 | `src/config/units.rs` | Duration and byte-size parsing |
 | `src/db.rs` | Database connection pool, migration runner; private creation of a missing database (`create_private_file`), restore-leftover guard and its name prefixes, `permission_warnings`; shared file helpers `random_name` (scratch names), `parent_or_current`, `sidecars` |
 | `src/healthcheck.rs` | Client side of `capsulebin healthcheck`: one HTTP/1.1 request, status line only |
-| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with id carry-over (`carry_ids`) and rollback, `restore_dry_run` (tests in `backup/tests.rs`) |
-| `src/domain.rs` | Domain module root; re-exports `PasteId` (`domain/id.rs`: 128 bits, 22-char base64url), `Verifier`, `Clock`/`SystemClock` (`domain/clock.rs`, also `FixedClock` for tests), `Availability`/`NewPaste`/`Paste`, `PurgePolicy`/`PurgeOutcome` |
+| `src/backup.rs` | Backup (`VACUUM INTO` into a private stage, published by `rename`), backup verification, staged restore with id and creation token carry-over (`carry_from_replaced`, `carry_tokens`) and rollback, `restore_dry_run` (tests in `backup/tests.rs`) |
+| `src/domain.rs` | Domain module root; re-exports `PasteId` (`domain/id.rs`: 128 bits, 22-char base64url), `Verifier`, `Clock`/`SystemClock` (`domain/clock.rs`, also `FixedClock` for tests), `Availability`/`NewPaste`/`Paste`, `PurgePolicy`/`PurgeOutcome`, `CreationToken`/`ActiveCreationToken`/`Label`/`utc_day_start` |
+| `src/domain/creation_token.rs` | Creation tokens kept in the database (ADR-019): `Label` (≤ 64 chars, no control characters, redacted `Debug`), `CreationToken` (as listed, no verifier), `ActiveCreationToken` (id, verifier, `last_used_on`), `utc_day_start` |
 | `src/domain/paste.rs` | `Paste` struct — the full row representation |
-| `src/domain/capability.rs` | Capability verification (constant-time via `subtle`) |
+| `src/domain/capability.rs` | Capability verification (constant-time via `subtle`); `any_matches`, `matching_index` (position of the first match, every entry visited) |
 | `src/domain/purge.rs` | Retention rule evaluation |
 | `src/domain/abuse.rs` | Report validation, reason/resolution/action codes (ADR-013) |
-| `src/repository.rs` | `PasteRepository` and `AbuseRepository` traits, `ReportCeilings`, `ReportEntry`, `SubmitOutcome`, `AbusePurgeOutcome` |
+| `src/repository.rs` | `PasteRepository`, `AbuseRepository` and `CreationTokenRepository` traits (the last without a lookup by verifier), `ReportCeilings`, `ReportEntry`, `SubmitOutcome`, `AbusePurgeOutcome`, `RevokeOutcome` |
 | `src/repository/sqlite.rs` | SQLite implementation (SQLx queries) |
+| `src/repository/sqlite/creation_tokens.rs` | `SqliteCreationTokenRepository`: `create`, `list`, `revoke`, `active`, `touch_last_use` (conditional `UPDATE`); no statement selects by verifier |
 | `src/repository/sqlite/abuse.rs` | `AbuseRepository`: reports (capped by the open report ceilings), moderation, audit trail, retention |
 | `src/api.rs` | API module root |
 | `src/api/pastes.rs` | Paste router; per-route 4 KiB `PROOF_BODY_LIMIT` for describe, retrieve and delete |
-| `src/api/pastes/handlers.rs` | Route handlers: create, describe, retrieve, delete |
+| `src/api/pastes/handlers.rs` | Route handlers: create, describe, retrieve, delete; `authorize_creation` (configured + database verifiers, before the body) and `record_use` (`last_used_on`) |
 | `src/api/pastes/codec.rs` | Wire format encode/decode |
 | `src/api/pastes/wire.rs` | Request/response types |
 | `src/api/health.rs` | Health endpoints |
@@ -545,7 +614,7 @@ npm run e2e -w @capsulebin/web
 | `src/api/reports.rs` | Report endpoint and policy; 32 KiB body limit, `enabled` checked before the body, ceiling warning throttled by `CeilingWarning` (one per `AppState`) |
 | `src/api/client_ip.rs` | Client IP extraction with trusted proxy support |
 | `src/api/security_headers.rs` | Security headers on every response |
-| `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token — reads only `server.public_url` for the invitation link —, backup/restore, reports/moderation in `abuse.rs`) |
+| `src/commands/` | Subcommand implementations (serve, check, healthcheck, migrate, prune, token — plain `token` reads only `server.public_url` for the invitation link, `token create|list|revoke` in the same file —, backup/restore, reports/moderation in `abuse.rs`) |
 | `build.rs` | Creates `web/dist` if missing and makes Cargo recompile when it changes; `rust-embed` (with `debug-embed`: every profile) embeds it at compile time |
 
 ### TypeScript core (`src/core/`)
@@ -687,6 +756,10 @@ The workflow refuses a tag that does not match the versions, or a changelog sect
 - **The creation token is the bearer of the create request only** — never on describe,
   retrieve or delete, never in a URL, body or log; the invitation fragment is removed with
   `history.replaceState` before anything renders (ADR-018).
+- **Creation tokens in the database are compared, never looked up** — load every active verifier
+  and compare with `capability::matching_index`; no `WHERE verifier = ?`. A failed read is `500`,
+  never `401`. Never log a token label, and never link a capsule to the token that created it
+  (ADR-019).
 - **Catalogue values are plain text** — the shell generator escapes them, pages insert them as
   text; never as HTML.
 - **`[branding]` values are escaped and filled in one pass** — a name, tagline or URL that looks like a

@@ -206,3 +206,26 @@ fn unloadable_config_prints_no_token() {
         );
     }
 }
+
+/// AC11 (package 20261122-creation-tokens-db): plain `token` stays a pure
+/// generator next to `token create`: with a configuration that `serve` would
+/// accept it opens no database and writes nothing, and its output is today's.
+#[test]
+fn plain_token_stores_nothing() {
+    let dir = tempdir("token-stores-nothing");
+    let config = write_config(
+        &dir,
+        "capsulebin.toml",
+        &format!(
+            "[server]\npublic_url = \"https://paste.example\"\n\n\
+             [database]\npath = \"{}\"\n\n\
+             [creation]\nmode = \"token\"\n",
+            dir.join("capsulebin.db").display()
+        ),
+    );
+    let output = run(capsulebin().arg("--config").arg(&config).arg("token"));
+    assert_invitation("valid configuration", &output, "https://paste.example");
+
+    let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(entries, ["capsulebin.toml"], "plain `token` wrote into the database directory");
+}

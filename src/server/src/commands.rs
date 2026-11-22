@@ -1,6 +1,7 @@
 //! The subcommands behind the `capsulebin` binary: `serve`, `check`,
-//! `healthcheck`, `migrate`, `prune`, `token`, `backup`, `restore`, and the
-//! operator's `reports` and `moderation`.
+//! `healthcheck`, `migrate`, `prune`, `token` (and its `create`, `list`,
+//! `revoke`), `backup`, `restore`, and the operator's `reports` and
+//! `moderation`.
 
 pub(crate) mod abuse;
 mod backup;
@@ -17,7 +18,7 @@ pub(crate) use healthcheck::healthcheck;
 pub(crate) use migrate::migrate;
 pub(crate) use prune::prune;
 pub(crate) use serve::serve;
-pub(crate) use token::token;
+pub(crate) use token::{token, token_create, token_list, token_revoke};
 
 use std::sync::Arc;
 

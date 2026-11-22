@@ -16,14 +16,18 @@ use capsulebin_server::domain::{Availability, Clock as _, PasteId, SystemClock};
 use capsulebin_server::repository::{AbuseRepository as _, ModerationOutcome, PasteRepository as _, ReportCeilings, ReportEntry};
 
 /// Formats Unix seconds as `YYYY-MM-DD HH:MM UTC`.
+pub(crate) fn format_utc(secs: i64) -> String {
+    let rem = secs.rem_euclid(86_400);
+    format!("{} {:02}:{:02} UTC", format_utc_date(secs), rem / 3600, (rem % 3600) / 60)
+}
+
+/// Formats Unix seconds as the UTC day `YYYY-MM-DD`.
 ///
 /// Civil-from-days after Howard Hinnant; exact for the proleptic Gregorian
 /// calendar, which is all a log-style timestamp needs. Avoids a date crate for
 /// one display function.
-pub(crate) fn format_utc(secs: i64) -> String {
+pub(crate) fn format_utc_date(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (hour, minute) = (rem / 3600, (rem % 3600) / 60);
 
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -35,7 +39,7 @@ pub(crate) fn format_utc(secs: i64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
 
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn codes<T: Copy>(all: &[T], as_str: fn(T) -> &'static str) -> String {
@@ -322,6 +326,8 @@ mod tests {
         assert_eq!(format_utc(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(format_utc(1_795_434_240), "2026-11-23 11:44 UTC");
         assert_eq!(format_utc(-60), "1969-12-31 23:59 UTC");
+        assert_eq!(format_utc_date(1_795_434_240), "2026-11-23");
+        assert_eq!(format_utc_date(-1), "1969-12-31");
     }
 
     #[test]

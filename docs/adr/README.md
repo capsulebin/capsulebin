@@ -24,3 +24,4 @@ change is recognised as a change rather than happening by accident.
 | [016](ADR-016-language-paths.md) | Interface languages in the path, the default language without a prefix | Accepted |
 | [017](ADR-017-operator-branding.md) | Operator branding through configuration | Accepted |
 | [018](ADR-018-creation-token-in-the-browser.md) | The creation token in the browser | Accepted |
+| [019](ADR-019-creation-tokens-in-the-database.md) | Creation tokens in the database, managed while the server runs | Accepted |

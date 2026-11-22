@@ -404,6 +404,7 @@ impl PasteRepository for SqlitePasteRepository {
 }
 
 pub mod abuse;
+pub mod creation_tokens;
 
 #[cfg(test)]
 mod tests;

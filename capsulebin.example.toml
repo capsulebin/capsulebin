@@ -109,18 +109,32 @@ batch_size = 500
 [creation]
 # "token" | "public" | "disabled"
 #
-#   token     a bearer token from token_hashes is required
+#   token     a bearer token is required: an active database token or one
+#             matching token_hashes
 #   public    anyone may create; only sensible behind another access control
 #   disabled  read-only instance: existing pastes stay retrievable
 #
 # "token" is the default so that an instance reachable before it is configured is
 # not an open write target.
+#
+# Creation tokens are normally kept in the database and managed while the server
+# runs; a change applies from the next create request, without a restart:
+#
+#   capsulebin token create --label "alice"   # prints the token and an invitation link
+#   capsulebin token list
+#   capsulebin token revoke <id>
+#
+# With mode = "token" and no token at all (no token_hashes entry and no active
+# database token) the server still starts, but every create is refused; `serve`
+# and `check` warn about it. Active database tokens while the mode is "public" or
+# "disabled" have no effect; `serve` and `check` warn about that, too.
 mode = "token"
 
-# Entries "sha256:<base64url>": the domain-separated SHA-256 of each accepted
-# token, base64url without padding. With mode = "token" at least one entry is
-# required; the server refuses to start with an empty list. The plain token is
-# never stored here, so this file does not need to be treated as a secret store.
+# Optional: tokens configured in this file, accepted alongside the database
+# tokens. Entries "sha256:<base64url>": the domain-separated SHA-256 of each
+# accepted token, base64url without padding. Only allowed with mode = "token".
+# The plain token is never stored here, so this file does not need to be treated
+# as a secret store. Changing this list needs a restart.
 #
 # Generate a token and its entry with:
 #

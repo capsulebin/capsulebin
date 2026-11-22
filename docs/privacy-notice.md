@@ -18,6 +18,7 @@ jurisdiction, and the operator stays responsible for what their instance publish
 | Controller | The operator named in the imprint; a hosting provider as processor (Art. 28 GDPR) | `[legal.operator]`, `[legal.hosting]` |
 | What this service cannot see | Content, title, file names, key and password never reach the server | Fixed by the software |
 | Capsules | The stored data, the legal basis, when a capsule is deleted, and that afterwards only its identifier is kept so it is never used for another capsule | `pastes.maximum_expiry`, `pastes.allow_permanent`, `purge.*` |
+| Creation tokens | That the operator can keep issued tokens in the database: per token only a hash, a label, the creation and revocation time and the day of last use; capsules are not linked to the token that created them; a revoked token's entry is kept so it stays revoked; legal basis Art. 6(1)(f) GDPR | Fixed by the software (stated whether or not the instance uses database tokens) |
 | IP addresses and server logs | Whether the client address is processed in memory for rate limits; what the log contains | `rate_limits.*` |
 | Reports | What a report stores, the legal basis, how long it is kept | `abuse.enabled`, `abuse.report_retention` |
 | Cookies and third parties | No cookies; the theme and language choice in local storage, and a creation token once one is entered or an invitation link opened; no third-party requests | Fixed by the software |
@@ -30,9 +31,9 @@ The software cannot know what runs around it. Typical additions, as Markdown in
 
 - **The reverse proxy's access log.** Usually the largest item: it records client IP addresses and
   full request paths, including capsule ids. State what is logged and for how long.
-- **Backups.** A backup (`capsulebin backup`) contains capsules and reports, including ones deleted
-  after it was taken. State how long backups are kept, since a burned or deleted capsule can
-  survive in one until then.
+- **Backups.** A backup (`capsulebin backup`) contains capsules, reports and creation token
+  records, including ones deleted after it was taken. State how long backups are kept, since a
+  burned or deleted capsule can survive in one until then.
 - **Monitoring, hosting, a data protection officer, the competent supervisory authority**, where
   they apply.
 
@@ -65,7 +66,8 @@ What it processes:
 | **Client IP address** | Rate limiting, if a limit keyed by client is configured (`rate_limits.*`) | In memory only, never written to disk or logs; gone at the latest on restart |
 | **Abuse reports**: capsule id, reason, description, optional contact | Handling the report (notice and action) | Open reports until closed; closed ones for `abuse.report_retention` (default 90 days) |
 | **Moderation records**: capsule id, action, reason, operator note | Accountability for blocking and deleting | `abuse.report_retention` (default 90 days) |
-| **Creation token hashes** | Deciding who may create capsules | As long as the operator configures them |
+| **Creation token hashes** in the configuration (`creation.token_hashes`) | Deciding who may create capsules | As long as the operator configures them |
+| **Creation tokens in the database**: hash of the token, the operator's label, creation and revocation time, the day (not the time) of the last create it authorized | Deciding who may create capsules; telling a token in use from an abandoned one | Active tokens until revoked; a revoked token's entry permanently, so that it stays revoked, also across a restore. No capsule is linked to a token |
 
 The server's own log contains the request method, the path with ids replaced by placeholders, the
 status and the latency - no IP addresses, capsule ids, tokens, bodies or report text.

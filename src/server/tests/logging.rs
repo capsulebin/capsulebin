@@ -624,6 +624,108 @@ async fn wrong_creation_token_logs_the_template() {
     assert!(!logged.text.contains("WRONGxTOKENxMARKER"), "captured:\n{}", logged.text);
 }
 
+/// Everything of a database creation token that must stay out of the log:
+/// the token, its verifier in every encoding, its label and its id.
+fn token_traces(token: &str, label: &str, id: &str) -> Vec<(&'static str, String)> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE};
+
+    let verifier = capsulebin_server::domain::Verifier::for_creation_token(token.as_bytes());
+    let bytes = verifier.as_bytes();
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    vec![
+        ("token", token.to_owned()),
+        ("verifier", verifier.encode()),
+        ("verifier as base64url", URL_SAFE.encode(bytes)),
+        ("verifier as base64", STANDARD.encode(bytes)),
+        ("verifier as base64 without padding", STANDARD_NO_PAD.encode(bytes)),
+        ("verifier as hex", hex.clone()),
+        ("verifier as upper-case hex", hex.to_uppercase()),
+        ("label", label.to_owned()),
+        ("token id", id.to_owned()),
+    ]
+}
+
+/// AC17: creates with a correct, a wrong and a revoked database token log the
+/// route template and nothing of the tokens: neither the token, nor its
+/// verifier in any encoding, nor its label or id.
+#[tokio::test]
+async fn database_creation_tokens_stay_out_of_the_log() {
+    const ACTIVE: (&str, &str) = ("ACTIVExDBxTOKENxMARKER", "ACTIVExLABELxMARKER");
+    const REVOKED: (&str, &str) = ("REVOKEDxDBxTOKENxMARKER", "REVOKEDxLABELxMARKER");
+    const WRONG: &str = "WRONGxDBxTOKENxMARKER";
+
+    let (capture, _guard) = Capture::local();
+    let h = harness("logging-acceptance-db-tokens").await;
+    let active = h.issue_token(ACTIVE.0, ACTIVE.1).await;
+    let revoked = h.issue_token(REVOKED.0, REVOKED.1).await;
+    h.revoke_token(&revoked).await;
+
+    let mut traces = token_traces(ACTIVE.0, ACTIVE.1, &active);
+    traces.extend(token_traces(REVOKED.0, REVOKED.1, &revoked));
+    traces.extend(token_traces(WRONG, "", ""));
+    traces.retain(|(_, value)| !value.is_empty());
+
+    for (byte, token, status) in [
+        (43, ACTIVE.0, StatusCode::CREATED),
+        (44, WRONG, StatusCode::UNAUTHORIZED),
+        (45, REVOKED.0, StatusCode::UNAUTHORIZED),
+    ] {
+        let logged = logged(
+            &h,
+            &capture,
+            post("/api/v1/pastes", create_body(&id(byte)).to_string().into_bytes(), Some(token)),
+        )
+        .await;
+        assert_eq!(logged.answer.status, status, "{token}: {}", logged.answer.text());
+        assert_eq!(logged.path(), "/api/v1/pastes");
+        for (what, value) in &traces {
+            assert!(
+                !logged.text.contains(value.as_str()),
+                "{what} in the log\n\ncaptured:\n{}",
+                logged.text
+            );
+        }
+    }
+}
+
+/// AC10: when recording the day of last use fails, the create still succeeds,
+/// and the warning names neither the token nor its id or label.
+#[tokio::test]
+async fn a_failed_last_use_write_is_a_warning_without_the_token() {
+    const TOKEN_MARKER: &str = "TOUCHxDBxTOKENxMARKER";
+    const LABEL_MARKER: &str = "TOUCHxLABELxMARKER";
+
+    let (capture, _guard) = Capture::local();
+    let h = harness("logging-acceptance-touch-fails").await;
+    let token_id = h.issue_token(TOKEN_MARKER, LABEL_MARKER).await;
+    sqlx::query(
+        "CREATE TRIGGER refuse_token_updates BEFORE UPDATE ON creation_tokens
+         BEGIN SELECT RAISE(ABORT, 'test refuses token updates'); END",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let logged = logged(
+        &h,
+        &capture,
+        post("/api/v1/pastes", create_body(&id(46)).to_string().into_bytes(), Some(TOKEN_MARKER)),
+    )
+    .await;
+    assert_eq!(logged.answer.status, StatusCode::CREATED, "{}", logged.answer.text());
+    assert_eq!(h.token_last_used_on(&token_id).await, None);
+
+    let warning = logged
+        .text
+        .lines()
+        .find(|line| line.contains("WARN") && line.contains("creation token"))
+        .unwrap_or_else(|| panic!("no warning logged\n\ncaptured:\n{}", logged.text));
+    for (what, value) in token_traces(TOKEN_MARKER, LABEL_MARKER, &token_id) {
+        assert!(!logged.text.contains(&value), "{what} in the log: {warning}");
+    }
+}
+
 /// AC10 with the embedded asset source: a fallback `404` is `{unmatched}` and
 /// no part of the request reaches the log.
 #[tokio::test]

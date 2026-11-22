@@ -18,7 +18,7 @@ use core::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
-use subtle::ConstantTimeEq as _;
+use subtle::{ConditionallySelectable as _, ConstantTimeEq as _};
 
 /// Length of a verifier in bytes.
 pub const VERIFIER_BYTES: usize = 32;
@@ -143,6 +143,27 @@ pub fn any_matches(candidate: &Verifier, allowed: &[Verifier]) -> bool {
     found.into()
 }
 
+/// The position of the first entry in `allowed` that equals `candidate`, in
+/// constant time.
+///
+/// Like [`any_matches`], every entry is compared and none is skipped: neither
+/// the time taken nor the memory accessed depends on where (or whether) the
+/// candidate matched. The position is accumulated with
+/// [`subtle::ConditionallySelectable`], so a match does not branch. Only the
+/// final answer is turned into an `Option`; it is what the caller acts on
+/// anyway. An empty set matches nothing.
+#[must_use]
+pub fn matching_index(candidate: &Verifier, allowed: &[Verifier]) -> Option<usize> {
+    let mut found = subtle::Choice::from(0u8);
+    let mut position = 0u64;
+    for (index, entry) in allowed.iter().enumerate() {
+        let first_hit = candidate.0.ct_eq(&entry.0) & !found;
+        position.conditional_assign(&(index as u64), first_hit);
+        found |= first_hit;
+    }
+    Option::<u64>::from(subtle::CtOption::new(position, found)).and_then(|position| usize::try_from(position).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +227,38 @@ mod tests {
     #[test]
     fn empty_allowlist_denies() {
         assert!(!any_matches(&Verifier::for_creation_token(b"a"), &[]));
+    }
+
+    fn tokens(names: &[&str]) -> Vec<Verifier> {
+        names.iter().map(|name| Verifier::for_creation_token(name.as_bytes())).collect()
+    }
+
+    #[test]
+    fn matching_index_finds_no_match() {
+        let allowed = tokens(&["a", "b", "c"]);
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"d"), &allowed), None);
+        // Identical bytes in another capability domain are no match either.
+        assert_eq!(matching_index(&Verifier::for_delete_secret(b"a"), &allowed), None);
+    }
+
+    #[test]
+    fn matching_index_finds_the_first_middle_and_last_entry() {
+        let allowed = tokens(&["a", "b", "c", "d", "e"]);
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"a"), &allowed), Some(0));
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"c"), &allowed), Some(2));
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"e"), &allowed), Some(4));
+    }
+
+    #[test]
+    fn matching_index_reports_the_first_of_equal_entries() {
+        let allowed = tokens(&["a", "b", "a"]);
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"a"), &allowed), Some(0));
+    }
+
+    /// Like [`empty_allowlist_denies`]: no candidates means no match.
+    #[test]
+    fn matching_index_of_an_empty_set_is_none() {
+        assert_eq!(matching_index(&Verifier::for_creation_token(b"a"), &[]), None);
     }
 
     #[test]

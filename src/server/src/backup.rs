@@ -14,7 +14,9 @@
 //! (with its own `-wal`/`-shm`, which may hold committed data) aside and renames
 //! the copy into place. A failure before or during that cutover undoes every
 //! move. Before the cutover, the ids of the replaced database that the backup
-//! lacks are retired in the copy, so a restore never frees an id.
+//! lacks are retired in the copy, so a restore never frees an id, and its
+//! creation tokens and revocations are carried into the copy, so a restore
+//! never brings back a revoked token or loses one issued after the backup.
 //!
 //! Backups hold ciphertext, verifiers and abuse reports with contact details.
 //! They are written into a private stage directory with owner-only permissions
@@ -216,8 +218,17 @@ pub struct RestoreOutcome {
     /// Ids of the previous database the backup does not hold as a row, now
     /// retired in the restored database so they are never used again.
     pub carried_ids: i64,
+    /// Creation tokens of the previous database the backup lacks, matched by
+    /// verifier, now inserted into the restored database.
+    pub carried_tokens: i64,
+    /// Creation tokens revoked in the previous database but active in the
+    /// backup, now revoked with the previous database's `revoked_at`.
+    pub carried_revocations: i64,
+    /// Creation tokens in both whose `last_used_on` was later in the previous
+    /// database, now set to that later day.
+    pub carried_last_uses: i64,
     /// Problems that did not stop the restore, such as a previous database
-    /// whose ids could not be read.
+    /// whose ids and creation tokens could not be read.
     pub warnings: Vec<String>,
 }
 
@@ -234,6 +245,12 @@ pub struct DryRunOutcome {
     /// The number of ids the restore would carry over, as in
     /// [`RestoreOutcome::carried_ids`].
     pub carried_ids: i64,
+    /// [`RestoreOutcome::carried_tokens`] the restore would carry over.
+    pub carried_tokens: i64,
+    /// [`RestoreOutcome::carried_revocations`] the restore would carry over.
+    pub carried_revocations: i64,
+    /// [`RestoreOutcome::carried_last_uses`] the restore would carry over.
+    pub carried_last_uses: i64,
     /// The warnings the restore would report.
     pub warnings: Vec<String>,
 }
@@ -253,8 +270,9 @@ pub struct DryRunOutcome {
 ///
 /// Before the cutover, every id of the old database that the backup does not
 /// hold as a row is retired in the staged copy, so the
-/// restore frees no id. An old database that cannot be read only adds a
-/// warning: corruption is the typical reason to restore.
+/// restore frees no id, and its creation tokens and revocations are carried
+/// into the copy (see [`carry_from_replaced`]). An old database that cannot be read only
+/// adds a warning: corruption is the typical reason to restore.
 pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<RestoreOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
     if plan.existing && !replace {
@@ -272,14 +290,17 @@ pub async fn restore(input: &Path, target: &DatabaseConfig, replace: bool, now: 
         info: copy.info,
         schema_version: copy.schema_version,
         previous: plan.existing.then_some(plan.aside),
-        carried_ids: copy.carried.count,
+        carried_ids: copy.carried.ids,
+        carried_tokens: copy.carried.tokens.inserted,
+        carried_revocations: copy.carried.tokens.revoked,
+        carried_last_uses: copy.carried.tokens.last_used,
         warnings: copy.carried.warning.into_iter().collect(),
     })
 }
 
 /// Runs [`restore`] up to and including the migration of the staged copy and
-/// counts the ids it would carry over, then removes the stage. Nothing outside
-/// the stage is created or changed.
+/// counts the ids and creation tokens it would carry over, then removes the
+/// stage. Nothing outside the stage is created or changed.
 pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: bool, now: i64) -> Result<DryRunOutcome, BackupError> {
     let plan = Plan::new(input, &target.path, now)?;
     let needs_replace = plan.existing && !replace;
@@ -294,7 +315,10 @@ pub async fn restore_dry_run(input: &Path, target: &DatabaseConfig, replace: boo
         info: copy.info,
         schema_version: copy.schema_version,
         needs_replace,
-        carried_ids: copy.carried.count,
+        carried_ids: copy.carried.ids,
+        carried_tokens: copy.carried.tokens.inserted,
+        carried_revocations: copy.carried.tokens.revoked,
+        carried_last_uses: copy.carried.tokens.last_used,
         warnings: copy.carried.warning.into_iter().collect(),
     })
 }
@@ -325,8 +349,9 @@ impl Plan {
         })
     }
 
-    /// The database the restore replaces, whose ids it carries over: the
-    /// target, if a file is there (sidecars alone hold no readable database).
+    /// The database the restore replaces, whose ids and creation tokens it
+    /// carries over: the target, if a file is there (sidecars alone hold no
+    /// readable database).
     fn replaced(&self) -> Option<&Path> {
         occupied(&self.target).then_some(self.target.as_path())
     }
@@ -409,13 +434,13 @@ struct StagedCopy {
     info: BackupInfo,
     /// The schema version the migration reached.
     schema_version: i64,
-    carried: CarriedIds,
+    carried: Carried,
 }
 
 /// Steps 3 to 6 of a restore: copies only the main file of `input` to
 /// `staged`, verifies the copy, migrates it like `serve` would and checkpoints
-/// it, so the staged file is self-contained. Then carries the ids of
-/// `replaced` over (see [`carry_ids`]) and checkpoints again.
+/// it, so the staged file is self-contained. Then carries the ids and creation
+/// tokens of `replaced` over (see [`carry_from_replaced`]) and checkpoints again.
 async fn stage_copy(
     input: &Path,
     staged: &Path,
@@ -440,11 +465,11 @@ async fn stage_copy(
         step(Step::Checkpoint, staged)?;
 
         let carried = match replaced {
-            Some(replaced) => carry_ids(&pool, replaced, carry).await?,
-            None => CarriedIds::default(),
+            Some(replaced) => carry_from_replaced(&pool, replaced, carry).await?,
+            None => Carried::default(),
         };
         checkpoint(&pool).await?;
-        step(Step::CarryIds, staged)?;
+        step(Step::Carry, staged)?;
         Ok(StagedCopy {
             info,
             schema_version,
@@ -468,32 +493,46 @@ async fn checkpoint(pool: &SqlitePool) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// What [`carry_ids`] does with the ids it finds.
+/// What [`carry_from_replaced`] does with the ids and creation tokens it finds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Carry {
     /// Count them only (dry run).
     Count,
-    /// Count them and insert them into the staged copy's `retired_ids`.
+    /// Count them and write them into the staged copy.
     Insert,
 }
 
-/// The outcome of [`carry_ids`].
+/// The outcome of [`carry_from_replaced`]. The counts are what was carried over (or, for
+/// [`Carry::Count`], what would be).
 #[derive(Debug, Default)]
-struct CarriedIds {
-    /// The ids carried over (or, for [`Carry::Count`], to carry over).
-    count: i64,
-    /// Why the ids of the replaced database could not be read.
+struct Carried {
+    /// Ids retired in the copy.
+    ids: i64,
+    tokens: CarriedTokens,
+    /// Why the replaced database could not be read.
     warning: Option<String>,
 }
 
-impl CarriedIds {
+/// The creation tokens part of [`Carried`], see [`carry_tokens`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CarriedTokens {
+    /// Tokens inserted because the copy lacks their verifier.
+    inserted: i64,
+    /// Tokens of the copy revoked because they are revoked in `old`.
+    revoked: i64,
+    /// Tokens of the copy whose `last_used_on` was moved to `old`'s later day.
+    last_used: i64,
+}
+
+impl Carried {
     fn unreadable(reason: impl std::fmt::Display) -> Self {
         Self {
-            count: 0,
             warning: Some(format!(
-                "the ids of the replaced database could not be carried over ({reason}); its ids that are not in the \
-                 backup can be used again"
+                "the ids and creation tokens of the replaced database could not be carried over ({reason}); its ids \
+                 that are not in the backup can be used again, its creation tokens that are not in the backup are \
+                 lost, and tokens it revoked are active again if the backup holds them unrevoked"
             )),
+            ..Self::default()
         }
     }
 }
@@ -507,7 +546,8 @@ const OLD_IDS: &str = "SELECT id FROM old.pastes";
 const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION ALL SELECT id FROM old.retired_ids";
 
 /// Retires, in the staged copy behind `pool`, every id of `replaced` that the
-/// copy does not hold as a row (`Carry::Count`: only counts them).
+/// copy does not hold as a row, and carries its creation tokens over (see
+/// [`carry_tokens`]); `Carry::Count` only counts both.
 ///
 /// Everything stays inside SQLite: `replaced` is attached read-only to one
 /// connection of the copy, so millions of ids never pass through this
@@ -515,15 +555,15 @@ const OLD_IDS_WITH_RETIRED: &str = "SELECT id FROM old.pastes UNION ALL SELECT i
 /// probe of [`carry_attached`] cannot read, is not an error: the copy stays
 /// unchanged and the result carries a warning. Every failure after the probe
 /// is an error that stops the restore before the cutover.
-async fn carry_ids(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<CarriedIds, BackupError> {
+async fn carry_from_replaced(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<Carried, BackupError> {
     let uri = match read_only_uri(replaced) {
         Ok(uri) => uri,
-        Err(reason) => return Ok(CarriedIds::unreadable(reason)),
+        Err(reason) => return Ok(Carried::unreadable(reason)),
     };
     let mut connection = pool.acquire().await.map_err(BackupError::Database)?;
     // Bound, never formatted into the statement: the path is not SQL.
     if let Err(error) = sqlx::query("ATTACH DATABASE ?1 AS old").bind(uri).execute(&mut *connection).await {
-        return Ok(CarriedIds::unreadable(error));
+        return Ok(Carried::unreadable(error));
     }
 
     let carried = carry_attached(&mut connection, carry).await;
@@ -540,34 +580,46 @@ async fn carry_ids(pool: &SqlitePool, replaced: &Path, carry: Carry) -> Result<C
 /// the private stage.
 const SCRATCH_TABLE: &str = "main.restore_carried_ids";
 
-/// The part of [`carry_ids`] that runs while `old` is attached.
+/// The part of [`carry_from_replaced`] that runs while `old` is attached.
 ///
-/// First a read probe: whether `old` has `retired_ids`, and a count over the
-/// same ids the insert reads. It writes nothing into the copy, so its failure
-/// can only come from `old`; it is the only failure here that becomes the
-/// warning. Then, in one transaction, the ids are copied into a scratch table
-/// in the copy ([`SCRATCH_TABLE`]), counted and inserted. Any failure there
-/// is an error (the transaction rolls back), also a read failure of `old`
-/// that shows up only then: it cannot be told apart from a failure writing
-/// the copy, and installing the backup without the ids would free them.
-async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<CarriedIds, BackupError> {
+/// First a read probe: whether `old` has `retired_ids` and `creation_tokens`,
+/// and a count over the same ids and tokens the inserts read. It writes
+/// nothing into the copy, so its failure can only come from `old`; it is the
+/// only failure here that becomes the warning, and then neither ids nor tokens
+/// are carried. Then, in one transaction, the ids are copied into a scratch
+/// table in the copy ([`SCRATCH_TABLE`]), counted and inserted, and the tokens
+/// carried over. Any failure there is an error (the transaction rolls back),
+/// also a read failure of `old` that shows up only then: it cannot be told
+/// apart from a failure writing the copy, and installing the backup without
+/// the ids would free them, without the revocations would revive tokens.
+async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<Carried, BackupError> {
     use sqlx::Connection as _;
 
     let probe = async {
-        let has_retired: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = 'retired_ids')")
-                .fetch_one(&mut *connection)
-                .await?;
+        let has_retired = old_has_table(connection, "retired_ids").await?;
         let old_ids = if has_retired { OLD_IDS_WITH_RETIRED } else { OLD_IDS };
         sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT count(*) FROM ({old_ids})")))
             .fetch_one(&mut *connection)
             .await?;
-        Ok::<_, sqlx::Error>(old_ids)
+        // From schema version 5 on. Without the table there is nothing to
+        // carry, which is no reason for a warning.
+        let has_tokens = old_has_table(connection, "creation_tokens").await?;
+        if has_tokens {
+            // Every column, so the table itself is scanned: `count(*)` alone
+            // may be answered from the smaller verifier index.
+            sqlx::query(
+                "SELECT count(*), max(id), max(verifier), max(label), max(created_at), max(last_used_on), \
+                 max(revoked_at) FROM old.creation_tokens",
+            )
+            .fetch_one(&mut *connection)
+            .await?;
+        }
+        Ok::<_, sqlx::Error>((old_ids, has_tokens))
     }
     .await;
-    let old_ids = match probe {
-        Ok(old_ids) => old_ids,
-        Err(error) => return Ok(CarriedIds::unreadable(error)),
+    let (old_ids, has_tokens) = match probe {
+        Ok(found) => found,
+        Err(error) => return Ok(Carried::unreadable(error)),
     };
 
     let mut transaction = connection.begin().await.map_err(BackupError::Database)?;
@@ -606,6 +658,13 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         .execute(&mut *transaction)
         .await
         .map_err(BackupError::Database)?;
+    }
+    let tokens = if has_tokens {
+        carry_tokens(&mut transaction, carry).await.map_err(BackupError::Database)?
+    } else {
+        CarriedTokens::default()
+    };
+    if carry == Carry::Insert {
         sqlx::query(AssertSqlSafe(format!("DROP TABLE {SCRATCH_TABLE}")))
             .execute(&mut *transaction)
             .await
@@ -615,7 +674,67 @@ async fn carry_attached(connection: &mut sqlx::SqliteConnection, carry: Carry) -
         // Also drops the scratch table.
         transaction.rollback().await.map_err(BackupError::Database)?;
     }
-    Ok(CarriedIds { count, warning: None })
+    Ok(Carried {
+        ids: count,
+        tokens,
+        warning: None,
+    })
+}
+
+/// Whether the attached `old` has a table called `name`.
+async fn old_has_table(connection: &mut sqlx::SqliteConnection, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = ?1)")
+        .bind(name)
+        .fetch_one(connection)
+        .await
+}
+
+/// Counts of [`carry_tokens`], each over the same rows its statement in
+/// [`CARRY_TOKENS`] changes. Rows are matched by verifier, never by id: the
+/// verifier is what authorizes a create, so it is the token's identity.
+const COUNT_TOKENS: &str = "SELECT \
+     (SELECT count(*) FROM old.creation_tokens o \
+      WHERE o.verifier NOT IN (SELECT verifier FROM main.creation_tokens)) AS inserted, \
+     (SELECT count(*) FROM old.creation_tokens o JOIN main.creation_tokens m ON m.verifier = o.verifier \
+      WHERE o.revoked_at IS NOT NULL AND m.revoked_at IS NULL) AS revoked, \
+     (SELECT count(*) FROM old.creation_tokens o JOIN main.creation_tokens m ON m.verifier = o.verifier \
+      WHERE o.last_used_on IS NOT NULL AND (m.last_used_on IS NULL OR m.last_used_on < o.last_used_on)) AS last_used";
+
+/// The writes of [`carry_tokens`], in order: revocations and later last-use
+/// days onto the copy's rows, then the rows the copy lacks. An inserted row
+/// whose id the copy already uses for another verifier fails on the primary
+/// key, which stops the restore.
+const CARRY_TOKENS: [&str; 3] = [
+    "UPDATE main.creation_tokens AS m SET revoked_at = o.revoked_at FROM old.creation_tokens AS o \
+     WHERE o.verifier = m.verifier AND o.revoked_at IS NOT NULL AND m.revoked_at IS NULL",
+    "UPDATE main.creation_tokens AS m SET last_used_on = o.last_used_on FROM old.creation_tokens AS o \
+     WHERE o.verifier = m.verifier AND o.last_used_on IS NOT NULL \
+     AND (m.last_used_on IS NULL OR m.last_used_on < o.last_used_on)",
+    "INSERT INTO main.creation_tokens (id, verifier, label, created_at, last_used_on, revoked_at) \
+     SELECT id, verifier, label, created_at, last_used_on, revoked_at FROM old.creation_tokens \
+     WHERE verifier NOT IN (SELECT verifier FROM main.creation_tokens)",
+];
+
+/// Carries the creation tokens of the attached `old` into the copy, matched by
+/// verifier, inside the caller's transaction (`Carry::Count`: only counts):
+/// a token the copy lacks is inserted with its id, label, dates and revocation;
+/// a token revoked in `old` but active in the copy is revoked with `old`'s
+/// `revoked_at`; `last_used_on` becomes the later of both (`NULL` is earlier).
+/// Tokens only in the copy stay as they are. The verifiers are compared inside
+/// SQLite: both sides are stored hashes, no presented token is involved.
+async fn carry_tokens(connection: &mut sqlx::SqliteConnection, carry: Carry) -> Result<CarriedTokens, sqlx::Error> {
+    let counts = sqlx::query(COUNT_TOKENS).fetch_one(&mut *connection).await?;
+    let carried = CarriedTokens {
+        inserted: counts.try_get("inserted")?,
+        revoked: counts.try_get("revoked")?,
+        last_used: counts.try_get("last_used")?,
+    };
+    if carry == Carry::Insert {
+        for statement in CARRY_TOKENS {
+            sqlx::query(statement).execute(&mut *connection).await?;
+        }
+    }
+    Ok(carried)
 }
 
 /// A `file:` URI that opens the database `path` without writing to it, its
@@ -703,8 +822,9 @@ enum Step {
     Verify,
     Migrate,
     Checkpoint,
-    /// The ids of the replaced database are carried over and checkpointed.
-    CarryIds,
+    /// The ids and creation tokens of the replaced database are carried over
+    /// and checkpointed.
+    Carry,
     MoveDatabase,
     MoveWal,
     MoveShm,

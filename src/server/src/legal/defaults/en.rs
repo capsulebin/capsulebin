@@ -79,6 +79,13 @@ pub(super) fn privacy(f: &Facts) -> BuiltIn {
         "\nThe encrypted content is overwritten in the database when a capsule is deleted. Its technical \
          data, without content, remains until one of the rules above removes it. Once a capsule is \
          removed, only its identifier is kept, so that it can never be used for another capsule.\n\n\
+         ## Creation tokens\n\n\
+         If creating a capsule requires a creation token, we can keep the tokens we issue in our \
+         database. For each of them we store only a check value (hash) of the token, a label we give \
+         it, when it was created and when it was revoked, and the day it was last used - only the day, \
+         not each use. Capsules are not linked to the token they were created with. The entry of a \
+         revoked token is kept, so that the token stays revoked. Legal basis: Art. 6(1)(f) GDPR, our \
+         legitimate interest in deciding who can create capsules.\n\n\
          ## IP addresses and server logs\n\n",
     );
     if f.client_ip_limits {
