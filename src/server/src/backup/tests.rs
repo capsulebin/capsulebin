@@ -1793,7 +1793,7 @@ async fn restore_removes_purged_backup_capsules_in_every_state() {
     assert_eq!(ids_in(&target.path, "retired_ids").await, purged);
 }
 
-/// SEC-028: SQLite keeps the `-wal` and `-shm` next to the file a database
+/// SQLite keeps the `-wal` and `-shm` next to the file a database
 /// symlink points to, not next to the link. A restore through the link would
 /// find no `-wal`, attach the old main file as `immutable` and miss a
 /// revocation committed only in that `-wal`; its cutover would replace the

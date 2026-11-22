@@ -9,7 +9,7 @@
 //! revoked after the backup survive `restore --force`.
 //! Package 20261122-restore-protection (AC2): a capsule of the backup purged
 //! from the current database is removed by `restore --force`.
-//! SEC-028: a database path that is a symbolic link is refused by `restore`
+//! A database path that is a symbolic link is refused by `restore`
 //! and `restore --dry-run`, the link and the linked files left unchanged.
 
 mod support;
@@ -486,7 +486,7 @@ async fn restore_removes_the_backup_capsules_purged_from_the_current_database() 
     assert_eq!(ids_in(&database, "retired_ids").await, BTreeSet::from(["first-row".to_owned()]));
 }
 
-/// SEC-028: SQLite keeps the `-wal` of a symlinked database next to the file
+/// SQLite keeps the `-wal` of a symlinked database next to the file
 /// the link points to, so a restore through the link could miss commits in it.
 /// `restore`, `restore --force` and `restore --dry-run` refuse the link, name
 /// `database.path`, and change neither the link nor the linked files.
