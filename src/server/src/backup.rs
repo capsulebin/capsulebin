@@ -47,6 +47,12 @@ pub enum BackupError {
     NoFileName(PathBuf),
     #[error("the backup and the database are the same file")]
     SameFile,
+    /// The configured database path is a symbolic link. SQLite keeps the
+    /// `-wal` and `-shm` next to the file the link points to, so a restore
+    /// through the link would miss commits that are only in that `-wal`, and
+    /// the cutover would replace the link with a regular file.
+    #[error("{0} is a symbolic link; restore needs the database's own path: set database.path to the file the link points to")]
+    SymlinkTarget(PathBuf),
     #[error("I/O error on {path}: {source}")]
     Io {
         path: PathBuf,
@@ -371,6 +377,12 @@ struct Plan {
 
 impl Plan {
     fn new(input: &Path, target: &Path, now: i64) -> Result<Self, BackupError> {
+        // SQLite names the `-wal` and `-shm` after the file a link resolves
+        // to, while the checks, the read-only attach and the cutover here use
+        // the configured name: a link is refused, never followed.
+        if std::fs::symlink_metadata(target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(BackupError::SymlinkTarget(target.to_path_buf()));
+        }
         if let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(target))
             && a == b
         {

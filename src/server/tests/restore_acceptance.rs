@@ -9,6 +9,8 @@
 //! revoked after the backup survive `restore --force`.
 //! Package 20261122-restore-protection (AC2): a capsule of the backup purged
 //! from the current database is removed by `restore --force`.
+//! A database path that is a symbolic link is refused by `restore`
+//! and `restore --dry-run`, the link and the linked files left unchanged.
 
 mod support;
 
@@ -482,4 +484,41 @@ async fn restore_removes_the_backup_capsules_purged_from_the_current_database() 
     );
     assert_eq!(ids_in(&database, "pastes").await, BTreeSet::from(["second-row".to_owned()]));
     assert_eq!(ids_in(&database, "retired_ids").await, BTreeSet::from(["first-row".to_owned()]));
+}
+
+/// SQLite keeps the `-wal` of a symlinked database next to the file
+/// the link points to, so a restore through the link could miss commits in it.
+/// `restore`, `restore --force` and `restore --dry-run` refuse the link, name
+/// `database.path`, and change neither the link nor the linked files.
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_refuses_a_symlinked_database() {
+    let (config, data, database) = setup("restore-symlink");
+    let backup = data.parent().unwrap().join("backup.db");
+    two_paste_backup(&backup).await;
+    let real = data.parent().unwrap().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let linked = real.join("capsulebin.db");
+    let files = old_database(&linked);
+    std::os::unix::fs::symlink(&linked, &database).unwrap();
+    let (data_before, real_before) = (entries(&data), entries(&real));
+    let before = contents(&files);
+
+    let input = backup.to_str().unwrap();
+    for args in [
+        &["restore", "--input", input][..],
+        &["restore", "--force", "--input", input],
+        &["restore", "--dry-run", "--input", input],
+        &["restore", "--dry-run", "--force", "--input", input],
+    ] {
+        let output = run(&config, args);
+        assert!(!output.status.success(), "{args:?}: {}", describe(&output));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("is a symbolic link"), "{args:?}: {}", describe(&output));
+        assert!(stderr.contains("database.path"), "{args:?}: {}", describe(&output));
+        assert!(std::fs::symlink_metadata(&database).unwrap().file_type().is_symlink(), "{args:?}");
+        assert_eq!(entries(&data), data_before, "{args:?}");
+        assert_eq!(entries(&real), real_before, "{args:?}");
+        assert_eq!(contents(&files), before, "{args:?}");
+    }
 }
