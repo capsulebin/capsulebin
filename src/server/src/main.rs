@@ -67,8 +67,13 @@ enum Command {
     ///
     /// The hash is domain-separated, so it cannot be reproduced with a plain
     /// `sha256sum` of the token. This subcommand is the supported way to produce
-    /// a `creation.token_hashes` entry.
-    Token,
+    /// a `creation.token_hashes` entry. Without a subcommand it stores nothing
+    /// and needs no configuration; `create`, `list` and `revoke` manage tokens
+    /// kept in the database instead, which apply without a restart.
+    Token {
+        #[command(subcommand)]
+        command: Option<TokenCommand>,
+    },
     /// Write a consistent snapshot of the database to a new file.
     ///
     /// Safe while the server is running. The file is compacted (pages freed by
@@ -101,6 +106,26 @@ enum Command {
     /// Disable, delete or restore a paste by id - without decrypting anything.
     #[command(subcommand)]
     Moderation(ModerationCommand),
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Issue a creation token kept in the database. Applies from the server's
+    /// next create request; only its hash is stored.
+    Create {
+        /// A note for `token list`, e.g. whom the token is for (at most 64
+        /// characters, no control characters).
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List the database tokens, active and revoked, oldest first.
+    List {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a database token by its id. Final: it cannot be undone.
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -183,8 +208,9 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     // Generating a token needs no configuration - it is what you run *before*
-    // writing one. A configuration is read only for `server.public_url`.
-    if matches!(cli.command, Command::Token) {
+    // writing one. A configuration is read only for `server.public_url`. The
+    // subcommands store tokens, so they validate below like `reports`.
+    if matches!(cli.command, Command::Token { command: None }) {
         return commands::token(cli.config.as_deref());
     }
 
@@ -210,13 +236,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let resolved = config.validate().context("configuration is not usable")?;
 
     match cli.command {
-        Command::Token | Command::Healthcheck { .. } => unreachable!("handled above"),
+        Command::Token { command: None } | Command::Healthcheck { .. } => unreachable!("handled above"),
         Command::Serve { bind } => commands::serve(resolved, bind).await,
         Command::Check => commands::check(resolved).await,
         Command::Migrate => commands::migrate(resolved).await,
         Command::Prune { batch_size } => commands::prune(resolved, batch_size).await,
         Command::Backup { output } => commands::backup(resolved, output).await,
         Command::Restore { input, force, dry_run } => commands::restore(resolved, input, force, dry_run).await,
+        Command::Token { command: Some(command) } => match command {
+            TokenCommand::Create { label } => commands::token_create(resolved, label).await,
+            TokenCommand::List { json } => commands::token_list(resolved, json).await,
+            TokenCommand::Revoke { id } => commands::token_revoke(resolved, id).await,
+        },
         Command::Reports(command) => match command {
             ReportsCommand::List { status, limit, json } => commands::abuse::reports_list(resolved, status, limit, json).await,
             ReportsCommand::Show { id, json } => commands::abuse::reports_show(resolved, id, json).await,

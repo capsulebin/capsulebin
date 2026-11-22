@@ -223,3 +223,41 @@ fn privacy_names_moderation() {
         }
     }
 }
+
+/// Creation tokens kept in the database hold a label, their creation and
+/// revocation time and the day of their last use, and are never linked to the
+/// capsules created with them; the notice says so whatever else is configured.
+#[test]
+fn privacy_names_what_is_stored_per_creation_token() {
+    for f in every_facts() {
+        for (language, expected) in [
+            (
+                "en",
+                [
+                    "## Creation tokens",
+                    "only a check value (hash) of the token",
+                    "a label we give it",
+                    "when it was created and when it was revoked",
+                    "the day it was last used - only the day, not each use",
+                    "Capsules are not linked to the token they were created with.",
+                ],
+            ),
+            (
+                "de",
+                [
+                    "## Erstellungstokens",
+                    "nur einen Prüfwert (Hash) des Tokens",
+                    "eine Bezeichnung, die wir ihm geben",
+                    "wann es erstellt und wann es widerrufen wurde",
+                    "den Tag seiner letzten Verwendung – nur den Tag, nicht jede Verwendung",
+                    "Kapseln werden nicht mit dem Token verknüpft, mit dem sie erstellt wurden.",
+                ],
+            ),
+        ] {
+            let text = privacy(&f, language).join(None);
+            for expected in expected {
+                assert!(text.contains(expected), "{f:?}, {language}: {expected:?} missing: {text}");
+            }
+        }
+    }
+}

@@ -27,8 +27,9 @@ What 1.0 contains:
 - **Lifecycle:** expiry, burn after first retrieval (enforced server-side, race-free), password
   protection, deletion through an independent management link, idempotent create for safe retries.
 - **Rendering:** Markdown and syntax-highlighted code, sanitized and under a strict CSP.
-- **Creation modes:** `token` (default), `public` or `disabled`. In `token` mode the create page
-  takes a creation token from a field or an invitation link and remembers it in the browser.
+- **Creation modes:** `token` (default), `public` or `disabled`. In `token` mode the operator
+  issues and revokes creation tokens while the server runs; the create page takes a token from a
+  field or an invitation link and remembers it in the browser.
 - **Command line client** (`put` / `get` / `delete`) sharing the browser's crypto implementation.
 - **Operations:** a single binary with embedded assets and migrations, SQLite, retention policy and
   scheduled purge, rate limiting, backup and restore, health endpoints.
@@ -110,9 +111,9 @@ cargo run -p capsulebin-server -- --config capsulebin.dev.toml serve
 The server listens on `127.0.0.1:8081`.
 
 **A configuration is mandatory.** `serve` without one aborts, because `server.public_url` has no
-sensible default and `creation.mode` defaults to `token` with no tokens configured — an instance
-that is reachable before it is configured must not be an open write target. The equivalent without
-a file:
+sensible default. `creation.mode` defaults to `token`, and until a token is issued every create is
+refused — an instance that is reachable before it is configured must not be an open write target.
+The equivalent without a file:
 
 ```sh
 CAPSULEBIN__SERVER__PUBLIC_URL=http://localhost:8080 \
@@ -287,14 +288,15 @@ node src/cli/dist/cli.js delete --link-file notes.link
 | `healthcheck` | Probe the running server's `/health/ready` (`--live`: `/health/live`); exit 0 if healthy. Needs only the address (`server.bind` or `--address`), validates nothing else. For container health checks |
 | `migrate` | Apply pending migrations and exit |
 | `prune` | Apply the retention policy (capsules, closed reports, moderation records) once and exit |
-| `token` | Generate a creation token and the hash to configure for it; with `server.public_url` set (`--config` or `CAPSULEBIN__SERVER__PUBLIC_URL`) also an invitation link `<public_url>/#token=<token>` for the create page |
+| `token create\|list\|revoke` | Issue a creation token kept in the database (prints the token and its invitation link `<public_url>/#token=<token>`), list tokens (active and revoked, `--json`), revoke one by id — while the server runs, effective from the next create |
+| `token` | Generate a creation token and the hash to configure for it in `creation.token_hashes`, storing nothing; with `server.public_url` set (`--config` or `CAPSULEBIN__SERVER__PUBLIC_URL`) also an invitation link |
 | `backup --output FILE` | Consistent, compacted snapshot of the live database (owner-only file) |
 | `restore --input FILE` | Verify and migrate a private copy of a backup, then put it in place of the database (server stopped; `--force` keeps the old one aside, `--dry-run` changes nothing) |
 | `reports list\|show\|review\|close` | Work through the abuse report queue |
 | `moderation disable\|delete\|restore\|status` | Block, remove or restore a capsule by id — without decrypting it |
 
-`token` exists because the configured hash is domain-separated: `sha256sum` of the token alone will
-not match it.
+Plain `token` exists because the configured hash is domain-separated: `sha256sum` of the token
+alone will not match it.
 
 ### Backup and restore
 
@@ -317,8 +319,9 @@ replace an existing database unless `--force` is given; even then the old databa
 never deleted. A failure on the way puts everything back: the configured path holds either the old
 or the restored database, never neither. If a restore is killed halfway and the database is
 missing, the server refuses to start rather than create an empty one. `--dry-run` verifies and
-test-migrates a private copy and changes nothing. Details are in the
-[operations guide](docs/operations.md#restore).
+test-migrates a private copy and changes nothing. The restored database keeps the current
+database's paste ids (never used twice) and its creation tokens and revocations, so a restore never
+brings back a revoked token. Details are in the [operations guide](docs/operations.md#restore).
 
 The server creates its database files owner-only whatever the umask, and `serve` and `check` warn
 about database files other local users can access, without changing them.
@@ -371,13 +374,20 @@ Run `capsulebin --config … check` to validate a file before deploying it.
 
 ### Creation tokens
 
-`creation.mode` is `token` by default: creating a capsule needs a token whose hash is listed in
-`creation.token_hashes`. `capsulebin token` generates one; the CLI sends it from `--token-file` or
-`CAPSULEBIN_TOKEN`. The create page knows the mode from the page itself: in `token` mode it asks
-for a token before showing the editor and remembers it in the browser unless "Remember in this
-browser" is unchecked ("Forget" removes it); in `disabled` mode it says that no new capsules are
-accepted. An invitation link `<public_url>/#token=<token>` stores the token in the browser that
-opens it, the token staying in the fragment the browser never sends. See
+`creation.mode` is `token` by default: creating a capsule needs a creation token. The operator
+issues one per person or system with `capsulebin token create --label <who>`, which prints the token
+and an invitation link; `capsulebin token list` shows every token with the day it was last used,
+and `capsulebin token revoke <id>` withdraws one. Tokens are kept in the database as hashes and the
+commands work while the server runs, without a restart
+([ADR-019](docs/adr/ADR-019-creation-tokens-in-the-database.md)). Tokens whose hash is listed in
+`creation.token_hashes` (generated with plain `capsulebin token`) are accepted as well. The CLI
+sends a token from `--token-file` or `CAPSULEBIN_TOKEN`. The create page knows the mode from the
+page itself: in `token` mode it asks for a token before showing the editor and remembers it in the
+browser unless "Remember in this browser" is unchecked ("Forget" removes it); in `disabled` mode it
+says that no new capsules are accepted. An invitation link `<public_url>/#token=<token>` stores
+the token in the browser that opens it, the token staying in the fragment the browser never sends.
+See
+[Creation tokens](docs/operations.md#creation-tokens),
 [Creating capsules in the browser](docs/operations.md#creating-capsules-in-the-browser) and
 [ADR-018](docs/adr/ADR-018-creation-token-in-the-browser.md).
 

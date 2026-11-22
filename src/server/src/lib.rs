@@ -30,6 +30,8 @@ use config::{AbuseConfig, CreationMode, PastesConfig, PurgeConfig, Resolved};
 use domain::{Clock, Verifier};
 use repository::sqlite::SqlitePasteRepository;
 use repository::sqlite::abuse::SqliteAbuseRepository;
+use repository::sqlite::creation_tokens::SqliteCreationTokenRepository;
+use repository::{CreationTokenRepository as _, RepositoryError};
 
 /// Shared state.
 ///
@@ -43,11 +45,17 @@ pub struct AppState {
     pub clock: Arc<dyn Clock>,
     pub pastes_repo: Arc<SqlitePasteRepository>,
     pub abuse_repo: Arc<SqliteAbuseRepository>,
+    /// Creation tokens kept in the database, read on every create in `token`
+    /// mode (no cache: a token issued or revoked by another process applies
+    /// from the next request).
+    pub creation_tokens_repo: Arc<SqliteCreationTokenRepository>,
     pub pool: SqlitePool,
     /// Base URL for `problem+json` type URIs. Comes from configuration, never
     /// from a request header.
     pub public_url: String,
     pub creation_mode: CreationMode,
+    /// The configured `creation.token_hashes`; the database tokens are in
+    /// `creation_tokens_repo`.
     pub creation_tokens: Arc<Vec<Verifier>>,
     pub pastes: PastesConfig,
     /// Held by the request path only for `retrieval_timestamp_granularity`; the
@@ -86,6 +94,7 @@ impl AppState {
             clock,
             pastes_repo: Arc::new(SqlitePasteRepository::new(pool.clone())),
             abuse_repo: Arc::new(SqliteAbuseRepository::new(pool.clone())),
+            creation_tokens_repo: Arc::new(SqliteCreationTokenRepository::new(pool.clone())),
             pool,
             limiter: api::rate_limit::LimiterState::new(resolved.config.rate_limits.clone(), public_url.clone()),
             public_url,
@@ -103,10 +112,38 @@ impl AppState {
         }
     }
 
+    /// The startup warning about creation tokens, if any (see
+    /// [`creation_token_warning`]), with the active database tokens read now.
+    pub async fn creation_token_warning(&self) -> Result<Option<String>, RepositoryError> {
+        let active = self.creation_tokens_repo.active().await?.len();
+        Ok(creation_token_warning(self.creation_mode, self.creation_tokens.len(), active))
+    }
+
     /// Whether the application can be served, used by `/health/ready`: every
     /// shell of every known language.
     pub fn assets_ready(&self) -> bool {
         self.assets.has_shells()
+    }
+}
+
+/// What `serve` logs and `check` prints about creation tokens that cannot work
+/// as configured: `token` mode without any token (configured or active in the
+/// database) accepts no create; active database tokens outside `token` mode
+/// have no effect. Neither is an error: tokens may be issued after the start,
+/// or prepared before switching the mode. Only counts go in, so the text can
+/// hold no token, hash or label.
+pub fn creation_token_warning(mode: CreationMode, configured: usize, active_in_database: usize) -> Option<String> {
+    match mode {
+        CreationMode::Token if configured == 0 && active_in_database == 0 => Some(
+            "creation.mode is \"token\" but no creation token exists (no creation.token_hashes and no active \
+             database token): every create is refused until one is issued with `capsulebin token create`"
+                .to_owned(),
+        ),
+        CreationMode::Public | CreationMode::Disabled if active_in_database > 0 => Some(format!(
+            "{active_in_database} active database creation token(s) have no effect while creation.mode is \"{}\"",
+            mode.as_str()
+        )),
+        _ => None,
     }
 }
 
@@ -177,4 +214,33 @@ pub fn router(state: AppState) -> Router {
         // Opens the span with the method and an empty path. See `api::access_log`.
         .layer(api::access_log::layer())
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_mode_without_any_token_warns() {
+        let warning = creation_token_warning(CreationMode::Token, 0, 0).expect("a warning");
+        assert!(warning.contains("creation.mode"), "{warning}");
+        assert!(warning.contains("no creation token exists"), "{warning}");
+    }
+
+    #[test]
+    fn token_mode_with_a_token_does_not_warn() {
+        assert_eq!(creation_token_warning(CreationMode::Token, 1, 0), None);
+        assert_eq!(creation_token_warning(CreationMode::Token, 0, 1), None);
+        assert_eq!(creation_token_warning(CreationMode::Token, 2, 3), None);
+    }
+
+    #[test]
+    fn database_tokens_outside_token_mode_warn() {
+        for mode in [CreationMode::Public, CreationMode::Disabled] {
+            let warning = creation_token_warning(mode, 0, 2).expect("a warning");
+            assert!(warning.contains("no effect"), "{warning}");
+            assert!(warning.contains(mode.as_str()), "{warning}");
+            assert_eq!(creation_token_warning(mode, 0, 0), None);
+        }
+    }
 }

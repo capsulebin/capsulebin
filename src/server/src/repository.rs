@@ -7,7 +7,7 @@ pub mod sqlite;
 
 use crate::domain::abuse::{ModerationAction, ModerationRecord, NewReport, ReasonCode, Report, ReportStatus, Resolution};
 
-use crate::domain::PasteId;
+use crate::domain::{ActiveCreationToken, CreationToken, Label, PasteId, Verifier};
 
 use crate::domain::{NewPaste, Paste, PurgeOutcome, PurgePolicy};
 
@@ -201,4 +201,40 @@ pub trait AbuseRepository: Send + Sync {
     /// before `cutoff` and audit entries recorded at or before it. Open and
     /// reviewing reports are kept until an operator closes them.
     fn purge_abuse(&self, cutoff: i64) -> impl Future<Output = Result<AbusePurgeOutcome, RepositoryError>> + Send;
+}
+
+/// What [`CreationTokenRepository::revoke`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    Revoked,
+    /// Revoked before; `revoked_at` is left as it was.
+    AlreadyRevoked,
+    /// No token with this id.
+    NotFound,
+}
+
+/// Creation tokens kept in the database.
+///
+/// There is deliberately no lookup by verifier: a query selecting the row whose
+/// verifier equals the presented one would compare in the database's index, not
+/// in constant time. Authorization loads [`Self::active`] and compares every
+/// entry itself (`capability::matching_index`).
+pub trait CreationTokenRepository: Send + Sync {
+    /// Stores a new active token under a fresh ULID and returns its row.
+    fn create(&self, verifier: &Verifier, label: &Label, now: i64) -> impl Future<Output = Result<CreationToken, RepositoryError>> + Send;
+
+    /// Every token, active and revoked, in the order they were created.
+    fn list(&self) -> impl Future<Output = Result<Vec<CreationToken>, RepositoryError>> + Send;
+
+    /// Revokes a token for good. An already revoked one keeps its `revoked_at`.
+    fn revoke(&self, id: &str, now: i64) -> impl Future<Output = Result<RevokeOutcome, RepositoryError>> + Send;
+
+    /// Every token that is not revoked, with its verifier, in creation order.
+    fn active(&self) -> impl Future<Output = Result<Vec<ActiveCreationToken>, RepositoryError>> + Send;
+
+    /// Records that the token was used on the UTC day starting at `day`
+    /// (`domain::utc_day_start`). Writes only if the stored day is missing or
+    /// earlier, in one conditional statement, so parallel creates on the same
+    /// day write at most once. Returns whether a row was written.
+    fn touch_last_use(&self, id: &str, day: i64) -> impl Future<Output = Result<bool, RepositoryError>> + Send;
 }

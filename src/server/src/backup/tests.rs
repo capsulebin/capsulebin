@@ -495,7 +495,7 @@ async fn restore_failure_at_every_step_keeps_the_old_database() {
             (Step::Verify, ErrorKind::Other),
             (Step::Migrate, ErrorKind::Other),
             (Step::Checkpoint, ErrorKind::Other),
-            (Step::CarryIds, ErrorKind::Other),
+            (Step::Carry, ErrorKind::Other),
             (Step::MoveDatabase, ErrorKind::Other),
             (Step::MoveWal, ErrorKind::Other),
             (Step::MoveShm, ErrorKind::Other),
@@ -868,6 +868,7 @@ async fn restore_with_an_unreadable_old_database_warns() {
             outcome.warnings
         );
         assert!(!outcome.warnings[0].contains("not even close"), "file content in the warning");
+        assert!(outcome.warnings[0].contains("creation tokens"), "{data:?}: {:?}", outcome.warnings);
         let previous = outcome.previous.unwrap();
         assert_eq!(previous, data.join("live.db.pre-restore-5000"));
         assert_eq!(contents(&with_sidecars(&previous)), before, "{data:?}: the old database changed");
@@ -990,6 +991,317 @@ async fn restore_stops_when_the_copy_cannot_take_the_carried_ids() {
     // Without the limit the same restore carries the ids over.
     let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
     assert_eq!(outcome.carried_ids, 10_000);
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+}
+
+/// A creation token row: id, verifier (32 times this byte), label, created_at,
+/// last_used_on, revoked_at.
+type TokenRow = (&'static str, u8, &'static str, i64, Option<i64>, Option<i64>);
+
+/// A [`TokenRow`] as read back by [`tokens_in`].
+type StoredToken = (String, u8, String, i64, Option<i64>, Option<i64>);
+
+/// Inserts `rows` into `creation_tokens` of the database at `path`.
+async fn add_tokens(path: &Path, rows: &[TokenRow]) {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path))
+        .await
+        .unwrap();
+    for (id, verifier, label, created_at, last_used_on, revoked_at) in rows {
+        sqlx::query(
+            "INSERT INTO creation_tokens (id, verifier, label, created_at, last_used_on, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(vec![*verifier; 32])
+        .bind(label)
+        .bind(created_at)
+        .bind(last_used_on)
+        .bind(revoked_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+}
+
+/// Every row of `creation_tokens` in the database at `path`, the verifier as
+/// its first byte (the rows of these tests repeat one byte).
+async fn tokens_in(path: &Path) -> BTreeSet<StoredToken> {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path).read_only(true))
+        .await
+        .unwrap();
+    let rows = sqlx::query("SELECT id, verifier, label, created_at, last_used_on, revoked_at FROM creation_tokens")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    rows.iter()
+        .map(|row| {
+            let id: String = row.get("id");
+            let verifier: Vec<u8> = row.get("verifier");
+            assert!(verifier.iter().all(|byte| *byte == verifier[0]), "{id}");
+            (
+                id,
+                verifier[0],
+                row.get("label"),
+                row.get("created_at"),
+                row.get("last_used_on"),
+                row.get("revoked_at"),
+            )
+        })
+        .collect()
+}
+
+fn owned(rows: &[TokenRow]) -> BTreeSet<StoredToken> {
+    rows.iter()
+        .map(|(id, verifier, label, created, used, revoked)| ((*id).to_owned(), *verifier, (*label).to_owned(), *created, *used, *revoked))
+        .collect()
+}
+
+const DAY: i64 = 86_400;
+
+/// AC16: creation tokens of the replaced database are carried into the
+/// restored one, matched by verifier: a token the backup lacks is inserted
+/// with all its fields (active and revoked), a revocation the backup lacks is
+/// applied with the replaced database's `revoked_at`, `last_used_on` becomes
+/// the later of both in either direction, and a token only in the backup, or
+/// revoked only in the backup, stays as it is. The dry run counts the same and
+/// changes nothing.
+#[tokio::test]
+async fn restore_carries_creation_tokens_matched_by_verifier() {
+    let dir = dir("restore-tokens");
+    let version = db::expected_version();
+    let backup = dir.join("backup.db");
+    database_at(&backup, version, &[]).await;
+    add_tokens(
+        &backup,
+        &[
+            ("same", 1, "unchanged", 10, Some(DAY), None),
+            ("revoked-later", 2, "revoked after the backup", 20, None, None),
+            ("used-later-old", 3, "", 30, None, None),
+            ("used-later-backup", 4, "", 40, Some(5 * DAY), None),
+            ("backup-only", 5, "only in the backup", 50, Some(DAY), None),
+            ("revoked-in-backup", 6, "", 60, None, Some(600)),
+        ],
+    )
+    .await;
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    database_at(&target.path, version, &[]).await;
+    add_tokens(
+        &target.path,
+        &[
+            ("same", 1, "unchanged", 10, Some(DAY), None),
+            // Another id for the same verifier: matched by verifier, so no
+            // second row; the backup's id stays.
+            ("other-id", 2, "revoked after the backup", 20, None, Some(7_000)),
+            ("used-later-old", 3, "", 30, Some(2 * DAY), None),
+            ("used-later-backup", 4, "", 40, Some(DAY), None),
+            ("revoked-in-backup", 6, "", 60, None, None),
+            ("new-active", 7, "issued after the backup", 70, Some(3 * DAY), None),
+            ("new-revoked", 8, "issued and revoked", 80, None, Some(8_000)),
+        ],
+    )
+    .await;
+    let files = with_sidecars(&target.path);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 9_000).await.unwrap();
+    assert_eq!(
+        (dry_run.carried_tokens, dry_run.carried_revocations, dry_run.carried_last_uses),
+        (2, 1, 1)
+    );
+    assert_eq!(dry_run.carried_ids, 0);
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let outcome = restore(&backup, &target, true, 9_000).await.unwrap();
+    assert_eq!(
+        (outcome.carried_tokens, outcome.carried_revocations, outcome.carried_last_uses),
+        (2, 1, 1)
+    );
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+    assert_eq!(
+        tokens_in(&target.path).await,
+        owned(&[
+            ("same", 1, "unchanged", 10, Some(DAY), None),
+            ("revoked-later", 2, "revoked after the backup", 20, None, Some(7_000)),
+            ("used-later-old", 3, "", 30, Some(2 * DAY), None),
+            ("used-later-backup", 4, "", 40, Some(5 * DAY), None),
+            ("backup-only", 5, "only in the backup", 50, Some(DAY), None),
+            ("revoked-in-backup", 6, "", 60, None, Some(600)),
+            ("new-active", 7, "issued after the backup", 70, Some(3 * DAY), None),
+            ("new-revoked", 8, "issued and revoked", 80, None, Some(8_000)),
+        ])
+    );
+}
+
+/// AC16: a replaced database at schema version 4 has no `creation_tokens`:
+/// no token is carried, no warning, its ids still are, and the backup's tokens
+/// stay as they are.
+#[tokio::test]
+async fn restore_over_a_database_without_creation_tokens_carries_none() {
+    let dir = dir("restore-tokens-v4");
+    let backup = dir.join("backup.db");
+    database_at(&backup, db::expected_version(), &[]).await;
+    let rows: [TokenRow; 1] = [("backup-token", 1, "kept", 10, None, None)];
+    add_tokens(&backup, &rows).await;
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    database_at(&target.path, 4, &["only-in-version-4"]).await;
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(
+        (dry_run.carried_ids, dry_run.carried_tokens, dry_run.carried_revocations),
+        (1, 0, 0)
+    );
+    assert!(dry_run.warnings.is_empty(), "{:?}", dry_run.warnings);
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(
+        (
+            outcome.carried_ids,
+            outcome.carried_tokens,
+            outcome.carried_revocations,
+            outcome.carried_last_uses
+        ),
+        (1, 0, 0, 0)
+    );
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(tokens_in(&target.path).await, owned(&rows));
+}
+
+/// AC16: when the replaced database's `creation_tokens` cannot be read (its
+/// pages are corrupt, the ids are readable), the probe fails: the restore
+/// warns once, carries neither ids nor tokens, and installs the backup.
+#[tokio::test]
+async fn restore_with_unreadable_creation_tokens_carries_neither_ids_nor_tokens() {
+    let dir = dir("restore-tokens-unreadable");
+    let version = db::expected_version();
+    let backup = dir.join("backup.db");
+    database_at(&backup, version, &[]).await;
+    let rows: [TokenRow; 1] = [("backup-token", 1, "kept", 10, None, None)];
+    add_tokens(&backup, &rows).await;
+
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    database_at(&target.path, version, &["lost-id"]).await;
+    add_tokens(&target.path, &[("lost-token", 2, "", 20, None, None)]).await;
+    let root: i64 = {
+        let pool = SqlitePoolOptions::new()
+            .connect_with(SqliteConnectOptions::new().filename(&target.path).read_only(true))
+            .await
+            .unwrap();
+        let root = sqlx::query_scalar("SELECT rootpage FROM sqlite_master WHERE name = 'creation_tokens'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        root
+    };
+    let mut bytes = std::fs::read(&target.path).unwrap();
+    let page_size = usize::from(u16::from_be_bytes([bytes[16], bytes[17]]));
+    let start = (usize::try_from(root).unwrap() - 1) * page_size;
+    bytes[start..start + page_size].fill(0xFF);
+    std::fs::write(&target.path, bytes).unwrap();
+    let files = with_sidecars(&target.path);
+    let before = contents(&files);
+
+    let dry_run = restore_dry_run(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!((dry_run.carried_ids, dry_run.carried_tokens), (0, 0));
+    assert_eq!(dry_run.warnings.len(), 1, "{:?}", dry_run.warnings);
+
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(
+        (
+            outcome.carried_ids,
+            outcome.carried_tokens,
+            outcome.carried_revocations,
+            outcome.carried_last_uses
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(outcome.warnings, dry_run.warnings);
+    assert!(
+        outcome.warnings[0].contains("ids and creation tokens") && outcome.warnings[0].contains("could not be carried over"),
+        "{:?}",
+        outcome.warnings
+    );
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
+    assert!(ids_in(&target.path, "retired_ids").await.is_empty());
+    assert_eq!(tokens_in(&target.path).await, owned(&rows));
+}
+
+/// AC16: a write failure on the staged copy while the tokens are carried over
+/// stops the restore before the cutover, with the old database, its sidecars
+/// and its directory unchanged. So does a carried token whose id the backup
+/// uses for another verifier (primary key).
+#[tokio::test]
+async fn restore_stops_when_the_copy_cannot_take_the_carried_tokens() {
+    let dir = dir("restore-tokens-full");
+    let version = db::expected_version();
+    let backup = dir.join("backup.db");
+    database_at(&backup, version, &[]).await;
+
+    // 2 000 tokens, none in the backup, and no ids to carry: the scratch
+    // table stays empty, so only the token insert needs new pages.
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    let pool = db::connect(&target).await.unwrap();
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+         INSERT INTO creation_tokens (id, verifier, label, created_at)
+         SELECT 'token-' || i, CAST(printf('%032d', i) AS BLOB), 'label ' || i, i FROM n",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let copy = dir.join("copy.db");
+    copy_open_database(&target.path, &copy);
+    pool.close().await;
+    for (from, to) in with_sidecars(&copy).iter().zip(with_sidecars(&target.path)) {
+        std::fs::rename(from, to).unwrap();
+    }
+    let files = with_sidecars(&target.path);
+    assert!(contents(&files).iter().all(Option::is_some), "no sidecars");
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let is_full = |error: &BackupError| matches!(error, BackupError::Database(sqlx::Error::Database(source)) if source.code().as_deref() == Some("13"));
+    let limit = limit_carry_pages();
+    let error = restore(&backup, &target, true, 5_000).await.unwrap_err();
+    assert!(is_full(&error), "{error:?}");
+    assert_eq!(contents(&files), before, "the restore changed the old database");
+    assert_eq!(entries(&data), listed, "the restore left an entry");
+    drop(limit);
+
+    // The same id for another verifier in the backup fails on the primary key.
+    let clash = dir.join("clash.db");
+    database_at(&clash, version, &[]).await;
+    add_tokens(&clash, &[("token-1", 0xEE, "", 1, None, None)]).await;
+    let error = restore(&clash, &target, true, 5_000).await.unwrap_err();
+    assert!(
+        matches!(&error, BackupError::Database(sqlx::Error::Database(source)) if source.is_unique_violation()),
+        "{error:?}"
+    );
+    assert_eq!(contents(&files), before, "the clash changed the old database");
+    assert_eq!(entries(&data), listed, "the clash left an entry");
+
+    // Without the limit the same restore carries the tokens over.
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.carried_tokens, 2_000);
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
 }

@@ -5,6 +5,8 @@
 //! older schema prints the backup's contents and the schema version the
 //! staged copy reached, exits 0 and changes nothing (AC12); a successful
 //! `restore --force` keeps the old database with its sidecars aside (AC9).
+//! Package 20261122-creation-tokens-db (AC16): creation tokens issued and
+//! revoked after the backup survive `restore --force`.
 
 mod support;
 
@@ -297,5 +299,103 @@ async fn restore_reports_and_retires_the_ids_missing_from_the_backup() {
     assert_eq!(
         ids_in(&database, "retired_ids").await,
         BTreeSet::from(["live-b".to_owned(), "retired-c".to_owned()])
+    );
+}
+
+/// Runs `sql` once per entry of `rows`, binding its values, on the database at `path`.
+async fn execute(path: &Path, sql: &str, rows: &[&[&str]]) {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(path))
+        .await
+        .unwrap();
+    for row in rows {
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()));
+        for value in *row {
+            query = query.bind(*value);
+        }
+        query.execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+}
+
+/// Package 20261122-creation-tokens-db, AC16 through the binary: token A is in
+/// the backup and revoked after it, token B is issued after it. The dry run
+/// prints that one token and one revocation would be carried over and changes
+/// nothing; `restore --force` prints the same, and afterwards A is revoked and
+/// B is present with its id and label.
+#[tokio::test]
+async fn restore_keeps_creation_tokens_and_revocations_made_after_the_backup() {
+    let (config, data, database) = setup("restore-acc-tokens");
+    let backup = data.parent().unwrap().join("backup.db");
+
+    let migrated = run(&config, &["migrate"]);
+    assert!(migrated.status.success(), "{}", describe(&migrated));
+    let insert = "INSERT INTO creation_tokens (id, verifier, label, created_at) VALUES (?1, CAST(?2 AS BLOB), ?3, 100)";
+    execute(&database, insert, &[&["token-a", "verifier-a-0123456789abcdef0123", "alice"]]).await;
+    let output = run(&config, &["backup", "--output", backup.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", describe(&output));
+
+    execute(&database, insert, &[&["token-b", "verifier-b-0123456789abcdef0123", "bob"]]).await;
+    execute(
+        &database,
+        "UPDATE creation_tokens SET revoked_at = 200 WHERE id = ?1",
+        &[&["token-a"]],
+    )
+    .await;
+    let files = with_sidecars(&database);
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--dry-run", "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "1 creation token(s), 1 revocation(s) and 0 last-use date(s) of the current database not in the backup \
+             would be carried over"
+        ),
+        "counts missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(contents(&files), before, "the dry run changed the database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let output = run(&config, &["restore", "--input", backup.to_str().unwrap(), "--force"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "1 creation token(s), 1 revocation(s) and 0 last-use date(s) of the previous database not in the backup \
+             were carried over"
+        ),
+        "counts missing: {}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning:"),
+        "{}",
+        describe(&output)
+    );
+
+    let pool = SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(&database).read_only(true))
+        .await
+        .unwrap();
+    let tokens: Vec<(String, String, Option<i64>)> = sqlx::query_as("SELECT id, label, revoked_at FROM creation_tokens ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    assert_eq!(
+        tokens,
+        [
+            ("token-a".to_owned(), "alice".to_owned(), Some(200)),
+            ("token-b".to_owned(), "bob".to_owned(), None)
+        ]
     );
 }

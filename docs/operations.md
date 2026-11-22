@@ -19,18 +19,7 @@ tool for users and automation.
 
 ## First setup
 
-1. Generate a creation token and configure its hash (the token itself is never configured):
-
-   ```sh
-   capsulebin token
-   ```
-
-   Hand the token to the people or systems that may create capsules. Several hashes may be
-   configured; remove one to revoke that token. With `server.public_url` set (by `--config` or
-   `CAPSULEBIN__SERVER__PUBLIC_URL`), the output ends with an invitation link — see
-   [Creating capsules in the browser](#creating-capsules-in-the-browser).
-
-2. Write the configuration. The minimum for production:
+1. Write the configuration. The minimum for production:
 
    ```toml
    [server]
@@ -42,8 +31,7 @@ tool for users and automation.
    path = "/var/lib/capsulebin/capsulebin.db"
 
    [creation]
-   mode = "token"
-   token_hashes = ["sha256:…"]
+   mode = "token"                         # the default; tokens are issued in step 2
 
    [abuse]
    contact = "abuse@example.org"
@@ -51,6 +39,19 @@ tool for users and automation.
    [legal.operator]                       # the imprint; see "Legal pages"
    file = "/etc/capsulebin/legal/operator.md"
    ```
+
+2. Issue a creation token for each person or system that may create capsules (see
+   [Creation tokens](#creation-tokens)):
+
+   ```sh
+   capsulebin --config /etc/capsulebin.toml token create --label "alice"
+   ```
+
+   It prints the token and an invitation link; hand out one of them. Tokens can be issued and
+   revoked at any time later, while the server runs. Without any token the instance starts but
+   refuses every create, and `check` and `serve` warn about it. Run the command as the user the
+   server runs as (e.g. `sudo -u capsulebin …`): it opens the database, and creates it owner-only
+   if it is missing.
 
 3. Verify before opening a port, then start:
 
@@ -82,7 +83,68 @@ The CLI takes the token from `CAPSULEBIN_TOKEN` or `--token-file`.
 the fragment from the address bar first. The token stays in the fragment, which browsers never
 send, so it reaches neither CapsuleBin nor the reverse proxy's log. The link works under every
 language prefix (`/de/#token=…`); on a `public` or `disabled` instance it is removed and nothing
-is stored. `capsulebin token` prints it when `server.public_url` is known:
+is stored. `capsulebin token create` always prints it (see [Creation tokens](#creation-tokens)),
+plain `capsulebin token` when `server.public_url` is known.
+
+Treat an invitation link like the token itself: whoever has it, or the browser profile that stored
+it, can create capsules until the token is revoked (or its hash removed from the configuration).
+
+### Creation tokens
+
+In `token` mode a create needs a bearer token that is either an active token kept in the database
+or one whose hash is listed in `creation.token_hashes`
+([ADR-019](adr/ADR-019-creation-tokens-in-the-database.md)). Database tokens are the normal case:
+they are managed with the operator CLI while the server runs, and every change applies from the
+next create request, without a restart.
+
+```sh
+capsulebin --config /etc/capsulebin.toml token create --label "alice"   # issue
+capsulebin --config /etc/capsulebin.toml token list                     # all, active and revoked
+capsulebin --config /etc/capsulebin.toml token revoke <id>              # final
+```
+
+These commands validate the configuration like `serve` (so `server.public_url` must be set) and
+open the database; give them the server's configuration.
+
+- **`token create [--label <text>]`** stores only the token's domain-separated hash, the label,
+  and the creation time, and prints:
+
+  ```text
+  token (store this in your client, it is not recoverable):
+    <token>
+  id: 01KAPS…
+  label: alice
+  invitation link (opens the create page and stores the token in the browser):
+    https://paste.example.org/#token=<token>
+  ```
+
+  The token cannot be shown again. A label is optional, at most 64 characters and without control
+  characters — a note for `token list`, e.g. whom the token is for. On a `public` or `disabled`
+  instance the token is still created, with a `note:` on stderr that it has no effect until the
+  mode is `token`.
+- **`token list`** starts with `active tokens: N (configured hashes: M)`, then one line per token,
+  oldest first: id, created, last used (the day only, or `never`), revoked (or `-`) and label.
+  `--json` prints a plain array of objects with `id`, `label`, `created_at`, `last_used_on` and
+  `revoked_at` (Unix seconds or `null`). Neither shows a token or its hash.
+- **`token revoke <id>`** takes the id from `token list`. The next create with that token gets
+  `401`; a browser that stored it forgets it and asks for another one. Revoking is final — there
+  is no command to undo it — and revoked tokens stay listed. Revoking an already revoked token
+  says so and exits `0`; an unknown id exits `1`.
+
+Per token the server records the day it last authorized a create (`last used`), nothing more: no
+capsule is linked to the token that created it. Revoked entries are kept, so that a
+[restore](#restore) can never bring a revoked token back.
+
+`serve` (in its log) and `check` (as `warning: …` on stderr, still `ok:` and exit 0) warn when the
+mode is `token` but no token exists at all (no configured hash, no active database token): the
+server runs, but refuses every create until a token is issued. They also warn when active database
+tokens exist while the mode is `public` or `disabled`, where they have no effect; tokens may be
+prepared before switching the mode.
+
+**Configured hashes.** `creation.token_hashes` keeps working alongside the database, for setups
+configured entirely by file or environment. Plain `capsulebin token` (no subcommand) generates a
+token and its entry; it stores nothing and needs no configuration. Changing the list needs a
+restart; listing hashes is only allowed with `mode = "token"`.
 
 ```text
 token (store this in your client, it is not recoverable):
@@ -98,13 +160,10 @@ invitation link (opens the create page and stores the token in the browser):
 ```
 
 The first lines are unchanged, so scripts that read the token from line 2 and the `sha256:` line
-keep working. `token` validates only `server.public_url`, by the rules `serve` applies; a value
-that breaks one gives a `note:` on stderr naming the reason (never the value) and no link, still
-with exit `0`. A `--config` that cannot be loaded is an error and prints no token. Without
+keep working. Plain `token` validates only `server.public_url`, by the rules `serve` applies; a
+value that breaks one gives a `note:` on stderr naming the reason (never the value) and no link,
+still with exit `0`. A `--config` that cannot be loaded is an error and prints no token. Without
 `--config` and `CAPSULEBIN__SERVER__PUBLIC_URL` the output ends after the hash.
-
-Treat an invitation link like the token itself: whoever has it, or the browser profile that stored
-it, can create capsules until its hash is removed.
 
 ### systemd
 
@@ -162,15 +221,17 @@ environment variables or a mounted configuration file and keeps the database on 
 ```sh
 docker pull ghcr.io/capsulebin/capsulebin:1.0.0   # or: docker build -t capsulebin .
 docker tag ghcr.io/capsulebin/capsulebin:1.0.0 capsulebin
-docker run --rm capsulebin token                  # creation token + hash
-# with -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org also the invitation link
 docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data \
   -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
   -e CAPSULEBIN__SERVER__TRUSTED_PROXIES='["172.16.0.0/12"]' \
-  -e CAPSULEBIN__CREATION__TOKEN_HASHES='["sha256:…"]' \
   -e CAPSULEBIN__ABUSE__CONTACT=abuse@example.org \
   capsulebin
+docker exec capsulebin capsulebin token create --label "alice"   # token + invitation link
 ```
+
+With configured hashes instead of database tokens, generate one with
+`docker run --rm capsulebin token` (with `-e CAPSULEBIN__SERVER__PUBLIC_URL=…` also the invitation
+link) and pass `-e CAPSULEBIN__CREATION__TOKEN_HASHES='["sha256:…"]'`.
 
 - The image sets `CAPSULEBIN__SERVER__BIND=0.0.0.0:8080` and
   `CAPSULEBIN__DATABASE__PATH=/data/capsulebin.db`. A configuration file can be mounted instead and
@@ -191,12 +252,13 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
   so it works for a container configured by a file as well. Podman drops `HEALTHCHECK` from images
   in its default OCI format; build with `podman build --format docker` to keep it.
 - Logs go to stderr without colour codes, so `docker logs` shows plain lines.
-- Operator commands run in the container: `docker exec capsulebin capsulebin reports list`.
+- Operator commands run in the container, which has the server's configuration:
+  `docker exec capsulebin capsulebin reports list`, `docker exec capsulebin capsulebin token list`.
   Backups go to the volume, e.g. `docker exec capsulebin capsulebin backup --output
   /data/backup-2026-11-18.db`; copy them off the host from there.
 - Restore with the container stopped, from a one-off container on the same volume. `restore`
   validates the configuration like `serve`, so give it the same settings — the server's environment
-  variables (at least `CAPSULEBIN__SERVER__PUBLIC_URL` and, in `token` mode,
+  variables (at least `CAPSULEBIN__SERVER__PUBLIC_URL` and, if set,
   `CAPSULEBIN__CREATION__TOKEN_HASHES`) and the same mounted legal and branding files, or the
   mounted file with `--config` (see [Restore](#restore)):
 
@@ -204,7 +266,6 @@ docker run -d --name capsulebin -p 127.0.0.1:8080:8080 -v capsulebin-data:/data 
   docker stop capsulebin
   docker run --rm -v capsulebin-data:/data \
     -e CAPSULEBIN__SERVER__PUBLIC_URL=https://paste.example.org \
-    -e CAPSULEBIN__CREATION__TOKEN_HASHES='["sha256:…"]' \
     capsulebin restore --input /data/backup-2026-11-18.db --force
   # with a configuration file:
   # docker run --rm -v capsulebin-data:/data -v ./capsulebin.toml:/etc/capsulebin/capsulebin.toml:ro \
@@ -274,7 +335,7 @@ client share the proxy's bucket.
 | Setting | Recommendation |
 | --- | --- |
 | `server.public_url` | The address users reach, without a trailing slash (refused at startup). It must be a valid http(s) URL; text that does not parse as one is refused at startup. User information (`https://user:pass@paste.example.org`, also only a user name or only a password, also percent-encoded) is refused at startup: it would reach every share link and every error's type URI. So is any whitespace or control character anywhere in the value, including a leading or trailing space or newline: the URL parser would silently drop some of them, while the value as written is what the server puts in front of every error's type URI. Use a host of its own with the instance at `/` (`https://paste.example.org`): the web interface loads `/assets/…`, calls `/api/…` and creates links directly under the origin, so it does not work below a path. A query or fragment, also an empty one (`https://example.org/team?`, `…#`), is refused at startup: paths are appended to the URL as text. Its path must not end in an interface language code (`https://example.org/team/de` is refused at startup, as is a path that only ends in one once dot segments are resolved, `…/team/de/.`): a link below it could not be told apart from the `/de/` language prefix. |
-| `creation.mode` | `token` (default). `public` only behind another access control. |
+| `creation.mode` | `token` (default), with tokens issued by `capsulebin token create` (see [Creation tokens](#creation-tokens)). `public` only behind another access control. |
 | `pastes.default_expiry` / `maximum_expiry` / `allow_permanent` | Short defaults keep the instance small; permanent capsules are off by default. |
 | `rate_limits.*` | All off by default except `invalid_capability_per_paste` (wrong passwords per capsule, 10/min burst 10), which does not depend on `trusted_proxies`. Once `trusted_proxies` is right, a reasonable start: `create` 5/min burst 2, `bytes_per_day = "100MiB"`, `max_concurrent = 2`; `descriptor` 60/min burst 10; `retrieve` 30/min burst 5; `delete` 10/min burst 3; `report` 5/hour burst 2; `invalid_capability` 10/min burst 10. |
 | `purge.*` | Leave enabled. Never-retrieved capsules go after 30 days, inactive ones after 90. |
@@ -493,17 +554,27 @@ The server must be stopped. `restore` never opens the input file with SQLite and
    retired id, that the backup does not hold as a capsule; then it checkpoints the copy again.
    Paste ids are never used twice: a capsule created after the backup still has its links in
    circulation, and freeing its id would let a link holder put different content behind them.
+   In the same step it carries the current database's [creation tokens](#creation-tokens) into
+   the copy, matched by their hash: a token the backup lacks is added (with its id, label, dates
+   and revocation), a token revoked in the current database stays revoked even if the backup holds
+   it active, and the later day of last use is kept. A restore therefore never brings back a
+   revoked token and never loses one issued after the backup; tokens only in the backup stay as
+   they are.
 5. Only then, with `--force`, the current database and its `-wal`/`-shm` move to
    `<file>.pre-restore-<timestamp>` (`-wal`, `-shm`), and the copy is renamed into place.
 
-`restore` prints how many ids of the previous database it retired. If the current database cannot
-be read (it is corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would
-create), the restore still installs the backup and prints
-`warning: the ids of the replaced database could not be carried over (…)` on stderr, with exit code
-0: those ids can then be used again. Only a failure to attach the current database or to read it in
-a first read-only probe gives this warning. A failure while writing the ids into the copy (the disk
-full, for example), or a read failure that shows up only then, stops the restore before the cutover
-like any other step.
+`restore` prints how many ids of the previous database it retired, and how many creation tokens,
+revocations and last-use days it carried over. If the current database cannot be read (it is
+corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would create), the restore
+still installs the backup and prints
+`warning: the ids and creation tokens of the replaced database could not be carried over (…)` on
+stderr, with exit code 0: those ids can then be used again, its tokens the backup lacks are lost,
+and tokens it revoked are active again if the backup holds them unrevoked — check `token list` and
+revoke them again. Only a failure to attach the current database or to read it in a first
+read-only probe gives this warning. A current database from before creation tokens existed simply
+has none to carry. A failure while writing the ids or tokens into the copy (the disk full, for
+example), or a read failure that shows up only then, stops the restore before the cutover like any
+other step.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored
@@ -511,7 +582,8 @@ one, never neither. If moving a file back fails as well, the error lists what to
 Delete `<file>.pre-restore-<timestamp>` once the restored instance is confirmed working.
 
 `--dry-run` runs steps 1 to 4 on a private copy, prints the backup's contents, the schema version
-the migration reached and how many ids would be retired (with the same warning if the current
+the migration reached, how many ids would be retired and how many creation tokens, revocations
+and last-use days would be carried over (with the same warning if the current
 database cannot be read), then removes the copy; nothing else is created or changed. Without
 `--force` it also says when the restore would need `--force`.
 
@@ -559,10 +631,17 @@ or already purged)". The table grows by about 40 bytes per purged capsule.
 
 ### Rotating creation tokens
 
-Generate a new token with `capsulebin token`, add its hash, hand it out, then remove the old hash
-and restart. Existing capsules are unaffected — the token only authorizes creation. A browser
-that stored the old token gets `401` on its next create; the page forgets the token and asks for
-the new one (or open a new invitation link there).
+For a database token: issue a new one with `capsulebin token create`, hand it out (or its
+invitation link), then `capsulebin token revoke <old id>`. No restart is needed; both take effect
+from the next create request, also while the server runs. `token list` shows from `last used`
+whether a token is still in use.
+
+For a configured hash: generate a new token with `capsulebin token`, add its hash, hand it out,
+then remove the old hash and restart — or move to a database token and remove the hash.
+
+Existing capsules are unaffected — the token only authorizes creation. A browser that stored the
+old token gets `401` on its next create; the page forgets the token and asks for the new one (or
+open a new invitation link there).
 
 ## Abuse handling runbook
 
@@ -611,10 +690,10 @@ capsulebin reports close <report-id> --resolution action_taken|no_action|duplica
 
 | Situation | Action |
 | --- | --- |
-| A creation token or invitation link leaked | Remove its hash, restart. Consider `creation.mode = "disabled"` while investigating — existing capsules stay readable. |
+| A creation token or invitation link leaked | `capsulebin token revoke <id>` (effective at once, no restart); for a configured hash, remove it and restart. Consider `creation.mode = "disabled"` while investigating — existing capsules stay readable. |
 | Flood of uploads | Enable or tighten `rate_limits.create` (rate, `bytes_per_day`, `max_concurrent`); `creation.mode = "disabled"` stops all creation. |
 | Flood of reports | The ceilings keep the queue bounded; `reports list` shows how full it is. Enable `rate_limits.report` (e.g. 5/hour burst 2), close junk as `invalid`; `abuse.enabled = false` stops reports while moderation keeps working. |
-| Database or backup stolen | Content stays protected without the links. Reports in it contain contact data — treat it as a personal-data breach. Rotate creation tokens. |
+| Database or backup stolen | Content stays protected without the links. Reports in it contain contact data, and creation token labels may name people — treat it as a personal-data breach. Creation tokens are stored only as hashes; rotate them anyway. |
 | Server compromised | Assume served JavaScript may have been modified: web users of that period may have exposed keys. Rebuild from a trusted binary, rotate tokens, inform users. CLI users were not exposed through served code. |
 | Disk full | SQLite refuses writes; reads continue. Free space, run `prune`, check `pastes.max_plaintext_size` and the byte quota. |
 | `/health/ready` answers `503` with `database: unavailable`, the log says `schema is at version … but this build expects …` | The binary and the database disagree. Run `check` with the matching binary; never edit `_sqlx_migrations` by hand. |

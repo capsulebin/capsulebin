@@ -305,6 +305,10 @@ fn assert_payload_too_large(answer: &Answer, what: &str) {
 #[tokio::test]
 async fn an_unauthorized_create_never_reads_the_body() {
     let token_mode = harness_with_mode("unread-token", CreationMode::Token).await;
+    // Database tokens present: an active one and a revoked one.
+    token_mode.issue_token(DB_TOKEN, "alice").await;
+    let revoked = token_mode.issue_token(REVOKED_TOKEN, "bob").await;
+    token_mode.revoke_token(&revoked).await;
     let disabled = harness_with_mode("unread-disabled", CreationMode::Disabled).await;
     let body = create_body(&id(30)).to_string();
 
@@ -312,6 +316,13 @@ async fn an_unauthorized_create_never_reads_the_body() {
         let refusals = [
             ("no token", &token_mode, None, StatusCode::UNAUTHORIZED, "unauthorized"),
             ("wrong token", &token_mode, Some("wrong"), StatusCode::UNAUTHORIZED, "unauthorized"),
+            (
+                "revoked database token",
+                &token_mode,
+                Some(REVOKED_TOKEN),
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+            ),
             ("disabled", &disabled, Some(TOKEN), StatusCode::FORBIDDEN, "creation_disabled"),
         ];
         for (what, h, token, status, code) in refusals {
@@ -336,6 +347,140 @@ async fn an_unauthorized_create_never_reads_the_body() {
         assert!(polled, "{framing:?}: the body was not read");
         assert_eq!(answer.status, StatusCode::CREATED, "{framing:?}: {}", answer.text());
     }
+}
+
+/// A creation token kept in the database, and one revoked there.
+const DB_TOKEN: &str = "db-creation-token";
+const REVOKED_TOKEN: &str = "revoked-creation-token";
+
+/// A database token and a configured hash are both accepted on one instance;
+/// a revoked database token, an unknown one and none at all are refused alike,
+/// so the answer does not tell a revoked token from one that never existed.
+#[tokio::test]
+async fn database_and_configured_tokens_are_accepted_alike() {
+    let h = harness_with_mode("db-tokens", CreationMode::Token).await;
+    h.issue_token(DB_TOKEN, "alice").await;
+    let revoked = h.issue_token(REVOKED_TOKEN, "bob").await;
+    h.revoke_token(&revoked).await;
+
+    for (byte, token) in [(40, DB_TOKEN), (41, TOKEN)] {
+        let answer = h.post_with_token("/api/v1/pastes", create_body(&id(byte)), Some(token)).await;
+        assert_eq!(answer.status, StatusCode::CREATED, "{token}: {}", answer.text());
+    }
+
+    let mut refusals = Vec::new();
+    for token in [Some(REVOKED_TOKEN), Some("unknown-creation-token"), None] {
+        let answer = h.post_with_token("/api/v1/pastes", create_body(&id(42)), token).await;
+        assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{token:?}: {}", answer.text());
+        assert_eq!(answer.code(), "unauthorized", "{token:?}");
+        refusals.push((token, answer));
+    }
+    let (_, first) = &refusals[0];
+    for (token, answer) in &refusals[1..] {
+        assert_eq!(stable_headers(answer), stable_headers(first), "{token:?}");
+        assert_eq!(without_request_id(answer), without_request_id(first), "{token:?}");
+    }
+}
+
+/// The database tokens are read on every create: a token issued after the
+/// server state was built works on the next request, and stops working on the
+/// request after its revocation, without a restart.
+#[tokio::test]
+async fn database_tokens_apply_from_the_next_create() {
+    let h = harness_with_mode("db-tokens-live", CreationMode::Token).await;
+    let before = h.post_with_token("/api/v1/pastes", create_body(&id(43)), Some(DB_TOKEN)).await;
+    assert_eq!(before.status, StatusCode::UNAUTHORIZED);
+
+    let issued = h.issue_token(DB_TOKEN, "").await;
+    let accepted = h.post_with_token("/api/v1/pastes", create_body(&id(43)), Some(DB_TOKEN)).await;
+    assert_eq!(accepted.status, StatusCode::CREATED, "{}", accepted.text());
+
+    h.revoke_token(&issued).await;
+    let refused = h.post_with_token("/api/v1/pastes", create_body(&id(44)), Some(DB_TOKEN)).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refused.code(), "unauthorized");
+}
+
+/// A failed read of the database tokens is a server error, not a refused token
+/// (a `401` would make the web client forget a token that may be valid), and
+/// is decided before the body is read - for a configured token too, which is
+/// not checked on its own as a fallback.
+#[tokio::test]
+async fn an_unreadable_token_table_is_an_internal_error() {
+    let h = harness_with_mode("db-tokens-unreadable", CreationMode::Token).await;
+    sqlx::query("DROP TABLE creation_tokens").execute(&h.pool).await.unwrap();
+    let body = create_body(&id(45)).to_string();
+
+    for token in [Some(TOKEN), Some(DB_TOKEN), None] {
+        for framing in [Framing::Declared, Framing::Streamed] {
+            let (polled, answer) = h.post_expecting_continue("/api/v1/pastes", body.as_bytes(), framing, token).await;
+            assert!(!polled, "{token:?}, {framing:?}: the body was polled");
+            assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR, "{token:?}, {framing:?}");
+            assert_eq!(answer.code(), "internal_error", "{token:?}, {framing:?}");
+        }
+    }
+}
+
+/// Counts the rows written to `creation_tokens` from now on, in a table of
+/// the test database (`token_writes`, read by [`token_writes`]).
+async fn count_token_writes(h: &Harness) {
+    sqlx::raw_sql(
+        "CREATE TABLE token_writes (n INTEGER NOT NULL);
+         INSERT INTO token_writes VALUES (0);
+         CREATE TRIGGER count_token_writes AFTER UPDATE ON creation_tokens
+         BEGIN UPDATE token_writes SET n = n + 1; END;",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+}
+
+async fn token_writes(h: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT n FROM token_writes").fetch_one(&h.pool).await.unwrap()
+}
+
+/// `last_used_on` is the start of the UTC day of the last authorized create,
+/// written at most once per day; refused tokens and configured hashes never
+/// write it.
+#[tokio::test]
+async fn the_day_of_last_use_is_written_once_per_day() {
+    const DAY: i64 = 86_400;
+    let h = harness_with_mode("db-tokens-last-use", CreationMode::Token).await;
+    let used = h.issue_token(DB_TOKEN, "alice").await;
+    let revoked = h.issue_token(REVOKED_TOKEN, "bob").await;
+    h.revoke_token(&revoked).await;
+    count_token_writes(&h).await;
+    let today = START - START.rem_euclid(DAY);
+
+    // Refused tokens and the configured hash write nothing.
+    for token in [Some(REVOKED_TOKEN), Some("unknown-creation-token"), None] {
+        let answer = h.post_with_token("/api/v1/pastes", create_body(&id(46)), token).await;
+        assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{token:?}");
+    }
+    let configured = h.post_with_token("/api/v1/pastes", create_body(&id(47)), Some(TOKEN)).await;
+    assert_eq!(configured.status, StatusCode::CREATED);
+    assert_eq!(token_writes(&h).await, 0);
+    assert_eq!(h.token_last_used_on(&used).await, None);
+    assert_eq!(h.token_last_used_on(&revoked).await, None);
+
+    // The first use of the day writes 00:00 UTC, a second one writes nothing.
+    let first = h.post_with_token("/api/v1/pastes", create_body(&id(48)), Some(DB_TOKEN)).await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    assert_eq!(h.token_last_used_on(&used).await, Some(today));
+    assert_eq!(token_writes(&h).await, 1);
+
+    h.clock.set(today + DAY - 1);
+    let again = h.post_with_token("/api/v1/pastes", create_body(&id(49)), Some(DB_TOKEN)).await;
+    assert_eq!(again.status, StatusCode::CREATED);
+    assert_eq!(token_writes(&h).await, 1);
+
+    // The next day updates it.
+    h.clock.set(today + DAY);
+    let next_day = h.post_with_token("/api/v1/pastes", create_body(&id(50)), Some(DB_TOKEN)).await;
+    assert_eq!(next_day.status, StatusCode::CREATED);
+    assert_eq!(h.token_last_used_on(&used).await, Some(today + DAY));
+    assert_eq!(token_writes(&h).await, 2);
+    assert_eq!(h.token_last_used_on(&revoked).await, None);
 }
 
 /// Without `Content-Length` the limit layer cannot refuse the request up front;
@@ -801,7 +946,7 @@ async fn health_ready_reports_the_schema_version() {
     let json = answer.json();
     assert_eq!(json["database"], "ok");
     assert_eq!(json["assets"], "ok");
-    assert_eq!(json["schema_version"], 4);
+    assert_eq!(json["schema_version"], 5);
 }
 
 /// The acceptance criterion for the logging rules: a full request cycle must not
