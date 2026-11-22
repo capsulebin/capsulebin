@@ -434,10 +434,15 @@ See [branding.md](branding.md) for the rules in detail.
   buckets (password attempts); this is fixed, not a setting. A table at its ceiling logs a warning
   at most once a minute (`rate limiter table full`, with `table` and `ceiling`, never an address or
   id). For the client table it means a flood of addresses: each new address pushes out the least
-  recently used one, which then starts with a fresh budget. For the capsule table it means wrong
-  passwords on capsules it does not yet track get `429` until budgets refill (about a minute at the
-  default; each `429` says `Retry-After: 6`, the refill time of one attempt, so clients retry sooner
-  than a slot may free up); correct passwords still open.
+  recently used one, which then starts with a fresh budget. For the capsule table it means every
+  retrieve that proves the link on a capsule the table does not yet track, with a correct password
+  or a wrong one (or none: the server cannot tell), shares one overflow budget of
+  `invalid_capability_per_paste` (10 a minute, burst 10 at the default; none when that limit is
+  off) until buckets refill (about a minute at the default). Once it is used up, such retrieves get
+  `429` with `Retry-After: 6`, the refill time of one attempt, so first retrieves of untracked
+  capsules can be throttled while the table stays full; capsules already tracked keep their own
+  budget. Correct and wrong passwords are answered alike, so a full table never tells which
+  password is right.
 - Configuration errors go to stderr as well. Those about `server.public_url` name the key and the
   reason (e.g. `must not contain user information`,
   `must not contain whitespace or control characters`) without repeating the value, and a file
@@ -495,7 +500,10 @@ The server must be stopped. `restore` never opens the input file with SQLite and
 be read (it is corrupt, or it has a non-empty `-wal` without its `-shm`, which reading would
 create), the restore still installs the backup and prints
 `warning: the ids of the replaced database could not be carried over (…)` on stderr, with exit code
-0: those ids can then be used again.
+0: those ids can then be used again. Only a failure to attach the current database or to read it in
+a first read-only probe gives this warning. A failure while writing the ids into the copy (the disk
+full, for example), or a read failure that shows up only then, stops the restore before the cutover
+like any other step.
 
 A failure at any step undoes the moves made so far and removes the private directory: the
 configured path holds either the old database, unchanged with its `-wal`/`-shm`, or the restored

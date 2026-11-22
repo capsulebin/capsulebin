@@ -52,7 +52,9 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Unknown, expired, deleted, moderated and wrong-capability requests answer identically.
 - Burn after first retrieval, enforced in one database transaction.
 - Idempotent create: an identical re-submission returns the original `201`
-  ([ADR-011](docs/adr/ADR-011-idempotent-create.md)).
+  ([ADR-011](docs/adr/ADR-011-idempotent-create.md)). A colliding create is decided from the stored
+  capsule's metadata; its ciphertext is read only when the request can still be an identical
+  replay, so a small request with a taken id cannot make the server load a large payload.
 - Creation modes `token`, `public` and `disabled` (read-only), defaulting to `token`.
 - Retention rules (expired, never retrieved, inactive) with a scheduled daily purge and `prune`.
 - A paste id is never used twice: a purged capsule leaves only its id behind, and creating a
@@ -64,8 +66,11 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
   client addresses; a per-paste limit on password attempts (on by default) that only callers
   holding the link can trigger. The limiter's memory is capped (100 000 client and 100 000
   per-capsule buckets) with bounded work per request; a flood of addresses evicts the least recently
-  used client, never a password budget. A `server.trusted_proxies` entry without a prefix length
-  (`"127.0.0.1"`) is a startup error, not silently ignored.
+  used client, never a password budget. While the per-capsule table is full, capsules it does not
+  track share one overflow budget with the per-capsule limit, charged for correct and wrong
+  passwords alike, so a full table never reveals which password is right; first retrievals can be
+  throttled meanwhile. A `server.trusted_proxies` entry without a prefix length (`"127.0.0.1"`) is
+  a startup error, not silently ignored.
 - Strict security headers and CSP on every response; the access log records the matched route's
   template (`/de/p/{id}`), the path of a served static file, or `{unmatched}`, never the request
   path.

@@ -16,6 +16,8 @@ pub mod domain;
 pub mod healthcheck;
 pub mod legal;
 pub mod repository;
+#[cfg(test)]
+mod test_support;
 
 use std::sync::Arc;
 

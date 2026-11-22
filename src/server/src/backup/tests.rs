@@ -60,6 +60,34 @@ fn fail_at(target: Step, kind: ErrorKind) -> (HookGuard, Rc<RefCell<bool>>) {
     (guard, fired)
 }
 
+thread_local! {
+    /// The `max_page_count` [`carry_page_limit`] hands to `carry_attached`.
+    static CARRY_PAGE_LIMIT: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
+
+/// The `max_page_count` the carry connection sets on the staged copy after
+/// creating the scratch table, if a test asked for one with [`limit_carry_pages`].
+pub(super) fn carry_page_limit() -> Option<u32> {
+    CARRY_PAGE_LIMIT.with(|cell| *cell.borrow())
+}
+
+/// Removes the page limit when dropped.
+struct PageLimitGuard;
+
+impl Drop for PageLimitGuard {
+    fn drop(&mut self) {
+        CARRY_PAGE_LIMIT.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
+/// Lets the staged copy grow by no page once the scratch table exists (SQLite
+/// raises a smaller `max_page_count` to the current size), so the scratch
+/// insert fails writing the copy with `SQLITE_FULL`.
+fn limit_carry_pages() -> PageLimitGuard {
+    CARRY_PAGE_LIMIT.with(|cell| *cell.borrow_mut() = Some(1));
+    PageLimitGuard
+}
+
 /// The names in `dir`.
 fn entries(dir: &Path) -> BTreeSet<OsString> {
     std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name()).collect()
@@ -906,4 +934,62 @@ async fn restore_carries_many_ids_over() {
     let fresh = dir.join("fresh.db");
     db::connect(&config(fresh.clone())).await.unwrap().close().await;
     assert_eq!(schema, schema_of(&fresh).await);
+}
+
+/// A write failure on the staged copy while the ids are carried over is an
+/// error, not a warning: the restore and the dry run stop before the cutover,
+/// and the old database, its sidecars and its directory stay as they were.
+#[tokio::test]
+async fn restore_stops_when_the_copy_cannot_take_the_carried_ids() {
+    let dir = dir("restore-carry-full");
+    let source = database_with_pastes(dir.join("source.db")).await;
+    let backup = dir.join("backup.db");
+    create(&source, &backup).await.unwrap();
+    source.close().await;
+
+    // 10 000 rows, none of them in the backup: far more than the scratch
+    // table's first page holds.
+    let data = dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    let target = config(data.join("live.db"));
+    let pool = db::connect(&target).await.unwrap();
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
+         INSERT INTO pastes (id, format_version, public_header, reveal_verifier, delete_verifier, created_at, payload_size)
+         SELECT 'row-' || i, 1, x'00', x'00', x'00', 1, 1 FROM n",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Keep a `-wal` and `-shm` next to it, as a stopped server may leave them.
+    let copy = dir.join("copy.db");
+    copy_open_database(&target.path, &copy);
+    pool.close().await;
+    for (from, to) in with_sidecars(&copy).iter().zip(with_sidecars(&target.path)) {
+        std::fs::rename(from, to).unwrap();
+    }
+    let files = with_sidecars(&target.path);
+    assert!(contents(&files).iter().all(Option::is_some), "no sidecars");
+    let before = contents(&files);
+    let listed = entries(&data);
+
+    let is_full = |error: &BackupError| matches!(error, BackupError::Database(sqlx::Error::Database(source)) if source.code().as_deref() == Some("13"));
+
+    let limit = limit_carry_pages();
+    let error = restore_dry_run(&backup, &target, true, 5_000).await.unwrap_err();
+    assert!(is_full(&error), "{error:?}");
+    assert_eq!(contents(&files), before, "the dry run changed the old database");
+    assert_eq!(entries(&data), listed, "the dry run left an entry");
+
+    let error = restore(&backup, &target, true, 5_000).await.unwrap_err();
+    assert!(is_full(&error), "{error:?}");
+    assert_eq!(contents(&files), before, "the restore changed the old database");
+    assert_eq!(entries(&data), listed, "the restore left an entry");
+    drop(limit);
+
+    // Without the limit the same restore carries the ids over.
+    let outcome = restore(&backup, &target, true, 5_000).await.unwrap();
+    assert_eq!(outcome.carried_ids, 10_000);
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(contents(&with_sidecars(&outcome.previous.unwrap())), before);
 }
