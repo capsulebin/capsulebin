@@ -12,7 +12,7 @@ speaks.
 
 ## [Unreleased]
 
-## [1.0.0]
+## [1.0.0] - 2026-11-23
 
 First stable release. Speaks envelope format 1, capsule file format 1, crypto profile 1 and HTTP API
 `v1` ([ADR-003](docs/adr/ADR-003-protocol-versioning.md)); the golden vectors in
@@ -128,9 +128,10 @@ First stable release. Speaks envelope format 1, capsule file format 1, crypto pr
 - Configuration by TOML file and `CAPSULEBIN__<TABLE>__<KEY>` environment variables; unknown keys
   are a startup error.
 - Legal pages (`[legal]`, [ADR-015](docs/adr/ADR-015-legal-pages-rendered-by-the-server.md)): an
-  imprint from the operator's Markdown with an optional hosting provider block, and a privacy
-  notice and terms of use with built-in English and German texts filled in from the configuration;
-  each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
+  imprint from the operator's Markdown (no built-in imprint) with an optional hosting provider
+  block, and a privacy notice and terms of use with built-in English and German default texts
+  filled in from the configuration and served once an operator is set (they describe what the
+  service does and are not legal advice); each replaceable by own text, a file or a link, and linked from every page's footer. Every legal
   page is served in each interface language; `[legal.<lang>.*]` gives a section per language, and
   without one the default language's text is shown, marked with its `lang`. The built-in privacy
   notice names moderation (reason and time, removal after a report), the creation token a browser

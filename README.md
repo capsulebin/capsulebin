@@ -13,9 +13,9 @@ metadata.
 
 ## Status
 
-**1.0** — the first stable version, not yet released. The protocol (envelope, capsule file format,
-crypto profile and HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by every later
-1.x release, and breaking changes need a new version in the path or format
+**1.0** — the first stable version, released 2026-11-23. The protocol (envelope, capsule file
+format, crypto profile and HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by
+every later 1.x release, and breaking changes need a new version in the path or format
 ([ADR-003](docs/adr/ADR-003-protocol-versioning.md), [crypto profile](docs/crypto-profile.md),
 [capsule file format](docs/capsule-file-format.md)). What changed between releases is in the
 [changelog](CHANGELOG.md).
@@ -37,8 +37,9 @@ What 1.0 contains:
   the operator ever decrypting a capsule.
 - **Interface languages:** English and German; the default language without a path prefix, the
   other under its prefix (`/de/`).
-- **Legal pages and branding:** imprint, privacy notice and terms (built-in texts in both
-  languages), and per instance a name, tagline, logo, favicon and theme colours; every page says
+- **Legal pages and branding:** an imprint from the operator's own text, and a privacy notice and
+  terms with built-in default texts in both languages (served once an operator is configured; not
+  legal advice), and per instance a name, tagline, logo, favicon and theme colours; every page says
   "Powered by CapsuleBin".
 
 ## Installation
@@ -130,10 +131,12 @@ npm run dev -w @capsulebin/web                                         # termina
 ```
 
 Open the dev server at <http://localhost:5173/> for the English pages and
-<http://localhost:5173/de/> for the German ones; it always runs with English as the default
-language and answers `/en/…` with `404` where the real server redirects. Vite proxies `/api` and
-`/health` to the server. Browsers treat `localhost` as a secure context, so Web Crypto is
-available there; production requires HTTPS.
+<http://localhost:5173/de/> for the German ones. An instance's default language is configurable
+(`[i18n] default_language`), but the Vite dev server always uses English as its default and
+answers `/en/…` with `404` where the real server redirects; to try another default, open the
+server itself (`:8081`, assets from `dist`) with e.g. `CAPSULEBIN__I18N__DEFAULT_LANGUAGE=de`.
+Vite proxies `/api` and `/health` to the server. Browsers treat `localhost` as a secure context,
+so Web Crypto is available there; production requires HTTPS.
 
 `capsulebin.dev.toml` reads assets from `src/server/web/dist` rather than the binary, so an edited
 file takes effect without a rebuild. Without `server.asset_dir`, every build — debug and release
@@ -413,7 +416,12 @@ footer. The imprint is the operator's own Markdown, with an optional block for a
 provider; the privacy notice and the terms are built in (English and German) and describe what
 CapsuleBin actually does with the configured retention and limits. Each can be replaced by own
 text, a file or a link. `[legal.<lang>.*]` gives a section in another language; without one, that
-language's pages show the default language's section, marked with its `lang`. See
+language's pages show the default language's section, marked with its `lang`. There is no built-in
+imprint, and without `[legal.operator]` the built-in privacy notice and terms are not served either.
+
+The built-in texts are not legal advice and do not replace it. They are defaults that describe what
+CapsuleBin does with data under the running configuration; whether they fit an instance, and what
+else it has to publish, is for the operator to check, with legal advice where needed. See
 [Legal pages](docs/operations.md#legal-pages) in the operations handbook.
 
 ### Interface languages
