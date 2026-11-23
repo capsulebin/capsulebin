@@ -131,10 +131,12 @@ npm run dev -w @capsulebin/web                                         # termina
 ```
 
 Open the dev server at <http://localhost:5173/> for the English pages and
-<http://localhost:5173/de/> for the German ones; it always runs with English as the default
-language and answers `/en/…` with `404` where the real server redirects. Vite proxies `/api` and
-`/health` to the server. Browsers treat `localhost` as a secure context, so Web Crypto is
-available there; production requires HTTPS.
+<http://localhost:5173/de/> for the German ones. An instance's default language is configurable
+(`[i18n] default_language`), but the Vite dev server always uses English as its default and
+answers `/en/…` with `404` where the real server redirects; to try another default, open the
+server itself (`:8081`, assets from `dist`) with e.g. `CAPSULEBIN__I18N__DEFAULT_LANGUAGE=de`.
+Vite proxies `/api` and `/health` to the server. Browsers treat `localhost` as a secure context,
+so Web Crypto is available there; production requires HTTPS.
 
 `capsulebin.dev.toml` reads assets from `src/server/web/dist` rather than the binary, so an edited
 file takes effect without a rebuild. Without `server.asset_dir`, every build — debug and release
