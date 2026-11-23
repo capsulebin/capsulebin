@@ -55,6 +55,12 @@ busy_timeout_ms = 5000
 synchronous = "full"
 
 [pastes]
+# The web create page offers what these three settings allow: the steps from
+# 1 hour to 90 days up to maximum_expiry, maximum_expiry and default_expiry
+# themselves when they are no such step, default_expiry preselected, and "No
+# expiry" only with allow_permanent = true. A value that is no step is labelled
+# in the largest unit that divides it ("14d" -> "14 days", "36h" -> "36 hours").
+
 # Applied when a request does not specify an expiry.
 default_expiry = "7d"
 

@@ -23,6 +23,9 @@ import { KNOWN_LANGUAGES } from '@capsulebin/core';
 
 import {
     CREATION_TOKEN,
+    EXPIRY_DEFAULT_TOKEN,
+    EXPIRY_MAXIMUM_TOKEN,
+    EXPIRY_PERMANENT_TOKEN,
     FAVICON_TOKEN,
     NAME_TOKEN,
     PROJECT_LINK,
@@ -324,7 +327,10 @@ describe('catalogue modules in the build output', () => {
                     .replaceAll(NAME_TOKEN, '')
                     .replaceAll(`href="${FAVICON_TOKEN}"`, '')
                     .replaceAll(`href="${SOURCE_TOKEN}"`, '')
-                    .replaceAll(`content="${CREATION_TOKEN}"`, '');
+                    .replaceAll(`content="${CREATION_TOKEN}"`, '')
+                    .replaceAll(`data-default="${EXPIRY_DEFAULT_TOKEN}"`, '')
+                    .replaceAll(`data-maximum="${EXPIRY_MAXIMUM_TOKEN}"`, '')
+                    .replaceAll(`data-permanent="${EXPIRY_PERMANENT_TOKEN}"`, '');
                 expect(rest).not.toContain('%%');
             });
         },

@@ -52,12 +52,40 @@ async function sealedShareLink(): Promise<string> {
     return el('share-link').textContent!;
 }
 
-async function loadPage(lang: 'en' | 'de' = 'en', mode: CreationMode = 'public'): Promise<void> {
-    const shell = servedShell('index', lang).replace(
+/** The expiry policy of an instance, as the server writes it into the create page's meta. */
+interface ExpiryMeta {
+    default: string;
+    maximum: string;
+    permanent: string;
+}
+
+/** An instance that keeps capsules without expiry, with the built-in default and maximum. */
+const PERMANENT: ExpiryMeta = { default: '604800', maximum: '7776000', permanent: 'true' };
+
+/** The expiry meta of the served create shell. */
+const EXPIRY_META = /<meta\s+name="capsulebin-expiry"[^>]*>/;
+
+/** Loads the create page; `expiry` replaces the expiry meta, `null` removes it. */
+async function loadPage(
+    lang: 'en' | 'de' = 'en',
+    mode: CreationMode = 'public',
+    expiry?: ExpiryMeta | null,
+): Promise<void> {
+    let shell = servedShell('index', lang).replace(
         '<meta name="capsulebin-creation" content="public"',
         `<meta name="capsulebin-creation" content="${mode}"`,
     );
     expect(shell).toContain(`<meta name="capsulebin-creation" content="${mode}"`);
+    if (expiry !== undefined) {
+        expect(shell).toMatch(EXPIRY_META);
+        shell = shell.replace(
+            EXPIRY_META,
+            expiry === null
+                ? ''
+                : `<meta name="capsulebin-expiry" data-default="${expiry.default}" ` +
+                      `data-maximum="${expiry.maximum}" data-permanent="${expiry.permanent}">`,
+        );
+    }
     document.documentElement.innerHTML = new DOMParser().parseFromString(
         shell,
         'text/html',
@@ -275,11 +303,12 @@ describe('create page language switch', () => {
     }
 
     it.each([
-        ['the title', 'create-title', 'Meeting notes'],
-        ['the password', 'create-password', 'secret'],
-        ['the expiry', 'create-expiry', '3600'],
-        ['no expiry', 'create-expiry', ''],
-    ])('only stores the choice once %s is set', (_field, id, value) => {
+        ['the title', 'create-title', 'Meeting notes', undefined],
+        ['the password', 'create-password', 'secret', undefined],
+        ['the expiry', 'create-expiry', '3600', undefined],
+        ['no expiry', 'create-expiry', '', PERMANENT],
+    ])('only stores the choice once %s is set', async (_field, id, value, expiry) => {
+        if (expiry) await loadPage('en', 'public', expiry);
         change(id, (control) => (control.value = value));
         chooseGerman();
         expect(localStorage.getItem('capsulebin.language')).toBe('de');
@@ -300,6 +329,32 @@ describe('create page language switch', () => {
         change('create-title', (control) => (control.value = ''));
         chooseGerman();
         expect(notice()).toBeUndefined();
+    });
+
+    // AC7: the configured default, not a fixed one, is what counts as unchanged.
+    it('still navigates when the expiry is back at a configured default', async () => {
+        await loadPage('en', 'public', {
+            default: '259200',
+            maximum: '1209600',
+            permanent: 'false',
+        });
+        change('create-expiry', (control) => (control.value = '259200'));
+        chooseGerman();
+        expect(notice()).toBeUndefined();
+    });
+
+    it('only stores the choice once another expiry than a configured default is picked', async () => {
+        await loadPage('en', 'public', {
+            default: '259200',
+            maximum: '1209600',
+            permanent: 'false',
+        });
+        change('create-expiry', (control) => (control.value = '604800'));
+        chooseGerman();
+        expect(notice()).toBe(GERMAN_NOTICE);
+        expect((document.getElementById('create-expiry') as HTMLSelectElement).value).toBe(
+            '604800',
+        );
     });
 
     it('still navigates after only changing the type of an empty item', () => {
@@ -1008,6 +1063,59 @@ describe('create page creation modes', () => {
             expect(el<HTMLSelectElement>('item-lang').value).toBe('rust');
         }, 30_000);
     });
+
+    // AC9: the editor that appears after a token is given offers the configured
+    // expiries, and "Back to editing" keeps the chosen one.
+    describe('expiry in token mode', () => {
+        const CONFIGURED: ExpiryMeta = {
+            default: '259200',
+            maximum: '1209600',
+            permanent: 'true',
+        };
+
+        function expiryOptions(): [string, string][] {
+            return [...field<HTMLSelectElement>('create-expiry').options].map((option) => [
+                option.value,
+                option.textContent!,
+            ]);
+        }
+
+        it('offers the configured options once a token is given', async () => {
+            await loadPage('en', 'token', CONFIGURED);
+            expect(document.getElementById('create-expiry')).toBeNull();
+            enterToken(TOKEN);
+            expect(expiryOptions()).toEqual([
+                ['3600', en['create.expiry.hour']],
+                ['86400', en['create.expiry.day']],
+                ['259200', '3 days'],
+                ['604800', en['create.expiry.week']],
+                ['1209600', '14 days'],
+                ['', en['expiry.none']],
+            ]);
+            expect(field<HTMLSelectElement>('create-expiry').value).toBe('259200');
+        });
+
+        it.each([
+            ['a value that is no step', '1209600'],
+            ['no expiry', ''],
+        ])(
+            'restores %s after a failed create',
+            async (_case, value) => {
+                localStorage.setItem(CREATION_TOKEN_KEY, TOKEN);
+                await loadPage('en', 'token', CONFIGURED);
+                vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+                type('draft');
+                field<HTMLSelectElement>('create-expiry').value = value;
+                submit();
+
+                await failed();
+                el<HTMLButtonElement>('retry-btn').click();
+                expect(expiryOptions()).toHaveLength(6);
+                expect(field<HTMLSelectElement>('create-expiry').value).toBe(value);
+            },
+            30_000,
+        );
+    });
 });
 
 describe('create page layout', () => {
@@ -1526,12 +1634,68 @@ describe('create page states and sealed page', () => {
     }, 30_000);
 
     it('sums up a capsule without password, expiry or burn, leaving out empty items', async () => {
+        await loadPage('en', 'public', PERMANENT);
         type('abc');
         add('plain');
         field<HTMLSelectElement>('create-expiry').value = '';
         submit();
         await sealedShareLink();
         expect(chips()).toEqual(['1 item · 3 B', en['expiry.none'], 'Without password']);
+    });
+
+    // AC8: an unusable meta gives the built-in policy, and the page still creates.
+    it('offers the built-in expiries for an unusable meta and still creates', async () => {
+        await loadPage('en', 'public', { default: '1e3', maximum: '7776000', permanent: 'true' });
+        const select = field<HTMLSelectElement>('create-expiry');
+        expect([...select.options].map((option) => option.value)).toEqual([
+            '3600',
+            '86400',
+            '604800',
+            '2592000',
+            '7776000',
+        ]);
+        expect(select.value).toBe('604800');
+        type('abc');
+        submit();
+        await sealedShareLink();
+        expect(chips()).toContain('Expires in 7 days');
+    });
+
+    // AC8: without any expiry meta the page offers the built-in policy and still creates.
+    it('offers the built-in expiries without an expiry meta and still creates', async () => {
+        await loadPage('en', 'public', null);
+        expect(document.querySelector('meta[name="capsulebin-expiry"]')).toBeNull();
+        const select = field<HTMLSelectElement>('create-expiry');
+        expect([...select.options].map((option) => option.value)).toEqual([
+            '3600',
+            '86400',
+            '604800',
+            '2592000',
+            '7776000',
+        ]);
+        expect(select.value).toBe('604800');
+        type('abc');
+        submit();
+        await sealedShareLink();
+        expect(chips()).toContain('Expires in 7 days');
+    });
+
+    // AC6/AC7 on the page: a German instance with a non-step default names it in the steps' form.
+    it('labels and preselects a non-step default in German', async () => {
+        await loadPage('de', 'public', {
+            default: '259200',
+            maximum: '1209600',
+            permanent: 'false',
+        });
+        const select = field<HTMLSelectElement>('create-expiry');
+        expect([...select.options].map((option) => option.textContent)).toEqual([
+            de['create.expiry.hour'],
+            de['create.expiry.day'],
+            'Nach 3 Tagen',
+            de['create.expiry.week'],
+            'Nach 14 Tagen',
+        ]);
+        expect(select.value).toBe('259200');
     });
 
     it('sums up in German', async () => {

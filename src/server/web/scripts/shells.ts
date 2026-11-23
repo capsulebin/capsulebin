@@ -19,6 +19,13 @@
  *   `disabled`), for the create page's `<meta name="capsulebin-creation">`. Also
  *   configuration: the generator writes {@link CREATION_TOKEN}, the dev server
  *   fills in `public`, the mode of the dev configuration;
+ * - `{{expiry-default}}`, `{{expiry-maximum}}` and `{{expiry-permanent}}` - the
+ *   instance's `pastes.default_expiry` and `pastes.maximum_expiry` in whole seconds
+ *   and its `pastes.allow_permanent` (`true` or `false`), for the create page's
+ *   `<meta name="capsulebin-expiry">`. Configuration too: the generator writes
+ *   {@link EXPIRY_DEFAULT_TOKEN}, {@link EXPIRY_MAXIMUM_TOKEN} and
+ *   {@link EXPIRY_PERMANENT_TOKEN}, the dev server fills in the built-in defaults
+ *   ({@link DEV_EXPIRY});
  * - `{{name}}` and `{{favicon}}` - the instance's name and the href of its
  *   favicon. They are the operator's branding, so the generator writes the tokens
  *   {@link NAME_TOKEN} and {@link FAVICON_TOKEN} for the server to fill; the dev
@@ -91,6 +98,15 @@ export const SOURCE_TOKEN = '%%capsulebin:source%%';
 /** Token for the instance's creation mode, in the create page's creation meta. */
 export const CREATION_TOKEN = '%%capsulebin:creation%%';
 
+/** Token for the instance's default expiry in whole seconds, in the create page's expiry meta. */
+export const EXPIRY_DEFAULT_TOKEN = '%%capsulebin:expiry-default%%';
+
+/** Token for the instance's maximum expiry in whole seconds, in the create page's expiry meta. */
+export const EXPIRY_MAXIMUM_TOKEN = '%%capsulebin:expiry-maximum%%';
+
+/** Token for whether the instance allows capsules without expiry (`true`/`false`). */
+export const EXPIRY_PERMANENT_TOKEN = '%%capsulebin:expiry-permanent%%';
+
 /** The placeholder in catalogue texts that stands for the instance's name. */
 export const NAME_PLACEHOLDER = '{name}';
 
@@ -106,6 +122,13 @@ export const PROJECT_LINK = `<a href="${SOURCE_TOKEN}" target="_blank" rel="noop
 /** The creation mode the dev server fills in: the one of `capsulebin.dev.toml`. */
 export const DEV_CREATION_MODE = 'public';
 
+/**
+ * The expiry policy the dev server fills in: the configuration's built-in defaults
+ * (7 days, at most 90 days, no capsule without expiry), which `capsulebin.dev.toml`
+ * does not change.
+ */
+export const DEV_EXPIRY = { default: '604800', maximum: '7776000', permanent: 'false' } as const;
+
 /** What the server fills in without a `[branding]` table. */
 export const DEFAULT_BRANDING = {
     name: 'CapsuleBin',
@@ -115,7 +138,8 @@ export const DEFAULT_BRANDING = {
 
 /**
  * Placeholders filled from the language or with a server token rather than from
- * the catalogue; catalogue keys always contain a dot, so they cannot clash.
+ * the catalogue; catalogue keys always contain a dot and these none, so they
+ * cannot clash.
  */
 function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
     return new Map([
@@ -126,14 +150,17 @@ function languagePlaceholders(lang: string): ReadonlyMap<string, string> {
         ['name', NAME_TOKEN],
         ['favicon', FAVICON_TOKEN],
         ['creation', CREATION_TOKEN],
+        ['expiry-default', EXPIRY_DEFAULT_TOKEN],
+        ['expiry-maximum', EXPIRY_MAXIMUM_TOKEN],
+        ['expiry-permanent', EXPIRY_PERMANENT_TOKEN],
     ]);
 }
 
 /**
  * Replaces the tokens in a generated shell of language `lang` the way the server
  * does for an instance whose default language is `defaultLanguage` and that has
- * no `[branding]` and creates in {@link DEV_CREATION_MODE}. The marker regions of
- * logo and wordmark stay as they are.
+ * no `[branding]`, creates in {@link DEV_CREATION_MODE} and has the expiry policy
+ * {@link DEV_EXPIRY}. The marker regions of logo and wordmark stay as they are.
  */
 export function fillServerTokens(html: string, lang: string, defaultLanguage: string): string {
     return html
@@ -142,10 +169,13 @@ export function fillServerTokens(html: string, lang: string, defaultLanguage: st
         .replaceAll(NAME_TOKEN, DEFAULT_BRANDING.name)
         .replaceAll(FAVICON_TOKEN, DEFAULT_BRANDING.favicon)
         .replaceAll(SOURCE_TOKEN, DEFAULT_BRANDING.source)
-        .replaceAll(CREATION_TOKEN, DEV_CREATION_MODE);
+        .replaceAll(CREATION_TOKEN, DEV_CREATION_MODE)
+        .replaceAll(EXPIRY_DEFAULT_TOKEN, DEV_EXPIRY.default)
+        .replaceAll(EXPIRY_MAXIMUM_TOKEN, DEV_EXPIRY.maximum)
+        .replaceAll(EXPIRY_PERMANENT_TOKEN, DEV_EXPIRY.permanent);
 }
 
-const PLACEHOLDER = /\{\{([A-Za-z0-9_.]+)\}\}/g;
+const PLACEHOLDER = /\{\{([A-Za-z0-9_.-]+)\}\}/g;
 
 export type Catalogue = Readonly<Record<string, string>>;
 

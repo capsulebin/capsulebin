@@ -13,6 +13,7 @@ import { type HexagonState, hexagon } from './hexagon';
 import { icon } from './icons';
 import { fitTabs, nextTabIndex, revealActiveItem } from './item-tabs';
 import { CreationToken, creationMode, takeInvitation, validToken } from '../creation-token';
+import { expiryPolicy, fillExpirySelect } from '../expiry-options';
 import { formatExpiry, formatSize, t, tn, type TextKey } from '../language';
 import { renderMarkdown } from '../render-markdown';
 import { trustedHtml } from '../trusted-html';
@@ -318,6 +319,7 @@ function showEdit(draft: Draft | null, notice: string | null = null): void {
 
     items = draft ? draft.items : [newItem('plain')];
     activeId = draft ? draft.activeId : items[0]!.id;
+    fillExpirySelect(byId<HTMLSelectElement>('create-expiry'), expiryPolicy());
     if (draft) restoreFields(draft);
     refreshPasswordNote();
     byId<HTMLInputElement>('create-password').addEventListener('input', refreshPasswordNote);

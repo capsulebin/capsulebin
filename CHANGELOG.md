@@ -12,6 +12,16 @@ speaks.
 
 ## [Unreleased]
 
+### Web client
+
+- The create page offers only the expiries the instance accepts: the steps from 1 hour to 90 days
+  up to `pastes.maximum_expiry`, the configured maximum and default themselves when they are not
+  one of those steps (labelled in whole days, hours, minutes or seconds, e.g. "14 days"), the
+  configured `pastes.default_expiry` preselected, and "No expiry" only with
+  `pastes.allow_permanent = true`. Before, the page always offered 30 and 90 days and "No expiry"
+  and preselected 1 week, so a choice the server refuses only failed after encryption. The server
+  puts the three settings into the create page; no setting was added.
+
 ## [1.0.0] - 2026-11-23
 
 First stable release. Speaks envelope format 1, capsule file format 1, crypto profile 1 and HTTP API

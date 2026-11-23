@@ -10,7 +10,9 @@ the page by a shadow and, in the light theme, a tinted page background. The desi
 `tokens.css`, so it follows the operator's `[branding.colors]` ([branding.md](branding.md)), the
 system preference and the theme toggle (ADR-005); it changes nothing in the CSP, the server, the
 capsule format or the crypto. Languages and the language switch's behaviour are described in
-[i18n.md](i18n.md), the creation token's create-page phases in `AGENTS.md` (ADR-018).
+[i18n.md](i18n.md), the creation token's create-page phases in `AGENTS.md` (ADR-018). The one
+piece of server configuration the create page follows besides the creation mode is the expiry
+policy (`[pastes]`), see [Expiry select](#expiry-select-create-page).
 
 ## Rules
 
@@ -194,21 +196,67 @@ Editor first: no visible heading or lede before the form, an `h1.cb-sr-only` wit
    information. Over the limit both turn danger-coloured (`.cb-size-bar-over`,
    `.cb-size-meter-over`) and the submit button is disabled.
 7. **Options row:** expiry, burn and password side by side from 720 px, each label above its
-   control (the burn checkbox's label above it is `create.burnLabel`, "Retrieval"/"Einmalabruf",
-   the checkbox text `create.burn`, "Delete after first retrieval"/"Nach dem ersten Abruf
-   löschen"; the checkbox text never repeats the label and has no bracketed second name). The
-   password hint (`create.passwordNote`, `[data-password-note]`) is hidden
-   while the password field is empty and shown once it has content. The password field sits
+   control (the expiry options come from the instance, see [Expiry
+   select](#expiry-select-create-page); the burn checkbox's label above it is `create.burnLabel`,
+   "Retrieval"/"Einmalabruf", the checkbox text `create.burn`, "Delete after first
+   retrieval"/"Nach dem ersten Abruf löschen"; the checkbox text never repeats the label and has
+   no bracketed second name). The password hint (`create.passwordNote`, `[data-password-note]`) is
+   hidden while the password field is empty and shown once it has content. The password field sits
    inside the create form but belongs to the empty form `#create-password-form`
    (`[data-password-form]`, `form` attribute): password managers pair a password field with the
-   text field before it in the same form as a login and offered the item name as a username.
-   Enter in it submits that form, which creates the capsule (`requestSubmit()` on the create
-   form); the draft check counts it although it is not in the create form's `elements`.
+   text field before it in the same form as a login and offered the item name as a username. Enter
+   in it submits that form, which creates the capsule (`requestSubmit()` on the create form); the
+   draft check counts it although it is not in the create form's `elements`.
 8. **Submit row:** the submit button (lock icon) at its content width, the trust line
    (`create.lede`, lock icon) next to it; below 34rem the button takes the form width.
 
 The draft logic (`hasDraft`, store-only language switch, "Back to editing" restoring the `Draft`)
 is unchanged by the layout.
+
+### Expiry select (create page)
+
+The select `#create-expiry` offers exactly the expiries the instance accepts
+(`pastes.default_expiry`, `pastes.maximum_expiry`, `pastes.allow_permanent`, which the server
+enforces in `resolve_expiry`):
+
+- **Transport:** only the create shell (`index.html`) carries
+  `<meta name="capsulebin-expiry" data-default="D" data-maximum="M" data-permanent="P">`. D and M
+  are the configured durations in whole seconds (decimal), P is `true` or `false`. The server fills
+  the shell tokens `%%capsulebin:expiry-default%%`, `%%capsulebin:expiry-maximum%%` and
+  `%%capsulebin:expiry-permanent%%` in the same single pass as the other tokens (`fill_tokens` in
+  `api/assets.rs`), embedded and from disk, in every language; an operator value holding such a
+  token stays literal. No other page carries the meta, so view, manage, report and legal pages
+  are byte-identical whatever the policy (the built-in privacy notice itself names the maximum and
+  whether capsules may be kept without expiry). The Vite dev server fills the built-in defaults
+  (`604800`, `7776000`, `false`; `DEV_EXPIRY` in `scripts/shells.ts`).
+- **Policy read** (`expiryPolicy` in `src/expiry-options.ts`): D and M must be decimal digits only,
+  positive safe integers, with D ≤ M, and P exactly `true` or `false`. A missing meta or any
+  other value gives `BUILT_IN_EXPIRY` (default 604800, maximum 7776000, no "No expiry"); the page
+  still works.
+- **Options** (`expiryValues`): the fixed steps 3600, 86400, 604800, 2592000, 7776000 that are
+  ≤ the maximum, plus the maximum and the default themselves (each once), in ascending order, then
+  `''` ("No expiry") last, only when permanent capsules are allowed. Built-in defaults: the five
+  steps without "No expiry". Maximum 14 days, default 3 days: 1 hour, 1 day, 3 days, 1 week,
+  14 days. A maximum of 30 minutes that is also the default: only that option.
+- **Values** stay whole seconds as decimal strings and `''` for no expiry, so `Draft`,
+  `assemblePaste`, the sealed summary and the draft check are unchanged.
+- **Labels** (`expiryLabel`): a step keeps its own key (`create.expiry.hour`, `.day`, `.week`,
+  `.30days`, `.90days`), `''` is `expiry.none`; any other value is written in the largest of days,
+  hours, minutes, seconds that divides it exactly, with `tn('create.expiry.days' | '.hours' |
+  '.minutes' | '.seconds', n)` (1209600 → "14 days", 129600 → "36 hours", 1800 → "30 minutes",
+  90 → "90 seconds"). No weeks, no fractions. The plural texts read like the steps of their
+  language: English "{count} days", German "Nach {count} Tagen" (the steps are "Nach 1 Woche",
+  "Nach 30 Tagen"), so `tn` gives a step's exact label for 1 hour, 1 day, 30 and 90 days.
+- **Default:** the option equal to the configured default is selected and is the only one with
+  `defaultSelected` (`fillExpirySelect`). The draft check compares against `defaultSelected`, so a
+  page whose expiry is back at the configured default is no draft (the language switch
+  navigates), and one with another choice is (the switch only stores the choice).
+- **When filled:** `showEdit` in `pages/create.ts` reads the meta and fills the select every time
+  the editor is shown, before a draft's fields are restored: on boot, in `token` mode once a token
+  is given, and on "Back to editing", which then restores the submitted choice (a non-step value
+  and `''` included).
+- **The server still decides.** `error.expiryTooLong` and `error.permanentNotAllowed` stay for a
+  configuration changed while a page is open.
 
 ### Sealed page (after a successful create)
 
@@ -286,7 +334,8 @@ threshold, so the built-in palette still gives no operator warning.
 | `src/server/web/src/pages/view.ts` | Display phase: `#renderDisplay` (title, `#renderChips`, sheet), `#renderTabs`, `#renderAllMenu`, `#renderItemNav`, `#renderItemActions`, `#fitTabs`; hexagon in every other phase; `#hexagon`/`#icon` hand Lit the same SVG node per place and state or icon on every render (`#drawings`) |
 | `src/server/web/src/pages/open-capsule.ts` | `burnAfterRetrieval` passed from the descriptor into the outcome |
 | `src/server/web/src/pages/render-items.ts` | Item content without card; `.cb-code` with the gutter (`lineNumbers`) |
-| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `placeTabBar` (no tab bar for one item, add button's place), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon`, `showUnclearOutcome` ("Try again" and the delete link on the error view) |
+| `src/server/web/src/expiry-options.ts` | `ExpiryPolicy`, `BUILT_IN_EXPIRY`, `expiryPolicy()` (meta → policy, fallback), `expiryValues`, `expiryLabel`, `fillExpirySelect` |
+| `src/server/web/src/pages/create.ts` | `showEdit` (icons, password hint, fills the expiry select before `restoreFields`), `layoutTabs`/`menuLine`/`removeControl` ("All N" with remove controls), `render` (add button `create.addItem` / `create.itemsFull` "16 of 16"), `placeTabBar` (no tab bar for one item, add button's place), `refreshSizeMeter` (bar), `showDone`/`summaryParts`/`showShareLink`, `placeHexagon`, `showUnclearOutcome` ("Try again" and the delete link on the error view) |
 | `src/server/web/src/pages/errors.ts` | `isUnclearOutcome` (which failed creates may have stored the capsule), `apiErrorText` (`error.invalidResponse` for `invalid_response`) |
 | `src/server/web/src/pages/manage.ts` | `showState(template, state)` for every phase |
 | `src/server/web/src/pages/shell.ts` | Imports the stylesheets (`tokens`, `base`, `view`, `create`, `states`); `mountLanguageSwitch` (quiet buttons) |
@@ -295,8 +344,10 @@ threshold, so the built-in palette still gives no operator warning.
 | `src/server/src/branding/colors.rs` | `TOKENS`: the built-in palette on the server side, light `bg` equal to `tokens.css` (kept equal by a test) |
 | `src/server/web/src/styles/base.css` | Chrome (`.cb-head`, `.cb-main`, `.cb-foot` on `--cb-column`; `.cb-lang`), reduced-motion rule, `.cb-quiet`, `.cb-icon`, `.cb-bar-label`, `.cb-copied`, `.cb-chips`/`.cb-chip`/`.cb-chip-warning`, `.cb-sheet`/`.cb-sheet-bar`, `.cb-bar-actions`, `.cb-editor-frame`, `.cb-link-panel`, menu rows, `.cb-itemtab`, `.cb-btn-danger`, transitions, `.cb-hex*` |
 | `src/server/web/src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet, chips, switch, gutter, previous/next; editor (the flex chain that fills the window, head and foot padding), options row, size bar, sealed page; `.cb-state` layout |
-| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`, in `tmpl-error` the hidden `[data-unclear]` row and `[data-try-again]`; `manage.html` templates in `.cb-state` |
-| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*`, `create.tryAgain`, `create.unclearNote`, `create.unclearRetryNote`, `error.invalidResponse` |
+| `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` the expiry meta with the placeholders `{{expiry-default}}`, `{{expiry-maximum}}`, `{{expiry-permanent}}` and an empty `#create-expiry`, templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`, in `tmpl-error` the hidden `[data-unclear]` row and `[data-try-again]`; `manage.html` templates in `.cb-state` |
+| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*`, `create.tryAgain`, `create.unclearNote`, `create.unclearRetryNote`, `error.invalidResponse`; plural `create.expiry.days`, `.hours`, `.minutes`, `.seconds` |
+| `src/server/web/scripts/shells.ts` | The `{{expiry-*}}` placeholders → `EXPIRY_DEFAULT_TOKEN`, `EXPIRY_MAXIMUM_TOKEN`, `EXPIRY_PERMANENT_TOKEN`; `fillServerTokens()` fills `DEV_EXPIRY` |
+| `src/server/src/api/assets.rs` | `EXPIRY_*_TOKEN` filled by `render` from `PastesConfig` (`AppState::pastes`) |
 
 ### Tests
 
@@ -305,6 +356,11 @@ threshold, so the built-in palette still gives no operator warning.
 | `tests/icons.test.ts`, `tests/copy-state.test.ts`, `tests/theme.test.ts` | Icons and hexagon markup; copied state with fake timers (restore, second copy, refused clipboard, live region); toggle icon and name |
 | `tests/view-page-display.test.ts`, `tests/render-items.test.ts`, `tests/item-tabs.test.ts` | Sheet structure, chip order for burn/no burn × one/many items, "All N" list and keyboard, previous/next, copy; the running hexagon and the chip/action icons stay the same nodes across a re-render or tab switch; gutter numbers, unchanged `<code>` text, no gutter for plain text and Markdown source |
 | `tests/create-page.test.ts`, `tests/manage-page.test.ts` | Editor, size bar, password hint, "All N" with remove controls, "16 of 16", one item without a tab bar (name only in the item row, add button at the end of the item actions, bar back with the second item, after a removal, a kind change and a restored draft; focus on `[data-item-type]` after a removal by the tab's close button, "Remove" or the "All N" list leaves one item), sealed page (link, key, summary, copy), hexagon per state; the error view after an unclear outcome ("Try again" resending a byte-identical body, then the sealed page; delete link with copy; neither after a definite answer, a failure before the request or in place of the token form; EN and DE) |
+| `tests/expiry-options.test.ts` | Options for the built-in policy, a maximum and default that are no step, a maximum below every step, permanent instances, no step above the maximum; labels in en and de (steps unchanged, `tn` giving a step's exact label); the default the only `defaultSelected`; refilling replaces the old options; the policy from the meta and the fallback for a missing or unusable one |
+| `tests/create-page.test.ts` (expiry) | Language switch navigating at a configured non-step default and storing only after another choice; in `token` mode the configured options once a token is given, "Back to editing" restoring a non-step value and `''`; an unusable meta giving the built-in options, the page still creating |
+| `tests/shells.test.ts`, `tests/catalogue-modules.test.ts` (expiry) | The expiry meta exactly once, in the head, with the three tokens, on the create shell of every language only; `index.html`'s select empty; `fillServerTokens()` fills `604800`, `7776000`, `false` |
+| `src/server/tests/http.rs` (`the_create_page_names_the_expiry_policy`, `the_embedded_…`), unit tests in `api/assets.rs` | The meta per language and default language, from disk and embedded, for the built-in and a changed policy; the other pages without it and byte-identical between the policies; expiry tokens in an operator name or tagline stay literal |
+| `e2e/expiry.e2e.ts` | The main instance's five steps without "No expiry", 1 week preselected; an instance with default 3d and maximum 14d (1 hour, 1 day, 3 days, 1 week, 14 days, "3 days" selected; creating with 14 days names it on the sealed page); "No expiry" last on a permanent instance (creating with it: `states.e2e.ts`) |
 | `tests/fonts.test.ts` | `--cb-font-mono` starts with `ui-monospace`, names the families in the fixed order and ends with `monospace`; no font file and no `@font-face` in the stylesheets, `public/` and (if built) `dist/` |
 | `tests/i18n-catalogues.test.ts` | `create.burn` does not contain `create.burnLabel` and has no brackets, in every language; its exact text in en and de |
 | `tests/shells.test.ts` | SVG theme toggle without text in every shell, no `◐` |
@@ -414,12 +470,41 @@ waits for its form. A browser test of the page design belongs in the spec of its
   is computed from the sealed `Paste` before the request, so it is known whatever the answer was,
   and it is the sealed page's link, so no new secret reaches the page. "Back to editing" still drops
   the sealed capsule; the next submit seals a new one.
+- **The web page follows `pastes.maximum_expiry`, no new setting** — the cap on how long a capsule
+  is kept already existed and was enforced by the server; the gap was that the page offered more
+  than the server accepts, which failed only after encryption. An extra absolute lifetime purge
+  rule was considered and not chosen.
+- **Expiry options: fixed steps up to the maximum plus the exact configured values** — the
+  familiar steps stay, an operator value that is no step (14 days) is still offered exactly, and
+  the default is always present and preselected. "Steps only" would hide the operator's maximum
+  and might not contain the default.
+- **Expiry policy as a meta in the create shell, filled by shell tokens** — the mechanism of the
+  creation mode (ADR-018): no extra request, the values are fixed at startup, and the other pages
+  stay byte-identical. Three `data-*` attributes rather than one encoded `content`, so each value
+  is a plain number or literal that needs nothing but `Number`; numbers and fixed literals need no
+  escaping. No API endpoint publishes the policy.
+- **A missing or broken expiry meta gives the built-in configuration defaults** (7 days, at most
+  90 days, no "No expiry") — those are what an unconfigured server accepts, so the page never
+  offers a choice a default instance refuses. The creation meta falls back to "page as before"
+  instead; here "as before" would offer "No expiry", which a default instance refuses.
+- **Non-step labels in the largest whole unit** (days, hours, minutes, seconds) — the
+  configuration's durations accept only `s`/`m`/`h`/`d`, so every value has an exact label; no
+  weeks, no fractions. In German they take the steps' form ("Nach 14 Tagen", not "14 Tage") so the
+  list reads uniformly.
+- **The select is filled on every `showEdit`, before the draft is restored** — so `token` mode
+  (editor shown only after a token) and "Back to editing" get the same options, and a restored
+  choice finds its option.
 - No ADR: CSP, the set of colour tokens, the MPA structure (ADR-004), the theme mechanics (ADR-005)
-  and the branding rules (ADR-017) are unchanged.
+  and the branding rules (ADR-017) are unchanged; the expiry meta applies ADR-018's shell-meta
+  pattern.
 
 ## Limits and open points
 
 - No QR code on the sealed page; no line numbers for plain text or Markdown source.
+- No custom-duration input for the expiry, and no absolute lifetime cap for capsules without
+  expiry or regularly retrieved ones. The CLI does not follow the policy: without `--expires` the
+  server's default applies, a refused value is exit `6`. A configuration changed while a create
+  page is open is only caught by the server (`expiry_too_long`, `permanent_not_allowed`).
 - The legal and report pages only take the shared chrome and control styles; they have no own
   redesign.
 - The danger button deviates from the mockup (outlined instead of filled), see above.
