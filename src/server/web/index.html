@@ -8,6 +8,12 @@
         <title>{{name}}</title>
         <meta name="capsulebin-languages" content="{{languages}}" data-default="{{default}}" />
         <meta name="capsulebin-creation" content="{{creation}}" />
+        <meta
+            name="capsulebin-expiry"
+            data-default="{{expiry-default}}"
+            data-maximum="{{expiry-maximum}}"
+            data-permanent="{{expiry-permanent}}"
+        />
         <meta name="color-scheme" content="light dark" />
         <link rel="icon" href="{{favicon}}" />
         <script src="/theme-init.js"></script>
@@ -287,14 +293,7 @@
                 <div class="cb-create-options">
                     <div class="cb-create-field">
                         <label class="cb-label" for="create-expiry">{{create.expires}}</label>
-                        <select id="create-expiry" class="cb-input cb-select">
-                            <option value="3600">{{create.expiry.hour}}</option>
-                            <option value="86400">{{create.expiry.day}}</option>
-                            <option value="604800" selected>{{create.expiry.week}}</option>
-                            <option value="2592000">{{create.expiry.30days}}</option>
-                            <option value="7776000">{{create.expiry.90days}}</option>
-                            <option value="">{{expiry.none}}</option>
-                        </select>
+                        <select id="create-expiry" class="cb-input cb-select"></select>
                     </div>
                     <div class="cb-create-field" role="group" aria-labelledby="create-burn-label">
                         <span class="cb-label" id="create-burn-label">{{create.burnLabel}}</span>

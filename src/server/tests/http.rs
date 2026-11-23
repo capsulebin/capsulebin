@@ -10,6 +10,7 @@ mod support;
 
 use axum::http::StatusCode;
 use capsulebin_server::config::CreationMode;
+use capsulebin_server::config::units::HumanDuration;
 use support::*;
 
 #[tokio::test]
@@ -658,6 +659,138 @@ async fn the_embedded_create_page_names_the_creation_mode() {
         assert!(
             others.windows(2).all(|pair| pair[0] == pair[1]),
             "a page other than create depends on the mode"
+        );
+    }
+}
+
+/// An expiry policy: `default_expiry`, `maximum_expiry`, `allow_permanent`.
+type ExpiryPolicy = (&'static str, &'static str, bool);
+
+/// Two expiry policies with what the create page's expiry meta says for them
+/// (`data-default`, `data-maximum`, `data-permanent`): the built-in defaults
+/// and a changed one.
+const EXPIRY_POLICIES: [(ExpiryPolicy, [&str; 3]); 2] = [
+    (("7d", "90d", false), ["604800", "7776000", "false"]),
+    (("3d", "14d", true), ["259200", "1209600", "true"]),
+];
+
+/// The meta the web build writes into the head of the create shell.
+const EXPIRY_META: &str = r#"<meta name="capsulebin-expiry" data-default="%%capsulebin:expiry-default%%" data-maximum="%%capsulebin:expiry-maximum%%" data-permanent="%%capsulebin:expiry-permanent%%">"#;
+
+/// Sets the expiry policy of `config`, with the legal pages configured. The
+/// privacy notice is the operator's text: the built-in one states the
+/// maximum expiry and whether capsules may be kept without one, so it would
+/// differ between the policies by design.
+fn expiry_policy(config: &mut capsulebin_server::config::Config, (default, maximum, permanent): ExpiryPolicy) {
+    legal_configuration(config);
+    config.legal.privacy = legal_text("Our privacy notice.");
+    config.pastes.default_expiry = HumanDuration::parse(default).unwrap();
+    config.pastes.maximum_expiry = HumanDuration::parse(maximum).unwrap();
+    config.pastes.allow_permanent = permanent;
+}
+
+/// Asserts that `text` holds exactly one expiry meta with the attributes
+/// `expected`, however the web build lays out the tag.
+fn assert_expiry_meta(text: &str, expected: [&str; 3], context: &str) {
+    assert_eq!(text.matches("capsulebin-expiry").count(), 1, "{context}: {text}");
+    let tag = text
+        .find(r#"name="capsulebin-expiry""#)
+        .and_then(|at| {
+            let start = text[..at].rfind('<')?;
+            let end = at + text[at..].find('>')?;
+            Some(&text[start..end])
+        })
+        .unwrap_or_default();
+    let attributes: Vec<&str> = tag.split_whitespace().collect();
+    for (name, value) in ["data-default", "data-maximum", "data-permanent"].into_iter().zip(expected) {
+        let attribute = format!(r#"{name}="{value}""#);
+        assert!(attributes.contains(&attribute.as_str()), "{context}: {tag}");
+    }
+}
+
+/// The bodies of the pages other than the create page in every language of
+/// `languages`, after checking that none names an expiry policy.
+async fn pages_without_expiry(h: &Harness, languages: &[(&str, &str)], context: &str) -> Vec<Vec<(String, Vec<u8>)>> {
+    let mut bodies = Vec::new();
+    for (_, prefix) in languages {
+        let pages = other_pages(h, prefix).await;
+        for (path, body) in &pages {
+            assert!(!String::from_utf8_lossy(body).contains("capsulebin-expiry"), "{path} ({context})");
+        }
+        bodies.push(pages);
+    }
+    bodies
+}
+
+/// The create page names the configured expiry policy once, in every language
+/// and whichever language is the default; no other page names it, and the
+/// other pages do not change with the policy.
+#[tokio::test]
+async fn the_create_page_names_the_expiry_policy() {
+    for (default, languages) in LAYOUTS {
+        let mut others = Vec::new();
+        for (index, (policy, expected)) in EXPIRY_POLICIES.into_iter().enumerate() {
+            let h = harness_with(&format!("shell-expiry-{default}-{index}"), |config| {
+                config.i18n.default_language = default.to_owned();
+                expiry_policy(config, policy);
+            })
+            .await;
+            for (language, _) in languages {
+                let file = h.dir.join(language).join("index.html");
+                let shell = std::fs::read_to_string(&file).unwrap();
+                std::fs::write(&file, shell.replace("<title>", &format!("{EXPIRY_META}<title>"))).unwrap();
+            }
+
+            let [d, m, p] = expected;
+            for (_, prefix) in languages {
+                let text = h.get(&format!("{prefix}/")).await.text();
+                assert_expiry_meta(&text, expected, &format!("{prefix}/ ({index})"));
+                assert!(
+                    text.contains(&format!(
+                        r#"<meta name="capsulebin-expiry" data-default="{d}" data-maximum="{m}" data-permanent="{p}"><title>create</title>"#
+                    )),
+                    "{prefix}/ ({index}): {text}"
+                );
+            }
+            others.push(pages_without_expiry(&h, &languages, &index.to_string()).await);
+        }
+        assert!(
+            others.windows(2).all(|pair| pair[0] == pair[1]),
+            "a page other than create depends on the expiry policy"
+        );
+    }
+}
+
+/// The same with the shells of the web build embedded into the binary, if it
+/// has run: they are filled once at startup.
+#[tokio::test]
+async fn the_embedded_create_page_names_the_expiry_policy() {
+    for (default, languages) in LAYOUTS {
+        let mut others = Vec::new();
+        for (index, (policy, expected)) in EXPIRY_POLICIES.into_iter().enumerate() {
+            let h = harness_with_embedded_assets_and(&format!("shell-expiry-embedded-{default}-{index}"), |config| {
+                config.i18n.default_language = default.to_owned();
+                expiry_policy(config, policy);
+            })
+            .await;
+            if h.get("/health/ready").await.json()["assets"] != "ok" {
+                for (_, prefix) in languages {
+                    let answer = h.get(&format!("{prefix}/")).await;
+                    assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR, "{prefix}/ ({index})");
+                    assert_eq!(answer.text(), MISSING_FRONTEND, "{prefix}/ ({index})");
+                }
+                continue;
+            }
+
+            for (_, prefix) in languages {
+                let text = h.get(&format!("{prefix}/")).await.text();
+                assert_expiry_meta(&text, expected, &format!("{prefix}/ ({index})"));
+            }
+            others.push(pages_without_expiry(&h, &languages, &index.to_string()).await);
+        }
+        assert!(
+            others.windows(2).all(|pair| pair[0] == pair[1]),
+            "a page other than create depends on the expiry policy"
         );
     }
 }

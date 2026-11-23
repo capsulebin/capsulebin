@@ -17,6 +17,10 @@ import {
     CREATION_TOKEN,
     DEFAULT_BRANDING,
     DEFAULT_TOKEN,
+    DEV_EXPIRY,
+    EXPIRY_DEFAULT_TOKEN,
+    EXPIRY_MAXIMUM_TOKEN,
+    EXPIRY_PERMANENT_TOKEN,
     FAVICON_TOKEN,
     NAME_PLACEHOLDER,
     NAME_TOKEN,
@@ -174,6 +178,15 @@ describe('templates', () => {
 
         expect(order.every((index) => index >= 0)).toBe(true);
         expect([...order].sort((a, b) => a - b)).toEqual(order);
+    });
+
+    /** The create page builds the expiry options from the instance's expiry meta. */
+    it('index.html has an empty expiry select', () => {
+        const selects = [...parse(readTemplate('index')).querySelectorAll('template')]
+            .map((template) => template.content.querySelector('#create-expiry'))
+            .filter((select) => select !== null);
+        expect(selects).toHaveLength(1);
+        expect(selects[0]!.innerHTML).toBe('');
     });
 });
 
@@ -447,6 +460,39 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
         expect(html.split(CREATION_TOKEN)).toHaveLength(2);
     });
 
+    /**
+     * The create page builds its expiry options from it; the expiry policy is
+     * configuration, so the server fills in all three values. No other page
+     * carries it.
+     */
+    it('carries the expiry meta with the expiry tokens on the create page only', () => {
+        const metas = doc.querySelectorAll<HTMLMetaElement>('meta[name="capsulebin-expiry"]');
+        if (shell !== 'index') {
+            expect(metas).toHaveLength(0);
+            expect(html).not.toContain('capsulebin-expiry');
+            for (const token of [
+                EXPIRY_DEFAULT_TOKEN,
+                EXPIRY_MAXIMUM_TOKEN,
+                EXPIRY_PERMANENT_TOKEN,
+            ]) {
+                expect(html).not.toContain(token);
+            }
+            return;
+        }
+        expect(metas).toHaveLength(1);
+        expect(html.split('capsulebin-expiry')).toHaveLength(2);
+        const meta = metas[0]!;
+        expect(meta.parentElement).toBe(doc.head);
+        expect({ ...meta.dataset }).toEqual({
+            default: EXPIRY_DEFAULT_TOKEN,
+            maximum: EXPIRY_MAXIMUM_TOKEN,
+            permanent: EXPIRY_PERMANENT_TOKEN,
+        });
+        for (const token of [EXPIRY_DEFAULT_TOKEN, EXPIRY_MAXIMUM_TOKEN, EXPIRY_PERMANENT_TOKEN]) {
+            expect(html.split(token)).toHaveLength(2);
+        }
+    });
+
     /** Every `<a href>` of `page`, including those inside <template>s. */
     const allHrefs = (page: Document): string[] =>
         [...page.querySelectorAll('a[href]')]
@@ -486,6 +532,9 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
             .replaceAll(NAME_TOKEN, '')
             .replaceAll(`<link rel="icon" href="${FAVICON_TOKEN}" />`, '')
             .replaceAll(`<meta name="capsulebin-creation" content="${CREATION_TOKEN}" />`, '')
+            .replaceAll(`data-default="${EXPIRY_DEFAULT_TOKEN}"`, '')
+            .replaceAll(`data-maximum="${EXPIRY_MAXIMUM_TOKEN}"`, '')
+            .replaceAll(`data-permanent="${EXPIRY_PERMANENT_TOKEN}"`, '')
             .replaceAll(PROJECT_LINK, '');
         expect(other).not.toContain('%%');
     });
@@ -506,6 +555,19 @@ describe.each(CASES)('generated %s/%s.html', (lang, shell) => {
                 parse(served).querySelector<HTMLMetaElement>('meta[name="capsulebin-creation"]')
                     ?.content,
             ).toBe(shell === 'index' ? 'public' : undefined);
+            const expiry = parse(served).querySelector<HTMLMetaElement>(
+                'meta[name="capsulebin-expiry"]',
+            );
+            if (shell === 'index') {
+                expect({ ...expiry!.dataset }).toEqual({
+                    default: '604800',
+                    maximum: '7776000',
+                    permanent: 'false',
+                });
+                expect({ ...expiry!.dataset }).toEqual(DEV_EXPIRY);
+            } else {
+                expect(expiry).toBeNull();
+            }
 
             const others = KNOWN_LANGUAGES.filter((known) => known !== lang).join('|');
             for (const href of hrefs(parse(served))) {

@@ -34,7 +34,7 @@ use axum::{
 use crate::AppState;
 use crate::api::access_log::ServedAsset;
 use crate::branding::{Branding, Tagline};
-use crate::config::{CreationMode, KNOWN_LANGUAGES, language_prefix};
+use crate::config::{CreationMode, KNOWN_LANGUAGES, PastesConfig, language_prefix};
 use crate::legal::{LegalPages, Which, escape};
 
 /// Start of the footer marker of one legal link in every HTML shell:
@@ -72,6 +72,16 @@ pub const SOURCE_TOKEN: &str = "%%capsulebin:source%%";
 /// the instance's `creation.mode` (`public`, `token` or `disabled`), so the
 /// page knows before anything is written whether a token is needed.
 pub const CREATION_TOKEN: &str = "%%capsulebin:creation%%";
+/// `data-default` of the create shell's `<meta name="capsulebin-expiry">`:
+/// `pastes.default_expiry` in whole seconds, decimal.
+pub const EXPIRY_DEFAULT_TOKEN: &str = "%%capsulebin:expiry-default%%";
+/// `data-maximum` of the same meta: `pastes.maximum_expiry` in whole seconds,
+/// decimal.
+pub const EXPIRY_MAXIMUM_TOKEN: &str = "%%capsulebin:expiry-maximum%%";
+/// `data-permanent` of the same meta: `true` or `false` from
+/// `pastes.allow_permanent`. With the two above, the create page offers only
+/// the expiries the instance accepts.
+pub const EXPIRY_PERMANENT_TOKEN: &str = "%%capsulebin:expiry-permanent%%";
 /// Where the server puts the operator's tagline in place of the built-in
 /// slogan: never written by the web build, only by [`with_branding_regions`],
 /// so that the text is filled in the one token pass like the name.
@@ -277,6 +287,7 @@ impl Document {
             state.default_language,
             &state.branding,
             state.creation_mode,
+            &state.pastes,
         );
         // After the tokens, so that the operator's text is put in as it is.
         if let Some((which, page)) = legal_page {
@@ -303,7 +314,7 @@ impl IntoResponse for Document {
 /// Fills in what a shell of `language` leaves to the server: the link to the
 /// colours' stylesheet, the logo, wordmark and tagline regions of the header,
 /// the tokens (prefix of its internal links, default language, name, tagline,
-/// favicon, source link, creation mode) and the legal links. All fixed at
+/// favicon, source link, creation mode, expiry policy) and the legal links. All fixed at
 /// startup and the same for every request, so the shell does not depend on the
 /// path id. The shells are UTF-8; a lossy conversion only matters for a broken
 /// build, which `/health/ready` reports.
@@ -313,7 +324,15 @@ impl IntoResponse for Document {
 /// operator value is escaped, so it holds no `<` and cannot form a marker.
 /// The legal links (and the legal page in [`Document::build`]) come after the
 /// tokens, so their operator text is not searched for tokens either.
-fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &str, branding: &Branding, creation: CreationMode) -> String {
+fn render(
+    shell: &str,
+    legal: &LegalPages,
+    language: &str,
+    default_language: &str,
+    branding: &Branding,
+    creation: CreationMode,
+    pastes: &PastesConfig,
+) -> String {
     // First, so that it lands in the head of the shell, before anything of
     // the operator is put in.
     let shell = with_stylesheet(shell, branding);
@@ -329,6 +348,9 @@ fn render(shell: &str, legal: &LegalPages, language: &str, default_language: &st
             (FAVICON_TOKEN, &escape(favicon)),
             (SOURCE_TOKEN, &escape(&branding.source_url)),
             (CREATION_TOKEN, creation.as_str()),
+            (EXPIRY_DEFAULT_TOKEN, &pastes.default_expiry.as_secs().to_string()),
+            (EXPIRY_MAXIMUM_TOKEN, &pastes.maximum_expiry.as_secs().to_string()),
+            (EXPIRY_PERMANENT_TOKEN, if pastes.allow_permanent { "true" } else { "false" }),
         ],
     );
     Which::ALL
@@ -620,7 +642,15 @@ mod tests {
                      <!--capsulebin:legal-link:privacy:Datenschutz-->\
                      <!--capsulebin:legal-link:terms:Nutzungs&amp;bedingungen--></footer>";
         assert_eq!(
-            render(shell, &legal, "de", "en", &default_branding(), CreationMode::Token),
+            render(
+                shell,
+                &legal,
+                "de",
+                "en",
+                &default_branding(),
+                CreationMode::Token,
+                &PastesConfig::default()
+            ),
             r#"<footer><a href="/de/imprint">Impressum</a><a href="https://operator.example/terms?a=1&amp;b=2">Nutzungs&amp;bedingungen</a></footer>"#
         );
     }
@@ -636,7 +666,18 @@ mod tests {
             ..LegalPages::default()
         };
         for shell in ["<footer></footer>", "<footer><!--capsulebin:legal-link:imprint:Imprint</footer>"] {
-            assert_eq!(render(shell, &legal, "de", "en", &default_branding(), CreationMode::Token), shell);
+            assert_eq!(
+                render(
+                    shell,
+                    &legal,
+                    "de",
+                    "en",
+                    &default_branding(),
+                    CreationMode::Token,
+                    &PastesConfig::default()
+                ),
+                shell
+            );
         }
     }
 
@@ -644,7 +685,17 @@ mod tests {
     fn the_tokens_follow_the_default_language() {
         let shell = r#"<meta data-default="%%capsulebin:default%%"><a href="%%capsulebin:prefix%%/"></a><a href="%%capsulebin:prefix%%/report"></a>"#;
         let branding = default_branding();
-        let render = |language, default| render(shell, &LegalPages::default(), language, default, &branding, CreationMode::Token);
+        let render = |language, default| {
+            render(
+                shell,
+                &LegalPages::default(),
+                language,
+                default,
+                &branding,
+                CreationMode::Token,
+                &PastesConfig::default(),
+            )
+        };
 
         let unprefixed = |default| format!(r#"<meta data-default="{default}"><a href="/"></a><a href="/report"></a>"#);
         assert_eq!(render("en", "en"), unprefixed("en"));
@@ -689,7 +740,15 @@ mod tests {
             },
             ..LegalPages::default()
         };
-        render(&branded_shell(), &legal, "de", "en", branding, CreationMode::Token)
+        render(
+            &branded_shell(),
+            &legal,
+            "de",
+            "en",
+            branding,
+            CreationMode::Token,
+            &PastesConfig::default(),
+        )
     }
 
     #[test]
@@ -753,7 +812,15 @@ mod tests {
         ] {
             for language in KNOWN_LANGUAGES {
                 assert_eq!(
-                    render(CREATION_META, &LegalPages::default(), language, "en", &default_branding(), mode),
+                    render(
+                        CREATION_META,
+                        &LegalPages::default(),
+                        language,
+                        "en",
+                        &default_branding(),
+                        mode,
+                        &PastesConfig::default()
+                    ),
                     format!(r#"<meta name="capsulebin-creation" content="{value}">"#),
                     "{language}"
                 );
@@ -778,9 +845,92 @@ mod tests {
              <!--capsulebin:tagline--><span class=\"cb-claim\">Paste it.</span><!--/capsulebin:tagline-->"
         );
         assert_eq!(
-            render(&shell, &LegalPages::default(), "de", "en", &branding, CreationMode::Disabled),
+            render(
+                &shell,
+                &LegalPages::default(),
+                "de",
+                "en",
+                &branding,
+                CreationMode::Disabled,
+                &PastesConfig::default()
+            ),
             "<meta name=\"capsulebin-creation\" content=\"disabled\"><title>&lt;%%capsulebin:creation%%&gt;</title>\
              <span class=\"cb-claim\">&amp; %%capsulebin:creation%%</span>"
+        );
+    }
+
+    /// The create shell's expiry meta as the web build writes it.
+    const EXPIRY_META: &str = r#"<meta name="capsulebin-expiry" data-default="%%capsulebin:expiry-default%%" data-maximum="%%capsulebin:expiry-maximum%%" data-permanent="%%capsulebin:expiry-permanent%%">"#;
+
+    fn pastes(default_expiry: &str, maximum_expiry: &str, allow_permanent: bool) -> PastesConfig {
+        PastesConfig {
+            default_expiry: crate::config::units::HumanDuration::parse(default_expiry).unwrap(),
+            maximum_expiry: crate::config::units::HumanDuration::parse(maximum_expiry).unwrap(),
+            allow_permanent,
+            ..PastesConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_expiry_tokens_name_the_configured_policy() {
+        for (pastes, expected) in [
+            (PastesConfig::default(), ("604800", "7776000", "false")),
+            (pastes("3d", "14d", true), ("259200", "1209600", "true")),
+            (pastes("90s", "30m", false), ("90", "1800", "false")),
+        ] {
+            let (default, maximum, permanent) = expected;
+            for language in KNOWN_LANGUAGES {
+                assert_eq!(
+                    render(
+                        EXPIRY_META,
+                        &LegalPages::default(),
+                        language,
+                        "en",
+                        &default_branding(),
+                        CreationMode::Token,
+                        &pastes
+                    ),
+                    format!(
+                        r#"<meta name="capsulebin-expiry" data-default="{default}" data-maximum="{maximum}" data-permanent="{permanent}">"#
+                    ),
+                    "{language}"
+                );
+            }
+        }
+    }
+
+    /// A name or tagline that holds an expiry token stays literal: the tokens
+    /// are filled in the same single pass, which never rescans an inserted value.
+    #[test]
+    fn the_expiry_tokens_in_operator_values_stay_literal() {
+        let branding = Branding {
+            name: "<%%capsulebin:expiry-default%%>".to_owned(),
+            taglines: KNOWN_LANGUAGES
+                .iter()
+                .map(|&language| {
+                    let text = "& %%capsulebin:expiry-maximum%% %%capsulebin:expiry-permanent%%".to_owned();
+                    (language, Tagline::Text(text))
+                })
+                .collect(),
+            ..default_branding()
+        };
+        let shell = format!(
+            "{EXPIRY_META}<title>%%capsulebin:name%%</title>\
+             <!--capsulebin:tagline--><span class=\"cb-claim\">Paste it.</span><!--/capsulebin:tagline-->"
+        );
+        assert_eq!(
+            render(
+                &shell,
+                &LegalPages::default(),
+                "de",
+                "en",
+                &branding,
+                CreationMode::Token,
+                &pastes("3d", "14d", true)
+            ),
+            "<meta name=\"capsulebin-expiry\" data-default=\"259200\" data-maximum=\"1209600\" data-permanent=\"true\">\
+             <title>&lt;%%capsulebin:expiry-default%%&gt;</title>\
+             <span class=\"cb-claim\">&amp; %%capsulebin:expiry-maximum%% %%capsulebin:expiry-permanent%%</span>"
         );
     }
 
@@ -830,7 +980,17 @@ mod tests {
             ..default_branding()
         };
         let shell = "<a>x</a>\n<!--capsulebin:tagline-->\n<span class=\"cb-claim\">Built-in</span>\n<!--/capsulebin:tagline-->\n<nav>";
-        let render = |branding: &Branding, language| render(shell, &LegalPages::default(), language, "en", branding, CreationMode::Token);
+        let render = |branding: &Branding, language| {
+            render(
+                shell,
+                &LegalPages::default(),
+                language,
+                "en",
+                branding,
+                CreationMode::Token,
+                &PastesConfig::default(),
+            )
+        };
         assert_eq!(render(&branding, "en"), "<a>x</a>\n<span class=\"cb-claim\">Ours</span>\n<nav>");
         assert_eq!(render(&branding, "de"), "<a>x</a>\n\n<nav>");
         for language in KNOWN_LANGUAGES {
@@ -856,7 +1016,17 @@ mod tests {
             stylesheet,
             ..default_branding()
         };
-        let render = |shell: &str, branding: &Branding| render(shell, &LegalPages::default(), "en", "en", branding, CreationMode::Token);
+        let render = |shell: &str, branding: &Branding| {
+            render(
+                shell,
+                &LegalPages::default(),
+                "en",
+                "en",
+                branding,
+                CreationMode::Token,
+                &PastesConfig::default(),
+            )
+        };
         assert_eq!(
             render(shell, &branding),
             "<head><link rel=\"stylesheet\" href=\"/assets/a.css\">\n\
@@ -876,7 +1046,15 @@ mod tests {
         };
         let shell = "<!--capsulebin:logo--><svg></svg><!--capsulebin:wordmark-->x %%capsulebin:unknown%%";
         assert_eq!(
-            render(shell, &LegalPages::default(), "en", "en", &branding, CreationMode::Token),
+            render(
+                shell,
+                &LegalPages::default(),
+                "en",
+                "en",
+                &branding,
+                CreationMode::Token,
+                &PastesConfig::default()
+            ),
             shell
         );
     }
