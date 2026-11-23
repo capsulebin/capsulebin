@@ -528,7 +528,7 @@ See [branding.md](branding.md) for the rules in detail.
 ### Backups
 
 ```sh
-capsulebin --config /etc/capsulebin.toml backup --output /backups/capsulebin-$(date +%F).db
+capsulebin --config /etc/capsulebin.toml backup --output /backups/capsulebin-$(date -u +%Y%m%dT%H%M%SZ).db
 ```
 
 Safe while serving. The file is consistent, compacted and `0600`. It is written and verified inside
@@ -540,7 +540,8 @@ entry created in the output directory between that last check and the rename wou
 which needs write access to that directory (and whoever has it could replace the backup anyway).
 The same window lets two backups started at the same moment with the same output name both report
 success, the later rename replacing the earlier snapshot: give every backup job a name of its own
-(a timestamp, as above, or the job's name) and do not run two jobs onto one name.
+(a timestamp to the second, as above, or the job's name; a date alone repeats on a second run
+that day) and do not run two jobs onto one name.
 The rename stays within the output's directory, so any filesystem works as a destination. Store
 backups as carefully as the database: they contain ciphertext, verifiers and abuse reports with
 contact details. Rotate them — an old backup is where deleted capsules survive the longest. Never
@@ -550,8 +551,8 @@ copy the live database file directly.
 
 ```sh
 systemctl stop capsulebin
-capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-2026-11-17.db --dry-run
-capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-2026-11-17.db --force
+capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-20261117T020000Z.db --dry-run
+capsulebin --config /etc/capsulebin.toml restore --input /backups/capsulebin-20261117T020000Z.db --force
 systemctl start capsulebin
 ```
 
