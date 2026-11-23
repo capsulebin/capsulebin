@@ -10,7 +10,7 @@ and lifecycle metadata and **never sees capsule plaintext, keys, or link secrets
 > The server never sees the link secret, the password, or the AES key. The only plaintext it
 > receives is an abuse report's description and optional contact (personal data, ADR-013).
 
-Version 1.0.0, not yet released (protocol v1 fixed by ADR-003, see `CHANGELOG.md`). A multi-item
+Version 1.0.0, released 2026-11-23 (protocol v1 fixed by ADR-003, see `CHANGELOG.md`). A multi-item
 encrypted capsule works end-to-end: create, describe, retrieve, delete, burn-after-retrieval,
 password protection, Markdown/code rendering, file items, retention/pruning, rate limiting,
 idempotent create, the CLI (`put`/`get`/`delete`), abuse reports and the operator moderation

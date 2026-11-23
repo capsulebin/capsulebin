@@ -13,9 +13,9 @@ metadata.
 
 ## Status
 
-**1.0** — the first stable version, not yet released. The protocol (envelope, capsule file format,
-crypto profile and HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by every later
-1.x release, and breaking changes need a new version in the path or format
+**1.0** — the first stable version, released 2026-11-23. The protocol (envelope, capsule file
+format, crypto profile and HTTP API `v1`) is frozen: capsules created with 1.0 stay readable by
+every later 1.x release, and breaking changes need a new version in the path or format
 ([ADR-003](docs/adr/ADR-003-protocol-versioning.md), [crypto profile](docs/crypto-profile.md),
 [capsule file format](docs/capsule-file-format.md)). What changed between releases is in the
 [changelog](CHANGELOG.md).
