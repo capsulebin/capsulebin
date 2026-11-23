@@ -1711,6 +1711,8 @@ describe('create page after an unclear outcome', () => {
             expect(el('retry-btn').textContent).toBe(en['create.retry']);
             expect(visible('unclear')).toBe(true);
             expect(el('unclear').textContent).toContain(en['create.unclearNote']);
+            expect(visible('unclear-retry')).toBe(true);
+            expect(el('unclear-retry').textContent).toBe(en['create.unclearRetryNote']);
             expect(el('unclear').textContent).toContain(en['create.deleteLink']);
 
             const id = JSON.parse(createBodies[0]!).id as string;
@@ -1833,6 +1835,8 @@ describe('create page after an unclear outcome', () => {
         expect(el('try-again').textContent!.trim()).toBe(de['create.tryAgain']);
         expect(el('retry-btn').textContent).toBe(de['create.retry']);
         expect(el('unclear').textContent).toContain(de['create.unclearNote']);
+        expect(visible('unclear-retry')).toBe(true);
+        expect(el('unclear-retry').textContent).toBe(de['create.unclearRetryNote']);
         expect(el('unclear').textContent).toContain(de['create.deleteLink']);
         expect(el('unclear-copy').textContent!.trim()).toBe(de['create.copy']);
 
@@ -1937,6 +1941,8 @@ describe('create page after an unclear outcome', () => {
         expect(visible('unclear')).toBe(true);
         expect(el('unclear-delete-link').textContent).toBe(shown);
         expect(visible('try-again')).toBe(false);
+        // The token form resends the same capsule, so the retry note still holds.
+        expect(visible('unclear-retry')).toBe(true);
 
         el<HTMLInputElement>('token-input').value = 'new-token_456';
         el<HTMLFormElement>('token-form').dispatchEvent(
@@ -1949,14 +1955,18 @@ describe('create page after an unclear outcome', () => {
         expect([...server.pastes.keys()]).toEqual([id]);
     }, 30_000);
 
-    // A retry with a definite refusal keeps the delete link too, without "Try again".
+    // A retry with a definite refusal keeps the delete link too, without "Try again"
+    // and without the note that trying again creates no second capsule: only
+    // "Back to editing" is left, which seals a new one.
     it.each([
-        ['a 403', () => problem(403, 'creation_disabled')],
-        ['a 400', () => problem(400, 'invalid_request')],
-    ] satisfies [string, () => Response][])(
-        'keeps the delete link when the retry meets %s',
-        async (_case, refusal) => {
-            await loadPage('en', 'public');
+        ['a 403', 'en', () => problem(403, 'creation_disabled')],
+        ['a 400', 'en', () => problem(400, 'invalid_request')],
+        ['a 403', 'de', () => problem(403, 'creation_disabled')],
+    ] satisfies [string, 'en' | 'de', () => Response][])(
+        'keeps the delete link when the retry meets %s (%s)',
+        async (_case, language, refusal) => {
+            const catalogue = language === 'de' ? de : en;
+            await loadPage(language, 'public');
             storedThenRetry(refusal);
             type('content');
             submit();
@@ -1972,6 +1982,9 @@ describe('create page after an unclear outcome', () => {
             expect(el('unclear-delete-link').textContent).toBe(shown);
             expect(parseLink(shown, 'manage').id).toBe(id);
             expect(visible('retry-btn')).toBe(true);
+            expect(el('unclear').textContent).toContain(catalogue['create.unclearNote']);
+            expect(el('unclear').textContent).toContain(catalogue['create.deleteLink']);
+            expect(visible('unclear-retry')).toBe(false);
         },
         30_000,
     );

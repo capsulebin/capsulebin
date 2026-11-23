@@ -1048,17 +1048,22 @@ function showError(message: string, draft: Draft): void {
  */
 function showTokenRefused(paste: Paste, draft: Draft, mayExist: boolean): void {
     showError(t('create.token.refused'), draft);
-    if (mayExist) showMaybeStored(paste);
+    // The token form sends the same `paste` again: the retry note holds.
+    if (mayExist) showMaybeStored(paste, true);
     mountTokenForm('create.token.create', () => void publish(paste, draft, mayExist));
 }
 
 /**
  * The delete link of `paste`, which an attempt may have stored: shown on every
- * error after such an attempt, for the creator who gives up instead.
+ * error after such an attempt, for the creator who gives up instead. The note
+ * that trying again creates no second capsule only when an action on the page
+ * (`resends`: "Try again" or the token form) sends the same `paste` again;
+ * "Back to editing" seals a new one.
  */
-function showMaybeStored(paste: Paste): void {
+function showMaybeStored(paste: Paste, resends: boolean): void {
     const deleteUrl = paste.deleteUrl(window.location.origin);
     byAttr('unclear').hidden = false;
+    byAttr('unclear-retry').hidden = !resends;
     setText('unclear-delete-link', deleteUrl);
     mountCopyButtons([[byAttr<HTMLButtonElement>('unclear-copy'), deleteUrl]]);
 }
@@ -1071,7 +1076,7 @@ function showMaybeStored(paste: Paste): void {
  */
 function showUnclearOutcome(message: string, paste: Paste, draft: Draft): void {
     showError(message, draft);
-    showMaybeStored(paste);
+    showMaybeStored(paste, true);
 
     const tryAgain = byAttr<HTMLButtonElement>('try-again');
     tryAgain.hidden = false;
@@ -1106,7 +1111,7 @@ async function publish(paste: Paste, draft: Draft, mayExist = false): Promise<vo
             showUnclearOutcome(apiErrorText(err), paste, draft);
         } else {
             showError(apiErrorText(err), draft);
-            if (mayExist) showMaybeStored(paste);
+            if (mayExist) showMaybeStored(paste, false);
         }
     }
 }

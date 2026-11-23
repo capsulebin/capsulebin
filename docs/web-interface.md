@@ -243,8 +243,11 @@ URL; the browser tests read the links from there.
   `showUnclearOutcome` fills `tmpl-error` like `showError` and additionally shows `[data-unclear]`:
   `create.deleteLink`, the sealed capsule's management URL as text in
   `[data-unclear-delete-link]` (`paste.deleteUrl(origin)`, the link the sealed page would show),
-  `create.unclearNote` (the capsule may exist, trying again creates no second one, keep the link
-  private) and a small ghost "Copy" (`[data-unclear-copy]`, `CopyFeedback`, wired by
+  `create.unclearNote` (the capsule may exist, keep the link private), followed by
+  `create.unclearRetryNote` in `[data-unclear-retry]` (trying again creates no second one) — shown
+  only while an action on the page sends the same `Paste` again ("Try again" or, after a refused
+  token, the token form; `showMaybeStored(paste, resends)`), hidden after a definite refusal of a
+  retry, when only "Back to editing" (a new `Paste`) is left — and a small ghost "Copy" (`[data-unclear-copy]`, `CopyFeedback`, wired by
   `mountCopyButtons` like the sealed page's copy buttons). It reuses the
   sealed page's delete-row classes (`.cb-sealed-delete*`, stretched to the column inside
   `.cb-create-state`). The action row (`.cb-create-actions`) then holds "Try again"
@@ -293,7 +296,7 @@ threshold, so the built-in palette still gives no operator warning.
 | `src/server/web/src/styles/base.css` | Chrome (`.cb-head`, `.cb-main`, `.cb-foot` on `--cb-column`; `.cb-lang`), reduced-motion rule, `.cb-quiet`, `.cb-icon`, `.cb-bar-label`, `.cb-copied`, `.cb-chips`/`.cb-chip`/`.cb-chip-warning`, `.cb-sheet`/`.cb-sheet-bar`, `.cb-bar-actions`, `.cb-editor-frame`, `.cb-link-panel`, menu rows, `.cb-itemtab`, `.cb-btn-danger`, transitions, `.cb-hex*` |
 | `src/server/web/src/styles/view.css`, `create.css`, `states.css` | One stylesheet per page area: view sheet, chips, switch, gutter, previous/next; editor (the flex chain that fills the window, head and foot padding), options row, size bar, sealed page; `.cb-state` layout |
 | `src/server/web/{index,p,manage,report,legal}.html` | Header with `.cb-lang` and the SVG theme toggle; `index.html` templates `tmpl-edit`, `tmpl-encrypting`, `tmpl-done`, `tmpl-error`, in `tmpl-edit` the hooks `[data-tabs-row]`, `[data-add]`, `[data-item-actions]`, in `tmpl-error` the hidden `[data-unclear]` row and `[data-try-again]`; `manage.html` templates in `.cb-state` |
-| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*`, `create.tryAgain`, `create.unclearNote`, `error.invalidResponse` |
+| `src/server/web/src/i18n/{en,de}.json` | `items.all`, `items.position`, `items.previous`, `items.next`, `view.decryptedLocally`, `view.deletedAfterRetrieval`, `shell.copied`, `shell.copiedToClipboard`, `create.itemsFull`, `create.burnLabel`, `create.done`, `create.keyNote`, `create.copyLink`, `create.deleteLinkNote`, `create.summary.*`, `create.tryAgain`, `create.unclearNote`, `create.unclearRetryNote`, `error.invalidResponse` |
 
 ### Tests
 

@@ -315,9 +315,9 @@ alone will not match it.
 ### Backup and restore
 
 ```sh
-capsulebin backup --output /backups/capsulebin-$(date +%F).db   # while the server runs
-capsulebin restore --input /backups/capsulebin-2026-11-17.db --dry-run   # verify, change nothing
-capsulebin restore --input /backups/capsulebin-2026-11-17.db --force     # server stopped
+capsulebin backup --output /backups/capsulebin-$(date -u +%Y%m%dT%H%M%SZ).db   # while the server runs
+capsulebin restore --input /backups/capsulebin-20261117T020000Z.db --dry-run   # verify, change nothing
+capsulebin restore --input /backups/capsulebin-20261117T020000Z.db --force     # server stopped
 ```
 
 `backup` uses SQLite's `VACUUM INTO`: a consistent snapshot of the live database without its

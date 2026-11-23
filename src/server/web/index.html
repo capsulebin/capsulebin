@@ -443,7 +443,10 @@
                     <div class="cb-sealed-delete-text">
                         <strong>{{create.deleteLink}}</strong>
                         <span class="cb-sealed-delete-link" data-unclear-delete-link></span>
-                        <span class="cb-sealed-note">{{create.unclearNote}}</span>
+                        <span class="cb-sealed-note"
+                            >{{create.unclearNote}}
+                            <span data-unclear-retry hidden>{{create.unclearRetryNote}}</span></span
+                        >
                     </div>
                     <button type="button" class="cb-btn cb-btn-ghost cb-btn-sm" data-unclear-copy>
                         <span>{{create.copy}}</span>
