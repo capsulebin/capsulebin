@@ -365,7 +365,12 @@ CapsuleBin serves an imprint, a privacy notice and terms of use at `/imprint`, `
 (`/de/imprint`), and links them from the footer of every page, once `[legal.operator]` is set.
 Page titles and headings follow the page language.
 
-- **Imprint**: the operator's own Markdown (`text` or `file`), followed by a "Hosting" block from
+> The built-in texts are not legal advice and do not replace it. They are defaults that describe
+> what CapsuleBin does with data under the running configuration; whether they fit your instance,
+> and what else it has to publish, is yours to check, with legal advice where needed. There is no
+> built-in imprint.
+
+- **Imprint**: only the operator's own Markdown (`text` or `file`; no built-in text), followed by a "Hosting" block from
   `[legal.hosting]` if someone else hosts the instance.
 - **Privacy notice and terms**: built in, in English and German, always in the page's language.
   The privacy notice states what CapsuleBin processes and how long it keeps it, taken from the
@@ -405,8 +410,8 @@ changed file takes effect on restart. In the container, mount them read-only, e.
 Give the texts as files (or `text` in a mounted configuration file), not as `…__TEXT` environment
 variables: those are taken verbatim and are unsuitable for multi-line Markdown (see
 [Container](#container)).
-The built-in texts are a careful default, not legal advice: you are responsible for what your
-instance publishes. [privacy-notice.md](privacy-notice.md) lists what they state.
+You are responsible for what your instance publishes; [privacy-notice.md](privacy-notice.md) lists
+what the built-in texts state.
 
 ## Interface languages
 

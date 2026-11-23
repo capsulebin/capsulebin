@@ -210,7 +210,10 @@ Critical rules:
   empty `token_hashes` is valid (the tokens may be in the database); `token_hashes` with another
   mode stays a startup error. See
   [Creation tokens in the database](#creation-tokens-in-the-database).
-- **`[legal]` texts are operator input placed into pages** (ADR-015) — Markdown rendered at
+- **`[legal]` texts are operator input placed into pages** (ADR-015) — there is no built-in
+  imprint (only `[legal.operator]`/`[legal.hosting]`); the built-in privacy notice and terms are
+  defaults describing what the service does, not legal advice, and say so wherever docs mention
+  them — Markdown rendered at
   startup without raw HTML or images and with links limited to http(s), mailto, tel and local
   paths; `url` values limited to absolute http(s) URLs and single-slash paths. The built-in
   privacy notice and terms (`legal/defaults/{en,de}.rs`) describe what the server stores and
@@ -632,7 +635,7 @@ npm run e2e -w @capsulebin/web
 | 012 | No OpenAPI document | Contract = capsule format, crypto profile, golden vectors; if ever needed, generate from `wire.rs` |
 | 013 | Abuse reports and moderation | Reports only stored for existing pastes, same answer either way; operator CLI; moderated = indistinguishable from unknown |
 | 014 | AGPL licence, DCO | AGPL-3.0-only open source; contributions with a DCO sign-off (`git commit -s`), no CLA |
-| 015 | Legal pages rendered by the server | Imprint, privacy notice, terms from `[legal]`, built-in texts (English, German) filled in from the configuration; per language `[legal.<lang>.*]` with fallback to `[legal.*]`; restricted Markdown rendered at startup; code still only from the binary |
+| 015 | Legal pages rendered by the server | Imprint only from the operator's text; privacy notice and terms built in (English, German), filled in from the configuration, served only with `[legal.operator]`, defaults and not legal advice; per language `[legal.<lang>.*]` with fallback to `[legal.*]`; restricted Markdown rendered at startup; code still only from the binary |
 | 016 | Language paths | Default language without a prefix, every other under `/{lang}/`; no `Accept-Language` negotiation; shells generated per language at build time, one catalogue module per language; browser choice `localStorage` > browser language > default; no cookie |
 | 017 | Operator branding | `[branding]` keys instead of operator CSS; name, raster logo/dark logo/favicon (no SVG) read at startup, served at content-hashed `/branding/` URLs; one name for all languages, a tagline per language; theme colours as token values in a generated stylesheet, contrast failures only a warning; "Powered by CapsuleBin" on every page ("CapsuleBin" linked to the source, new tab), not switchable |
 | 018 | Creation token in the browser | Create page takes the token from a field or an invitation link `#token=` (fragment removed at once; another stored token is replaced only after asking), remembered in `localStorage` by default with "Forget", sent only as the create bearer; mode in the create shell's meta; a refused token resends the same sealed capsule; no cookie/session, policy endpoint or admin UI |

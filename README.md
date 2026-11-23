@@ -37,8 +37,9 @@ What 1.0 contains:
   the operator ever decrypting a capsule.
 - **Interface languages:** English and German; the default language without a path prefix, the
   other under its prefix (`/de/`).
-- **Legal pages and branding:** imprint, privacy notice and terms (built-in texts in both
-  languages), and per instance a name, tagline, logo, favicon and theme colours; every page says
+- **Legal pages and branding:** an imprint from the operator's own text, and a privacy notice and
+  terms with built-in default texts in both languages (served once an operator is configured; not
+  legal advice), and per instance a name, tagline, logo, favicon and theme colours; every page says
   "Powered by CapsuleBin".
 
 ## Installation
@@ -413,7 +414,12 @@ footer. The imprint is the operator's own Markdown, with an optional block for a
 provider; the privacy notice and the terms are built in (English and German) and describe what
 CapsuleBin actually does with the configured retention and limits. Each can be replaced by own
 text, a file or a link. `[legal.<lang>.*]` gives a section in another language; without one, that
-language's pages show the default language's section, marked with its `lang`. See
+language's pages show the default language's section, marked with its `lang`. There is no built-in
+imprint, and without `[legal.operator]` the built-in privacy notice and terms are not served either.
+
+The built-in texts are not legal advice and do not replace it. They are defaults that describe what
+CapsuleBin does with data under the running configuration; whether they fit an instance, and what
+else it has to publish, is for the operator to check, with legal advice where needed. See
 [Legal pages](docs/operations.md#legal-pages) in the operations handbook.
 
 ### Interface languages

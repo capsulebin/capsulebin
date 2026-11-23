@@ -361,7 +361,10 @@ source_url = "https://github.com/capsulebin/capsulebin"
 # Raw HTML in the Markdown is shown as text; links may point to http(s),
 # mailto, tel and paths on this host. Without [legal.operator] there are no
 # legal pages and no footer links (unless privacy or terms are set explicitly).
-# docs/privacy-notice.md describes the built-in texts.
+# There is no built-in imprint. The built-in privacy notice and terms are
+# defaults that describe what CapsuleBin does with data under this
+# configuration; they are not legal advice and do not replace it. Whether they
+# fit your instance is yours to check. docs/privacy-notice.md describes them.
 
 # Who runs the instance: name, address, contact, register entry - the imprint.
 # [legal.operator]

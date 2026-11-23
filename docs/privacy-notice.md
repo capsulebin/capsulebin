@@ -7,9 +7,10 @@ state the same facts under the same sections; the table names the English headin
 lists what that notice states and where it comes from, so that an operator can check it against
 their deployment, add what it cannot know, or replace it with their own.
 
-It is not legal advice. The built-in text is a careful default for an operator in the EU under the
-GDPR; who has to publish what, and on which legal basis, depends on the operator and the
-jurisdiction, and the operator stays responsible for what their instance publishes.
+It is not legal advice and does not replace it. The built-in text is a default that describes what
+the software does with data, a careful one for an operator in the EU under the GDPR; who has to
+publish what, and on which legal basis, depends on the operator and the jurisdiction, and the
+operator stays responsible for what their instance publishes. There is no built-in imprint.
 
 ## What the built-in notice covers
 
